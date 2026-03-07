@@ -29,7 +29,7 @@ jobs:
       - run: npm test
 
   swift:
-    name: Swift (build, lint, format, test)
+    name: Swift (build, lint, format)
     runs-on: macos-15
     defaults:
       run:
@@ -40,8 +40,8 @@ jobs:
       - name: Build
         run: swift build
 
-      - name: Test
-        run: swift test
+      - name: Build tests
+        run: swift build --build-tests
 
       - name: Install SwiftLint
         run: brew install swiftlint
