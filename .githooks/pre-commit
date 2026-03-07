@@ -1,0 +1,30 @@
+#!/bin/bash
+set -euo pipefail
+
+echo "=== Pre-commit: MCP Server ==="
+
+cd "$(git rev-parse --show-toplevel)/mcp-server"
+
+echo "  TypeScript typecheck..."
+npx tsc --noEmit
+
+echo "  ESLint..."
+npx eslint 'src/**/*.ts'
+
+echo "  Prettier..."
+npx prettier --check 'src/**/*.ts'
+
+echo "=== Pre-commit: Swift ==="
+
+cd "$(git rev-parse --show-toplevel)/Operator"
+
+echo "  Swift build..."
+swift build 2>&1 | tail -1
+
+echo "  SwiftLint..."
+swiftlint lint --strict
+
+echo "  swift-format..."
+swift-format lint --strict --recursive Sources Tests
+
+echo "=== All checks passed ==="
