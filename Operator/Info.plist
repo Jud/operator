@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.operator.app</string>
+    <key>CFBundleName</key>
+    <string>Operator</string>
+    <key>CFBundleDisplayName</key>
+    <string>Operator</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleExecutable</key>
+    <string>Operator</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Operator needs microphone access for voice input.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>Operator uses speech recognition to transcribe your voice commands.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Operator controls iTerm2 to deliver messages to Claude Code sessions.</string>
+</dict>
+</plist>
