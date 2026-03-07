@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Errors that can occur when running claude -p subprocess.
 public enum ClaudePipeError: Error, CustomStringConvertible {
@@ -29,6 +30,17 @@ public enum ClaudePipeError: Error, CustomStringConvertible {
         case .cliNotFound:
             return "claude CLI not found"
         }
+    }
+}
+
+/// A `RoutingEngine` backed by the real `ClaudePipe` subprocess.
+public struct ClaudePipeRoutingEngine: RoutingEngine {
+    /// Creates a new routing engine backed by the `claude -p` subprocess.
+    public init() {}
+
+    /// Run a prompt through the Claude CLI and return parsed JSON.
+    public func run(prompt: String, timeout: TimeInterval) async throws -> [String: Any] {
+        try await ClaudePipe.run(prompt: prompt, timeout: timeout)
     }
 }
 
@@ -80,23 +92,19 @@ public enum ClaudePipe {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        let timedOut = UnsafeMutablePointer<Bool>.allocate(capacity: 1)
-        timedOut.initialize(to: false)
+        let timedOut = OSAllocatedUnfairLock(initialState: false)
 
         let timer = DispatchSource.makeTimerSource(queue: .global())
         timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler {
-            timedOut.pointee = true
+            timedOut.withLock { $0 = true }
             process.terminate()
         }
         timer.resume()
 
         defer {
             timer.cancel()
-            let wasTimedOut = timedOut.pointee
-            timedOut.deinitialize(count: 1)
-            timedOut.deallocate()
-            if wasTimedOut {
+            if timedOut.withLock({ $0 }) {
                 logger.warning("claude -p was terminated due to timeout")
             }
         }
@@ -133,7 +141,7 @@ public enum ClaudePipe {
         process: Process,
         stdoutPipe: Pipe,
         stderrPipe: Pipe,
-        timedOut: UnsafeMutablePointer<Bool>,
+        timedOut: OSAllocatedUnfairLock<Bool>,
         timeout: TimeInterval
     ) throws -> String {
         let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
@@ -141,7 +149,7 @@ public enum ClaudePipe {
 
         process.waitUntilExit()
 
-        if timedOut.pointee {
+        if timedOut.withLock({ $0 }) {
             throw ClaudePipeError.timeout(seconds: timeout)
         }
 
