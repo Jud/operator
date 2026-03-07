@@ -27,7 +27,7 @@ internal final class E2EHarness {
     let mockSpeechManager = MockSpeechManager()
     let mockTrigger = MockTriggerSource()
 
-    private(set) var itermBridge: ITermBridge?
+    private(set) var itermBridge: (any TerminalBridge)?
     private(set) var voiceManager: VoiceManager?
     private(set) var feedback: (any AudioFeedbackProviding)?
     private(set) var audioQueue: AudioQueue?
@@ -169,7 +169,7 @@ internal final class E2EHarness {
         audioQueue = aq
         await aq.startListening()
 
-        let reg = SessionRegistry(itermBridge: bridge, voiceManager: vm)
+        let reg = SessionRegistry(voiceManager: vm)
         registry = reg
 
         let rt = MessageRouter(registry: reg)
@@ -180,7 +180,7 @@ internal final class E2EHarness {
             audioQueue: aq,
             router: rt,
             feedback: fb,
-            itermBridge: bridge,
+            terminalBridge: bridge,
             registry: reg,
             voiceManager: vm,
             waveformPanel: nil,

@@ -87,12 +87,13 @@ public final class StateMachine {
     private let audioQueue: AudioQueue
     private let router: MessageRouter
     private let feedback: any AudioFeedbackProviding
-    private let itermBridge: ITermBridge
+    private let terminalBridge: any TerminalBridge
     private let registry: SessionRegistry
     private let voiceManager: VoiceManager
     private let waveformPanel: WaveformPanel?
     private let speechManager: any SpeechManaging
     private let commandHandler: OperatorCommandHandler
+    private let interruptionHandler: InterruptionHandler
     private let deliveryCoordinator: DeliveryCoordinator
 
     // MARK: - Initialization
@@ -102,7 +103,7 @@ public final class StateMachine {
     ///   - audioQueue: Actor managing sequential speech playback.
     ///   - router: Message routing priority chain.
     ///   - feedback: Non-verbal audio tone player.
-    ///   - itermBridge: JXA bridge for iTerm2 text delivery.
+    ///   - terminalBridge: Bridge for terminal text delivery.
     ///   - registry: Actor managing registered Claude Code sessions.
     ///   - voiceManager: Voice selection for operator and agent speech.
     ///   - waveformPanel: Floating UI panel (nil in headless/test mode).
@@ -112,7 +113,7 @@ public final class StateMachine {
         audioQueue: AudioQueue,
         router: MessageRouter,
         feedback: any AudioFeedbackProviding,
-        itermBridge: ITermBridge,
+        terminalBridge: any TerminalBridge,
         registry: SessionRegistry,
         voiceManager: VoiceManager,
         waveformPanel: WaveformPanel?,
@@ -122,18 +123,19 @@ public final class StateMachine {
         self.audioQueue = audioQueue
         self.router = router
         self.feedback = feedback
-        self.itermBridge = itermBridge
+        self.terminalBridge = terminalBridge
         self.registry = registry
         self.voiceManager = voiceManager
         self.waveformPanel = waveformPanel
         self.speechManager = speechManager
+        self.interruptionHandler = InterruptionHandler(engine: router.engine)
         self.commandHandler = OperatorCommandHandler(
             registry: registry,
             audioQueue: audioQueue,
             voiceManager: voiceManager
         )
         self.deliveryCoordinator = DeliveryCoordinator(
-            itermBridge: itermBridge,
+            terminalBridge: terminalBridge,
             registry: registry,
             feedback: feedback
         )
@@ -310,7 +312,7 @@ extension StateMachine {
     /// Process the user's utterance in the context of an interrupted speech playback.
     ///
     /// Uses InterruptionHandler's fast-path keywords first, then falls back to
-    /// claude -p for genuinely ambiguous cases.
+    /// the routing engine for genuinely ambiguous cases.
     private func handleInterruption(userUtterance: String, context: PendingInterruption) async {
         let interruptionContext = InterruptionContext(
             agentName: context.session,
@@ -320,7 +322,7 @@ extension StateMachine {
         )
 
         let sessionNames = await registry.allSessions().map { $0.name }
-        let action = await InterruptionHandler.handle(
+        let action = await interruptionHandler.handle(
             userUtterance: userUtterance,
             context: interruptionContext,
             registeredSessionNames: sessionNames

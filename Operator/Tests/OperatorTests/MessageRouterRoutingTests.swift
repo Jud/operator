@@ -10,9 +10,8 @@ import Testing
 internal struct MessageRouterRoutingTests {
     @Test("single session routes directly without routing overhead")
     func singleSessionBypass() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
@@ -28,9 +27,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("returns noSessions when no sessions registered")
     func noSessionsRegistered() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
 
@@ -43,9 +41,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("session affinity routes to last target within 15s window")
     func sessionAffinityWithinWindow() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp/sudo", context: nil)
         await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp/frontend", context: nil)
         let router = MessageRouter(registry: registry)
@@ -63,9 +60,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: keyword match resolves to session")
     func clarificationKeywordMatch() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
@@ -84,9 +80,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: cancel intent")
     func clarificationCancel() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
 
@@ -103,9 +98,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: cancel with 'cancel'")
     func clarificationCancelWord() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
 
@@ -122,9 +116,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: both/all sends to all")
     func clarificationBoth() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
 
@@ -141,9 +134,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: 'all of them' sends to all")
     func clarificationAllOfThem() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
 
@@ -160,9 +152,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: repeat question")
     func clarificationRepeat() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
 
@@ -179,9 +170,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: ordinal 'the first one'")
     func clarificationOrdinalFirst() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
@@ -200,9 +190,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: ordinal 'second'")
     func clarificationOrdinalSecond() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
@@ -221,9 +210,8 @@ internal struct MessageRouterRoutingTests {
 
     @Test("clarification: ordinal 'the second one'")
     func clarificationOrdinalSecondOne() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)

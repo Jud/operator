@@ -32,18 +32,22 @@ public enum DeliveryResult: Sendable {
 public struct DeliveryCoordinator {
     private static let logger = Log.logger(for: "DeliveryCoordinator")
 
-    private let itermBridge: ITermBridge
+    private let terminalBridge: any TerminalBridge
     private let registry: SessionRegistry
     private let feedback: any AudioFeedbackProviding
 
     /// Creates a new delivery coordinator.
     ///
     /// - Parameters:
-    ///   - itermBridge: JXA bridge for iTerm2 text delivery.
+    ///   - terminalBridge: Bridge for terminal text delivery.
     ///   - registry: Actor managing registered Claude Code sessions.
     ///   - feedback: Non-verbal audio tone player.
-    public init(itermBridge: ITermBridge, registry: SessionRegistry, feedback: any AudioFeedbackProviding) {
-        self.itermBridge = itermBridge
+    public init(
+        terminalBridge: any TerminalBridge,
+        registry: SessionRegistry,
+        feedback: any AudioFeedbackProviding
+    ) {
+        self.terminalBridge = terminalBridge
         self.registry = registry
         self.feedback = feedback
     }
@@ -66,7 +70,7 @@ public struct DeliveryCoordinator {
         let tty = sessionState.tty
 
         do {
-            let success = try await itermBridge.writeToSession(tty: tty, text: message)
+            let success = try await terminalBridge.writeToSession(tty: tty, text: message)
             guard success else {
                 Self.logger.error("writeToSession returned false for \(session)")
                 return .writeFailed(session: session)
@@ -99,7 +103,7 @@ public struct DeliveryCoordinator {
             return false
         }
         do {
-            _ = try await itermBridge.writeToSession(tty: sessionState.tty, text: message)
+            _ = try await terminalBridge.writeToSession(tty: sessionState.tty, text: message)
             Self.logger.info("Direct delivery to \(session) succeeded")
             return true
         } catch {

@@ -55,6 +55,8 @@ public struct SessionState: Sendable {
     public let voice: AVSpeechSynthesisVoice
     /// The pitch multiplier for auditory differentiation.
     public let pitchMultiplier: Float
+    /// The Claude Code session identifier, set via hook integration.
+    public var sessionId: String?
 
     /// Creates a new session state.
     public init(
@@ -66,7 +68,8 @@ public struct SessionState: Sendable {
         status: SessionStatus,
         lastActivity: Date,
         voice: AVSpeechSynthesisVoice,
-        pitchMultiplier: Float
+        pitchMultiplier: Float,
+        sessionId: String? = nil
     ) {
         self.name = name
         self.tty = tty
@@ -77,6 +80,7 @@ public struct SessionState: Sendable {
         self.lastActivity = lastActivity
         self.voice = voice
         self.pitchMultiplier = pitchMultiplier
+        self.sessionId = sessionId
     }
 }
 
@@ -101,6 +105,8 @@ public struct SessionSnapshot: Codable, Sendable {
     public let lastActivity: Date
     /// The pitch multiplier for auditory differentiation.
     public let pitchMultiplier: Float
+    /// The Claude Code session identifier, if set via hook integration.
+    public let sessionId: String?
 }
 
 /// Full registry state returned by GET /state endpoint.
@@ -126,13 +132,13 @@ public struct RegistrySnapshot: Codable, Sendable {
 /// Thread-safe registry of active Claude Code sessions.
 ///
 /// Manages session lifecycle: registration, context updates, voice assignment,
-/// iTerm discovery polling for stale removal, and state queries for the HTTP API.
+/// and state queries for the HTTP API. Terminal-agnostic -- discovery polling
+/// is handled by `SessionDiscoveryService`.
 ///
 /// Concurrency: Swift actor ensures all state mutations are serialized without
 /// manual locks, per technical-spec.md Key Design Decision #10.
 ///
-/// Reference: technical-spec.md Component 5, "Session Discovery Reconciliation";
-/// design.md Section 3.1.10
+/// Reference: technical-spec.md Component 5; design.md Section 3.1.10
 public actor SessionRegistry {
     // MARK: - Type Properties
 
@@ -143,17 +149,8 @@ public actor SessionRegistry {
     /// Registered sessions keyed by TTY path (globally unique, stable identifier).
     private var sessions: [String: SessionState] = [:]
 
-    /// The iTerm bridge used for discovery polling to detect closed sessions.
-    private let itermBridge: ITermBridge
-
     /// Voice manager for assigning distinct voices to each agent.
     private let voiceManager: VoiceManager
-
-    /// Callback invoked when a session is removed.
-    public var onSessionRemoved: (@Sendable (String) -> Void)?
-
-    /// Handle to the discovery polling task for cancellation on deinit.
-    private var discoveryTask: Task<Void, Never>?
 
     /// Get the count of registered sessions.
     public var sessionCount: Int {
@@ -162,26 +159,10 @@ public actor SessionRegistry {
 
     // MARK: - Initialization
 
-    /// - Parameters:
-    ///   - itermBridge: Bridge to iTerm2 for session discovery via JXA.
-    ///   - voiceManager: Manager for assigning per-agent voices with pitch variation.
-    public init(itermBridge: ITermBridge, voiceManager: VoiceManager) {
-        self.itermBridge = itermBridge
+    /// - Parameter voiceManager: Manager for assigning per-agent voices with pitch variation.
+    public init(voiceManager: VoiceManager) {
         self.voiceManager = voiceManager
         Self.logger.info("SessionRegistry initialized")
-    }
-
-    // MARK: - Deinitialization
-
-    deinit {  // swiftlint:disable:this type_contents_order
-        discoveryTask?.cancel()
-    }
-
-    // MARK: - Callback Configuration
-
-    /// Set the callback invoked when a session is removed.
-    public func setSessionRemovedCallback(_ callback: @escaping @Sendable (String) -> Void) {
-        onSessionRemoved = callback
     }
 
     // MARK: - Registration
@@ -304,7 +285,8 @@ public actor SessionRegistry {
                 recentMessages: state.recentMessages,
                 status: state.status,
                 lastActivity: state.lastActivity,
-                pitchMultiplier: state.pitchMultiplier
+                pitchMultiplier: state.pitchMultiplier,
+                sessionId: state.sessionId
             )
         }
         return RegistrySnapshot(sessions: snapshots, sessionCount: snapshots.count)
@@ -329,61 +311,5 @@ public actor SessionRegistry {
     /// - Returns: The SessionState if found.
     public func session(byTTY tty: String) -> SessionState? {
         sessions[tty]
-    }
-
-    // MARK: - Discovery Polling
-
-    /// Start periodic discovery polling to reconcile registered sessions
-    /// against live iTerm2 sessions.
-    ///
-    /// - Parameter interval: Polling interval in seconds. Defaults to 10.
-    public func startDiscoveryPolling(interval: TimeInterval = 10) {
-        discoveryTask?.cancel()
-
-        Self.logger.info("Starting discovery polling every \(interval) seconds")
-
-        discoveryTask = Task { [weak itermBridge] in
-            guard let bridge = itermBridge else {
-                return
-            }
-
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-
-                guard !Task.isCancelled else {
-                    break
-                }
-
-                await self.reconcileSessions(using: bridge)
-            }
-        }
-    }
-
-    /// Stop discovery polling.
-    public func stopDiscoveryPolling() {
-        discoveryTask?.cancel()
-        discoveryTask = nil
-        Self.logger.info("Stopped discovery polling")
-    }
-
-    /// Reconcile registered sessions against live iTerm sessions.
-    private func reconcileSessions(using bridge: ITermBridge) async {
-        let liveSessions: [ITermSession]
-        do {
-            liveSessions = try await bridge.discoverSessions()
-        } catch {
-            Self.logger.warning("Discovery polling failed: \(error) -- skipping reconciliation")
-            return
-        }
-
-        let liveTTYs = Set(liveSessions.map { $0.tty })
-        let registeredTTYs = Array(sessions.keys)
-
-        for tty in registeredTTYs where !liveTTYs.contains(tty) {
-            if let removedName = deregister(tty: tty) {
-                Self.logger.info("Stale session removed: '\(removedName)' (TTY \(tty) no longer in iTerm)")
-                onSessionRemoved?(removedName)
-            }
-        }
     }
 }

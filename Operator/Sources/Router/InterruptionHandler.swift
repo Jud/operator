@@ -23,7 +23,7 @@ public enum InterruptionAction: Sendable {
 /// when push-to-talk interrupts playback.
 ///
 /// This context is passed to the InterruptionHandler so it can build an accurate
-/// prompt for claude -p when fast-path matching fails.
+/// prompt when fast-path matching fails.
 public struct InterruptionContext: Sendable {
     /// Name of the agent whose speech was interrupted (e.g., "sudo").
     let agentName: String
@@ -45,17 +45,17 @@ public struct InterruptionContext: Sendable {
 ///
 /// When the user presses push-to-talk while an agent's response is being spoken,
 /// this handler determines what should happen next using a fast-path keyword check
-/// followed by a claude -p fallback for genuinely ambiguous cases.
+/// followed by a RoutingEngine fallback for genuinely ambiguous cases.
 ///
 /// Priority chain:
-/// 1. Fast-path skip keywords ("skip", "move on", "next") -- no claude -p needed
-/// 2. Fast-path replay keywords ("replay", "say that again", "what?") -- no claude -p needed
+/// 1. Fast-path skip keywords ("skip", "move on", "next") -- no LLM call needed
+/// 2. Fast-path replay keywords ("replay", "say that again", "what?") -- no LLM call needed
 /// 3. Explicit agent target in user utterance -- skip interrupted, route new message
-/// 4. Fallback to claude -p with full interruption context
+/// 4. Fallback to RoutingEngine with full interruption context
 ///
 /// Reference: technical-spec.md Component 3, "Interruption Handler";
 /// design.md Section 3.1.7
-public enum InterruptionHandler {
+public struct InterruptionHandler: Sendable {
     private static let logger = Log.logger(for: "InterruptionHandler")
 
     /// Keywords that indicate the user wants to skip the interrupted message.
@@ -77,6 +77,16 @@ public enum InterruptionHandler {
         "what"
     ]
 
+    /// The routing engine used for LLM-based fallback classification.
+    private let engine: any RoutingEngine
+
+    /// Create an InterruptionHandler with the given routing engine.
+    ///
+    /// - Parameter engine: The engine used when fast-path matching fails.
+    public init(engine: any RoutingEngine) {
+        self.engine = engine
+    }
+
     /// Determine what action to take when the user interrupts agent speech.
     ///
     /// - Parameters:
@@ -84,7 +94,7 @@ public enum InterruptionHandler {
     ///   - context: Information about the interrupted speech (agent, heard/unheard text).
     ///   - registeredSessionNames: Names of all currently registered sessions.
     /// - Returns: The determined action (skip, replay, route, or ask).
-    public static func handle(
+    public func handle(
         userUtterance: String,
         context: InterruptionContext,
         registeredSessionNames: [String]
@@ -92,92 +102,57 @@ public enum InterruptionHandler {
         let trimmed = userUtterance.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowered = trimmed.lowercased()
 
-        if skipKeywords.contains(lowered) {
-            logger.info("Fast-path skip: user said '\(trimmed)'")
+        if Self.skipKeywords.contains(lowered) {
+            Self.logger.info("Fast-path skip: user said '\(trimmed)'")
             return .skip
         }
 
-        if replayKeywords.contains(lowered) {
-            logger.info("Fast-path replay: user said '\(trimmed)'")
+        if Self.replayKeywords.contains(lowered) {
+            Self.logger.info("Fast-path replay: user said '\(trimmed)'")
             return .replay
         }
 
-        if let (target, routeAction) = matchAgentTarget(
+        if let match = Self.matchAgentTarget(
             utterance: trimmed,
             registeredSessionNames: registeredSessionNames
         ) {
-            logger.info("Agent target detected in interruption, routing to \(target)")
-            return routeAction
+            Self.logger.info(
+                "Agent target detected in interruption, routing to \(match.target)"
+            )
+            return match.action
         }
 
-        logger.info("No fast-path match; falling back to claude -p for interruption handling")
-        return await claudePipeFallback(userUtterance: trimmed, context: context)
+        Self.logger.info(
+            "No fast-path match; falling back to routing engine"
+        )
+        return await engineFallback(userUtterance: trimmed, context: context)
     }
+}
 
+// MARK: - Private Helpers
+
+extension InterruptionHandler {
     /// Check if the user's utterance contains an explicit agent target pattern
     /// referencing a registered session name.
-    ///
-    /// - Parameters:
-    ///   - utterance: The user's trimmed utterance.
-    ///   - registeredSessionNames: Names of registered sessions.
-    /// - Returns: A tuple of (target name, `.route` action) if found, nil otherwise.
     private static func matchAgentTarget(
         utterance: String,
         registeredSessionNames: [String]
     ) -> (target: String, action: InterruptionAction)? {
-        guard let result = AgentNameMatcher.match(in: utterance, sessionNames: registeredSessionNames) else {
+        guard
+            let result = AgentNameMatcher.match(
+                in: utterance,
+                sessionNames: registeredSessionNames
+            )
+        else {
             return nil
         }
-        return (target: result.session, action: .route(target: result.session, message: result.message))
+        return (
+            target: result.session,
+            action: .route(target: result.session, message: result.message)
+        )
     }
 
-    /// Fall back to claude -p for genuinely ambiguous interruptions.
-    private static func claudePipeFallback(
-        userUtterance: String,
-        context: InterruptionContext
-    ) async -> InterruptionAction {
-        let prompt = buildInterruptionPrompt(userUtterance: userUtterance, context: context)
-
-        do {
-            let json = try await ClaudePipe.run(prompt: prompt)
-
-            guard let action = json["action"] as? String else {
-                logger.warning("claude -p response missing 'action' field")
-                return .ask(question: "Did you want to hear the rest of \(context.agentName)'s message?")
-            }
-
-            switch action {
-            case "skip":
-                let reason = json["reason"] as? String ?? "no reason given"
-                logger.info("claude -p decided: skip (\(reason))")
-                return .skip
-
-            case "replay":
-                let reason = json["reason"] as? String ?? "no reason given"
-                logger.info("claude -p decided: replay (\(reason))")
-                return .replay
-
-            case "ask":
-                let question =
-                    json["question"] as? String
-                    ?? "Did you want to hear the rest of \(context.agentName)'s message?"
-                logger.info("claude -p decided: ask (\(question))")
-                return .ask(question: question)
-
-            default:
-                logger.warning("claude -p returned unknown action: \(action)")
-                return .ask(question: "Did you want to hear the rest of \(context.agentName)'s message?")
-            }
-        } catch let error as ClaudePipeError {
-            logger.error("claude -p failed for interruption handling: \(error.description)")
-            return .ask(question: "Did you want to hear the rest of \(context.agentName)'s message?")
-        } catch {
-            logger.error("Unexpected error in interruption handling: \(error)")
-            return .ask(question: "Did you want to hear the rest of \(context.agentName)'s message?")
-        }
-    }
-
-    /// Build the claude -p prompt for interruption handling.
+    /// Build the prompt for interruption handling.
     private static func buildInterruptionPrompt(
         userUtterance: String,
         context: InterruptionContext
@@ -189,9 +164,71 @@ public enum InterruptionHandler {
         User then said: "\(userUtterance)"
 
         What should happen? Reply ONLY as JSON:
-        {"action": "skip", "reason": "User heard the key content and explicitly objected"}
-        OR {"action": "replay", "reason": "User barely heard anything"}
-        OR {"action": "ask", "question": "Did you want to hear the rest of \(context.agentName)'s message?"}
+        {"action": "skip", "reason": "..."}
+        OR {"action": "replay", "reason": "..."}
+        OR {"action": "ask", "question": "..."}
         """
+    }
+
+    /// Parse a routing engine JSON response into an InterruptionAction.
+    private static func parseEngineResponse(
+        _ json: [String: Any],
+        agentName: String
+    ) -> InterruptionAction {
+        let fallback = "Did you want to hear the rest of \(agentName)'s message?"
+
+        guard let action = json["action"] as? String else {
+            logger.warning("Routing engine response missing 'action' field")
+            return .ask(question: fallback)
+        }
+
+        switch action {
+        case "skip":
+            let reason = json["reason"] as? String ?? "no reason given"
+            logger.info("Routing engine decided: skip (\(reason))")
+            return .skip
+
+        case "replay":
+            let reason = json["reason"] as? String ?? "no reason given"
+            logger.info("Routing engine decided: replay (\(reason))")
+            return .replay
+
+        case "ask":
+            let question = json["question"] as? String ?? fallback
+            logger.info("Routing engine decided: ask (\(question))")
+            return .ask(question: question)
+
+        default:
+            logger.warning("Routing engine returned unknown action: \(action)")
+            return .ask(question: fallback)
+        }
+    }
+
+    /// Fall back to the routing engine for genuinely ambiguous interruptions.
+    private func engineFallback(
+        userUtterance: String,
+        context: InterruptionContext
+    ) async -> InterruptionAction {
+        let prompt = Self.buildInterruptionPrompt(
+            userUtterance: userUtterance,
+            context: context
+        )
+        let fallback =
+            "Did you want to hear the rest of \(context.agentName)'s message?"
+
+        do {
+            let json = try await engine.run(prompt: prompt)
+            return Self.parseEngineResponse(json, agentName: context.agentName)
+        } catch let error as ClaudePipeError {
+            Self.logger.error(
+                "Routing engine failed: \(error.description)"
+            )
+            return .ask(question: fallback)
+        } catch {
+            Self.logger.error(
+                "Unexpected error in interruption handling: \(error)"
+            )
+            return .ask(question: fallback)
+        }
     }
 }

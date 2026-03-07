@@ -40,43 +40,6 @@ public enum ITermBridgeError: Error, CustomStringConvertible {
     }
 }
 
-/// Represents a discovered iTerm2 session with its identifying properties.
-///
-/// Sessions are discovered via JXA enumeration of all windows, tabs, and panes.
-/// The TTY path is the primary stable identifier -- it remains constant across
-/// tab switches and pane moves (per research doc "Key Insight").
-public struct ITermSession: Codable, Sendable {
-    /// The unique session identifier from iTerm2.
-    public let id: String
-    /// The TTY device path for this session.
-    public let tty: String
-    /// The display name of the session.
-    public let name: String
-    /// Whether the session is currently processing a command.
-    public let isProcessing: Bool
-    /// The current working directory of the session, if available.
-    public let workingDirectory: String?
-    /// The name of the running job in the session, if available.
-    public let jobName: String?
-
-    /// Creates a new iTerm session representation.
-    public init(
-        id: String,
-        tty: String,
-        name: String,
-        isProcessing: Bool,
-        workingDirectory: String?,
-        jobName: String?
-    ) {
-        self.id = id
-        self.tty = tty
-        self.name = name
-        self.isProcessing = isProcessing
-        self.workingDirectory = workingDirectory
-        self.jobName = jobName
-    }
-}
-
 /// Bridge to iTerm2 via JXA (JavaScript for Automation) for session discovery
 /// and text delivery to Claude Code TUI sessions.
 ///
@@ -95,7 +58,7 @@ public struct ITermSession: Codable, Sendable {
 /// Both operations invoke `/usr/bin/osascript -l JavaScript` via the `runOsascript()` helper.
 ///
 /// Reference: technical-spec.md Component 5; research doc "What Worked: The Proven Recipe"
-public class ITermBridge: @unchecked Sendable {
+public class ITermBridge: @unchecked Sendable, TerminalBridge {
     private static let logger = Log.logger(for: "ITermBridge")
 
     /// Creates a new iTerm bridge instance.
@@ -174,9 +137,9 @@ public class ITermBridge: @unchecked Sendable {
 
     /// Discover all iTerm2 sessions across all windows and tabs.
     ///
-    /// - Returns: Array of `ITermSession` structs representing all discovered sessions.
+    /// - Returns: Array of `DiscoveredSession` structs representing all discovered sessions.
     /// - Throws: `ITermBridgeError` on JXA failure or JSON decode failure.
-    public func discoverSessions() async throws -> [ITermSession] {
+    public func discoverSessions() async throws -> [DiscoveredSession] {
         Self.logger.debug("Discovering iTerm sessions")
 
         let script = """
@@ -215,7 +178,7 @@ public class ITermBridge: @unchecked Sendable {
         }
 
         do {
-            let sessions = try JSONDecoder().decode([ITermSession].self, from: data)
+            let sessions = try JSONDecoder().decode([DiscoveredSession].self, from: data)
             Self.logger.info("Discovered \(sessions.count) iTerm session(s)")
             return sessions
         } catch {

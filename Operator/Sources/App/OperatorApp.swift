@@ -33,6 +33,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var speechManager: SpeechManager?
     private var audioQueue: AudioQueue?
     private var registry: SessionRegistry?
+    private var discoveryService: SessionDiscoveryService?
 
     /// Called when the application finishes launching to bootstrap all components.
     nonisolated public func applicationDidFinishLaunching(_ notification: Notification) {
@@ -60,9 +61,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         await aq.startListening()
 
         let transcriber = SpeechTranscriber()
-        let itermBridge = ITermBridge()
+        let itermBridge: any TerminalBridge = ITermBridge()
 
-        let reg = SessionRegistry(itermBridge: itermBridge, voiceManager: vm)
+        let reg = SessionRegistry(voiceManager: vm)
         registry = reg
 
         let router = MessageRouter(registry: reg)
@@ -77,7 +78,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             audioQueue: aq,
             router: router,
             feedback: fb,
-            itermBridge: itermBridge,
+            terminalBridge: itermBridge,
             registry: reg,
             voiceManager: vm,
             waveformPanel: wp,
@@ -85,7 +86,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         bootstrapTrigger()
-        await bootstrapDiscovery(reg: reg, aq: aq, vm: vm)
+        bootstrapDiscovery(terminalBridge: itermBridge, reg: reg, aq: aq, vm: vm)
 
         registerLoginItem()
 
@@ -137,13 +138,15 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func bootstrapDiscovery(
+        terminalBridge: any TerminalBridge,
         reg: SessionRegistry,
         aq: AudioQueue,
         vm: VoiceManager
-    ) async {
-        await reg.startDiscoveryPolling(interval: 10)
-
-        await reg.setSessionRemovedCallback { name in
+    ) {
+        let service = SessionDiscoveryService(
+            terminalBridge: terminalBridge,
+            registry: reg
+        ) { name in
             Task {
                 await aq.enqueue(
                     AudioQueue.QueuedMessage(
@@ -155,6 +158,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 )
             }
         }
+        discoveryService = service
+        service.startPolling(interval: 10)
     }
 
     private func setupAuthToken() {

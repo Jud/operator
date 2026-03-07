@@ -10,9 +10,8 @@ internal struct MessageRouterTests {
 
     @Test("operator status detected as operator command")
     func operatorStatusDetected() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
 
@@ -25,9 +24,8 @@ internal struct MessageRouterTests {
 
     @Test("list agents detected as operator command")
     func listAgentsDetected() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
 
@@ -40,9 +38,8 @@ internal struct MessageRouterTests {
 
     @Test("who's running detected as operator command")
     func whosRunningDetected() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
 
@@ -55,9 +52,8 @@ internal struct MessageRouterTests {
 
     @Test("what did i miss detected as operator command")
     func whatDidIMissDetected() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
 
@@ -70,9 +66,8 @@ internal struct MessageRouterTests {
 
     @Test("operator help detected as operator command")
     func operatorHelpDetected() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
 
@@ -85,9 +80,8 @@ internal struct MessageRouterTests {
 
     @Test("operator command checked before single-session bypass")
     func operatorCommandBeforeSingleSession() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
@@ -101,9 +95,8 @@ internal struct MessageRouterTests {
 
     @Test("what's everyone working on detected as operator command")
     func whatsEveryoneWorkingOnDetected() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
 
@@ -121,9 +114,8 @@ internal struct MessageRouterTests {
 internal struct MessageRouterKeywordTests {
     @Test("tell <agent> extracts agent name and message")
     func tellAgentExtracts() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
@@ -139,9 +131,8 @@ internal struct MessageRouterKeywordTests {
 
     @Test("hey <agent> extracts agent name and message")
     func heyAgentExtracts() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
@@ -157,9 +148,8 @@ internal struct MessageRouterKeywordTests {
 
     @Test("@agent extracts agent name and message")
     func atAgentExtracts() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
@@ -175,9 +165,8 @@ internal struct MessageRouterKeywordTests {
 
     @Test("keyword extraction is case-insensitive")
     func keywordCaseInsensitive() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "Sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
@@ -192,9 +181,8 @@ internal struct MessageRouterKeywordTests {
 
     @Test("keyword extraction ignores unregistered agents")
     func keywordIgnoresUnregistered() async {
-        let bridge = ITermBridge()
         let voiceManager = VoiceManager()
-        let registry = SessionRegistry(itermBridge: bridge, voiceManager: voiceManager)
+        let registry = SessionRegistry(voiceManager: voiceManager)
         await registry.register(name: "frontend", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
         let router = MessageRouter(registry: registry)
         let state = RoutingState()
