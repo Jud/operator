@@ -88,15 +88,23 @@ public enum ClarificationResult: Sendable {
 ///
 /// Reference: technical-spec.md Component 3; design.md Section 3.1.6;
 /// requirements.md FR-03, FR-09, FR-13
-public class MessageRouter: @unchecked Sendable {
+public final class MessageRouter: Sendable {
     static let logger = Log.logger(for: "MessageRouter")
 
     /// The session registry providing current session state for routing decisions.
     let registry: SessionRegistry
 
-    /// Creates a new message router with the given session registry.
-    public init(registry: SessionRegistry) {
+    /// The routing engine used for claude -p smart routing and clarification fallback.
+    let engine: any RoutingEngine
+
+    /// Creates a new message router with the given session registry and routing engine.
+    ///
+    /// - Parameters:
+    ///   - registry: The session registry providing current session state.
+    ///   - engine: The routing engine for claude -p invocations. Defaults to `ClaudePipeRoutingEngine`.
+    public init(registry: SessionRegistry, engine: any RoutingEngine = ClaudePipeRoutingEngine()) {
         self.registry = registry
+        self.engine = engine
     }
 }
 
@@ -244,7 +252,7 @@ extension MessageRouter {
         let sessionNames = sessions.map { $0.name }
 
         do {
-            let json = try await ClaudePipe.run(prompt: prompt)
+            let json = try await engine.run(prompt: prompt)
 
             let confident = json["confident"] as? Bool ?? false
             let sessionName = json["session"] as? String

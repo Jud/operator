@@ -1,5 +1,4 @@
 import Foundation
-import OSLog
 
 // MARK: - Clarification Response Handling
 
@@ -128,7 +127,7 @@ extension MessageRouter {
         let prompt = promptLines.joined(separator: "\n")
 
         do {
-            let json = try await ClaudePipe.run(prompt: prompt)
+            let json = try await engine.run(prompt: prompt)
 
             if let sessionName = json["session"] as? String,
                 allSessionNames.contains(where: { $0.lowercased() == sessionName.lowercased() })
