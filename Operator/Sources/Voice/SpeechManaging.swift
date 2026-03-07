@@ -7,9 +7,9 @@ import AVFoundation
 /// the main actor since AVSpeechSynthesizer operates on the main thread.
 @MainActor
 public protocol SpeechManaging: AnyObject, Sendable {
-    var synthesizer: AVSpeechSynthesizer { get }
     var isSpeaking: Bool { get }
-    var onFinishedSpeaking: (() -> Void)? { get set }
+    /// An asynchronous stream that yields a value each time an utterance finishes playing.
+    var finishedSpeaking: AsyncStream<Void> { get }
 
     func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String, pitchMultiplier: Float)
     func interrupt() -> InterruptInfo

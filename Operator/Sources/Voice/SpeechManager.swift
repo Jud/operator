@@ -15,7 +15,7 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     private static let logger = Log.logger(for: "SpeechManager")
 
     /// The underlying speech synthesizer instance.
-    public let synthesizer = AVSpeechSynthesizer()
+    private let synthesizer = AVSpeechSynthesizer()
 
     /// Whether the synthesizer is currently speaking.
     public var isSpeaking: Bool { synthesizer.isSpeaking }
@@ -31,12 +31,18 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     /// The session name (prefix) associated with the currently playing utterance.
     private var currentSession: String = ""
 
-    /// Called when an utterance finishes playing (not interrupted).
+    /// Stream that yields each time an utterance finishes playing (not interrupted).
     ///
-    /// AudioQueue uses this to trigger playback of the next queued message.
-    public var onFinishedSpeaking: (() -> Void)?
+    /// AudioQueue consumes this to trigger playback of the next queued message.
+    public let finishedSpeaking: AsyncStream<Void>
+
+    /// Continuation backing `finishedSpeaking`.
+    private let finishedContinuation: AsyncStream<Void>.Continuation
 
     override public init() {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        self.finishedSpeaking = stream
+        self.finishedContinuation = continuation
         super.init()
         synthesizer.delegate = self
     }
@@ -116,7 +122,7 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
             self.currentText = ""
             self.lastSpokenCharIndex = 0
             self.currentSession = ""
-            self.onFinishedSpeaking?()
+            self.finishedContinuation.yield()
         }
     }
 

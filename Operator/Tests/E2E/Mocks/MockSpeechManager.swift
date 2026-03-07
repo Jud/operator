@@ -4,26 +4,35 @@ import OperatorCore
 /// Mock speech manager that records spoken messages instead of producing audio.
 ///
 /// Conforms to SpeechManaging so it can be injected into StateMachine and AudioQueue.
-/// Uses a real AVSpeechSynthesizer instance (never called to speak) so that
-/// synthesizer.isSpeaking always returns false, preventing interruption logic
-/// from firing during tests.
+/// isSpeaking always returns false, preventing interruption logic from firing
+/// during tests.
 ///
 /// spokenMessages collects every speak() call for test verification.
 @MainActor
 internal final class MockSpeechManager: SpeechManaging {
-    let synthesizer = AVSpeechSynthesizer()
-    var isSpeaking: Bool { false }
-    var onFinishedSpeaking: (() -> Void)?
+    let isSpeaking = false
+
+    /// Stream that yields each time speak() is called, signalling completion.
+    let finishedSpeaking: AsyncStream<Void>
+
+    /// Continuation backing `finishedSpeaking`.
+    private let finishedContinuation: AsyncStream<Void>.Continuation
 
     /// All messages passed to speak(), in order.
     ///
     /// Each entry records the text and prefix.
     var spokenMessages: [(text: String, prefix: String)] = []
 
+    init() {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        self.finishedSpeaking = stream
+        self.finishedContinuation = continuation
+    }
+
     func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String, pitchMultiplier: Float) {
         spokenMessages.append((text: text, prefix: prefix))
         // Immediately signal finished so AudioQueue advances without delay
-        onFinishedSpeaking?()
+        finishedContinuation.yield()
     }
 
     func interrupt() -> InterruptInfo {
