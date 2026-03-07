@@ -11,13 +11,64 @@ public struct OperatorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self)
     var appDelegate
 
-    /// The app scene containing an empty settings view.
+    /// The app scenes: menu bar extra and settings window.
     public var body: some Scene {
-        Settings { EmptyView() }
+        MenuBarExtra("Operator", systemImage: MenuBarModel.shared.menuBarIcon) {
+            MenuBarContentView(model: MenuBarModel.shared)
+        }
+        .menuBarExtraStyle(.menu)
+
+        Settings {
+            SettingsView()
+        }
     }
 
     /// Creates a new OperatorApp instance.
     public init() {}
+}
+
+/// Menu bar dropdown content showing state, sessions, and actions.
+public struct MenuBarContentView: View {
+    /// The model driving menu bar state.
+    var model: MenuBarModel
+
+    /// The view body rendering menu bar dropdown items.
+    public var body: some View {
+        Text("Operator: \(model.currentState)")
+
+        Divider()
+
+        sessionSection
+
+        Divider()
+
+        SettingsLink {
+            Text("Settings...")
+        }
+
+        Button("Quit Operator") {
+            NSApplication.shared.terminate(nil)
+        }
+        .keyboardShortcut("q")
+    }
+
+    @ViewBuilder private var sessionSection: some View {
+        if model.sessions.isEmpty {
+            Text("No sessions connected")
+                .foregroundStyle(.secondary)
+        } else {
+            Section("Sessions (\(model.sessions.count))") {
+                ForEach(model.sessions, id: \.name) { session in
+                    Text("\(session.name) - \(session.cwd)")
+                }
+            }
+        }
+    }
+
+    /// Creates a new menu bar content view.
+    public init(model: MenuBarModel) {
+        self.model = model
+    }
 }
 
 /// Application delegate that bootstraps all Operator daemon components.
@@ -73,6 +124,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let wp = WaveformPanel()
         waveformPanel = wp
 
+        let mbm = MenuBarModel.shared
+        mbm.attach(registry: reg)
+
         stateMachine = StateMachine(
             transcriber: transcriber,
             audioQueue: aq,
@@ -82,7 +136,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             registry: reg,
             voiceManager: vm,
             waveformPanel: wp,
-            speechManager: sm
+            speechManager: sm,
+            menuBarModel: mbm
         )
 
         bootstrapTrigger()
@@ -133,6 +188,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
         fnTrigger.onStop = { [weak self] in
             self?.stateMachine?.triggerStop()
+        }
+        fnTrigger.onCancel = { [weak self] in
+            self?.stateMachine?.triggerCancel()
         }
         fnTrigger.setupEventTap()
     }

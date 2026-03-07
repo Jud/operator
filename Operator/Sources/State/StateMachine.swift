@@ -95,6 +95,7 @@ public final class StateMachine {
     private let commandHandler: OperatorCommandHandler
     private let interruptionHandler: InterruptionHandler
     private let deliveryCoordinator: DeliveryCoordinator
+    private let menuBarModel: MenuBarModel?
 
     // MARK: - Initialization
 
@@ -108,6 +109,7 @@ public final class StateMachine {
     ///   - voiceManager: Voice selection for operator and agent speech.
     ///   - waveformPanel: Floating UI panel (nil in headless/test mode).
     ///   - speechManager: AVSpeechSynthesizer wrapper for direct speech control.
+    ///   - menuBarModel: Optional model for updating menu bar state display.
     public init(
         transcriber: any SpeechTranscribing,
         audioQueue: AudioQueue,
@@ -117,7 +119,8 @@ public final class StateMachine {
         registry: SessionRegistry,
         voiceManager: VoiceManager,
         waveformPanel: WaveformPanel?,
-        speechManager: any SpeechManaging
+        speechManager: any SpeechManaging,
+        menuBarModel: MenuBarModel? = nil
     ) {
         self.transcriber = transcriber
         self.audioQueue = audioQueue
@@ -128,6 +131,7 @@ public final class StateMachine {
         self.voiceManager = voiceManager
         self.waveformPanel = waveformPanel
         self.speechManager = speechManager
+        self.menuBarModel = menuBarModel
         self.interruptionHandler = InterruptionHandler(engine: router.engine)
         self.commandHandler = OperatorCommandHandler(
             registry: registry,
@@ -192,6 +196,25 @@ public final class StateMachine {
             transition(to: .error)
             scheduleErrorRecovery()
         }
+    }
+
+    /// Called when the user presses Escape to cancel the current recording.
+    ///
+    /// Only acts if in LISTENING or TRANSCRIBING state. Cancels in-flight work,
+    /// plays cancel feedback, and returns to IDLE without processing.
+    public func triggerCancel() {
+        guard currentState == .listening || currentState == .transcribing else {
+            Self.logger.warning(
+                "Trigger CANCEL ignored: not in LISTENING or TRANSCRIBING state (current: \(self.currentState))"
+            )
+            return
+        }
+
+        Self.logger.info("Trigger CANCEL from state: \(self.currentState)")
+
+        cancelInFlightWork()
+        feedback.play(.error)
+        enterIdle()
     }
 
     /// Called when push-to-talk key is released (FN up).
@@ -568,6 +591,7 @@ extension StateMachine {
     private func transition(to newState: OperatorState) {
         let oldState = currentState
         currentState = newState
+        menuBarModel?.update(state: newState.rawValue)
         Self.logger.info("State transition: \(oldState) -> \(newState)")
     }
 
