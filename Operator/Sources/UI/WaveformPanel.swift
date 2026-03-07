@@ -92,7 +92,7 @@ public struct WaveformView: View {
 /// - .floating level so it appears above all normal windows
 /// - .canJoinAllSpaces + .fullScreenAuxiliary for visibility across Spaces and fullscreen
 /// - Transparent background (isOpaque = false, backgroundColor = .clear)
-/// - Positioned at bottom-center of screen, 80pt above bottom (above dock)
+/// - Positioned at top-center of screen, 50pt below top (below menu bar)
 /// - Does not steal focus or activate when shown
 ///
 /// The panel appears when push-to-talk starts and fades out approximately
@@ -130,7 +130,7 @@ public final class WaveformPanel: NSPanel {
         let hostingView = NSHostingView(rootView: WaveformView(model: waveformModel))
         self.contentView = hostingView
 
-        positionAtBottomCenter()
+        positionAtTopCenter()
 
         Self.logger.debug("WaveformPanel initialized")
     }
@@ -142,7 +142,7 @@ public final class WaveformPanel: NSPanel {
         cancelPendingFadeOut()
 
         self.alphaValue = 1.0
-        positionAtBottomCenter()
+        positionAtTopCenter()
         waveformModel.startAnimating()
         orderFront(nil)
 
@@ -192,13 +192,13 @@ public final class WaveformPanel: NSPanel {
         fadeOutTask = nil
     }
 
-    private func positionAtBottomCenter() {
+    private func positionAtTopCenter() {
         guard let screen = NSScreen.main else {
             return
         }
 
         let x = (screen.frame.width - panelWidth) / 2
-        let y: CGFloat = 80
+        let y = screen.frame.height - panelHeight - 50
 
         self.setFrameOrigin(NSPoint(x: x, y: y))
     }
