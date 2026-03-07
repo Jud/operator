@@ -32,17 +32,24 @@ public actor AudioQueue {
 
     /// A message waiting in the queue for sequential playback.
     public struct QueuedMessage: Sendable {
+        /// Priority level for queued messages.
         public enum Priority: Sendable {
             case normal
             case urgent
         }
 
+        /// The session name associated with this message.
         public let sessionName: String
+        /// The text content to speak.
         public let text: String
+        /// The priority level of this message.
         public let priority: Priority
+        /// The voice to use for speech synthesis.
         public let voice: AVSpeechSynthesisVoice
+        /// The pitch multiplier for per-agent differentiation.
         public let pitchMultiplier: Float
 
+        /// Creates a new queued message.
         public init(
             sessionName: String,
             text: String,

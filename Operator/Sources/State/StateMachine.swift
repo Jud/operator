@@ -31,6 +31,7 @@ public enum OperatorState: String, Sendable, CustomStringConvertible {
     /// An error occurred. Will auto-recover to IDLE after 2 seconds.
     case error = "ERROR"
 
+    /// A human-readable description of the state.
     public var description: String { rawValue }
 }
 
@@ -59,24 +60,32 @@ public final class StateMachine {
 
     // MARK: - State
 
-    /// Current operational state. All mutations go through transition(to:).
+    /// Current operational state.
+    ///
+    /// All mutations go through transition(to:).
     public private(set) var currentState: OperatorState = .idle
 
-    /// Routing state owned by the state machine. Passed to MessageRouter for
-    /// routing decisions (affinity, history) and updated after successful routes.
+    /// Routing state owned by the state machine.
+    ///
+    /// Passed to MessageRouter for routing decisions (affinity, history) and
+    /// updated after successful routes.
     public private(set) var routingState = RoutingState()
 
     /// Count of clarification attempts for the current ambiguous message.
+    ///
     /// Incremented on each re-ask. Max 2 attempts before giving up.
     private var clarificationAttempts = 0
 
     /// Handle to the current in-flight async work (transcription, routing, delivery).
+    ///
     /// Cancelled on trigger start ("latest utterance wins") or timeout.
     private var currentTask: Task<Void, Never>?
 
-    /// Handle to the timeout task for the current state. Each state with a timeout
-    /// (TRANSCRIBING, ROUTING, DELIVERING, CLARIFYING) starts a timeout task that
-    /// transitions to ERROR if the work does not complete in time.
+    /// Handle to the timeout task for the current state.
+    ///
+    /// Each state with a timeout (TRANSCRIBING, ROUTING, DELIVERING, CLARIFYING)
+    /// starts a timeout task that transitions to ERROR if the work does not
+    /// complete in time.
     private var timeoutTask: Task<Void, Never>?
 
     // MARK: - Dependencies
@@ -269,13 +278,13 @@ extension StateMachine {
         cancelTimeout()
 
         switch result {
-        case let .operatorCommand(command):
+        case .operatorCommand(let command):
             await handleOperatorCommand(command)
 
-        case let .route(session, message):
+        case .route(let session, let message):
             await deliverMessage(message, to: session)
 
-        case let .clarify(candidates, question, originalText):
+        case .clarify(let candidates, let question, let originalText):
             enterClarifying(candidates: candidates, question: question, originalText: originalText)
 
         case .noSessions:
@@ -326,11 +335,11 @@ extension StateMachine {
             await enqueueReplay(context: context)
             enterIdle()
 
-        case let .route(target, message):
+        case .route(let target, let message):
             Self.logger.info("Interruption: routing new message to \(target)")
             await deliverMessage(message, to: target)
 
-        case let .ask(question):
+        case .ask(let question):
             Self.logger.info("Interruption: asking user: \(question)")
             speakOperator(question)
             enterIdle()
@@ -524,7 +533,7 @@ extension StateMachine {
         clarification: PendingClarification
     ) async {
         switch result {
-        case let .resolved(session):
+        case .resolved(let session):
             Self.logger.info("Clarification resolved: routing to \(session)")
             await deliverMessage(clarification.originalText, to: session)
 
@@ -582,7 +591,7 @@ extension StateMachine {
         case .replay:
             await handleReplayCommand()
 
-        case let .replayAgent(name):
+        case .replayAgent(let name):
             await handleReplayAgentCommand(name: name)
 
         case .whatDidIMiss:
@@ -651,7 +660,8 @@ extension StateMachine {
         let sessions = await registry.allSessions()
         let canonical = sessions.first { $0.name.lowercased() == name.lowercased() }?.name
         if let agentName = canonical,
-            let text = await audioQueue.lastMessage(forAgent: agentName) {
+            let text = await audioQueue.lastMessage(forAgent: agentName)
+        {
             let voice = await registry.voiceFor(session: agentName)
             let pitch = await registry.pitchFor(session: agentName)
             await audioQueue.enqueue(

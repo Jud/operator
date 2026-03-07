@@ -26,6 +26,7 @@ public struct InterruptInfo: Sendable {
     /// The session name whose speech was interrupted.
     public let session: String
 
+    /// Creates a new interrupt info result.
     public init(heardText: String, unheardText: String, session: String) {
         self.heardText = heardText
         self.unheardText = unheardText

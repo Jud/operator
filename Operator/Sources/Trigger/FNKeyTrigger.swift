@@ -16,13 +16,17 @@ import OSLog
 public final class FNKeyTrigger: TriggerSource {
     private static let logger = Logger(subsystem: "com.operator.app", category: "FNKeyTrigger")
 
+    /// Callback invoked when the push-to-talk key is pressed.
     public var onStart: (@Sendable @MainActor () -> Void)?
+    /// Callback invoked when the push-to-talk key is released.
     public var onStop: (@Sendable @MainActor () -> Void)?
 
     /// Tracks whether FN is currently held down to detect edges (press/release).
     private var fnDown = false
 
-    /// Secondary hotkey key code (e.g., CGKeyCode for right Option). Nil disables secondary hotkey.
+    /// Secondary hotkey key code (e.g., CGKeyCode for right Option).
+    ///
+    /// Nil disables secondary hotkey.
     private var secondaryKeyCode: CGKeyCode?
 
     /// Required modifier flags for the secondary hotkey (e.g., [.maskControl, .maskShift]).

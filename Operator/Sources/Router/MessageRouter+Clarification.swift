@@ -131,7 +131,8 @@ extension MessageRouter {
             let json = try await ClaudePipe.run(prompt: prompt)
 
             if let sessionName = json["session"] as? String,
-                allSessionNames.contains(where: { $0.lowercased() == sessionName.lowercased() }) {
+                allSessionNames.contains(where: { $0.lowercased() == sessionName.lowercased() })
+            {
                 let canonical =
                     allSessionNames.first { $0.lowercased() == sessionName.lowercased() }
                     ?? sessionName

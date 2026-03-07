@@ -129,7 +129,7 @@ internal struct MessageRouterKeywordTests {
         let state = RoutingState()
 
         let result = await router.route(text: "tell sudo to fix the build", routingState: state)
-        guard case let .route(session, message) = result else {
+        guard case .route(let session, let message) = result else {
             Issue.record("Expected .route, got \(result)")
             return
         }
@@ -147,7 +147,7 @@ internal struct MessageRouterKeywordTests {
         let state = RoutingState()
 
         let result = await router.route(text: "hey frontend, make it blue", routingState: state)
-        guard case let .route(session, message) = result else {
+        guard case .route(let session, let message) = result else {
             Issue.record("Expected .route, got \(result)")
             return
         }
@@ -165,7 +165,7 @@ internal struct MessageRouterKeywordTests {
         let state = RoutingState()
 
         let result = await router.route(text: "@sudo check the logs", routingState: state)
-        guard case let .route(session, message) = result else {
+        guard case .route(let session, let message) = result else {
             Issue.record("Expected .route, got \(result)")
             return
         }
@@ -183,7 +183,7 @@ internal struct MessageRouterKeywordTests {
         let state = RoutingState()
 
         let result = await router.route(text: "tell SUDO to fix it", routingState: state)
-        guard case let .route(session, _) = result else {
+        guard case .route(let session, _) = result else {
             Issue.record("Expected .route, got \(result)")
             return
         }
@@ -200,7 +200,7 @@ internal struct MessageRouterKeywordTests {
         let state = RoutingState()
 
         let result = await router.route(text: "tell bob to fix the build", routingState: state)
-        guard case let .route(session, message) = result else {
+        guard case .route(let session, let message) = result else {
             Issue.record("Expected .route via single-session bypass, got \(result)")
             return
         }

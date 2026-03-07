@@ -14,7 +14,9 @@ internal final class MockSpeechManager: SpeechManaging {
     let synthesizer = AVSpeechSynthesizer()
     var onFinishedSpeaking: (() -> Void)?
 
-    /// All messages passed to speak(), in order. Each entry records the text and prefix.
+    /// All messages passed to speak(), in order.
+    ///
+    /// Each entry records the text and prefix.
     var spokenMessages: [(text: String, prefix: String)] = []
 
     func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String, pitchMultiplier: Float) {

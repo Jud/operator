@@ -18,7 +18,7 @@ internal struct MessageRouterRoutingTests {
         let state = RoutingState()
 
         let result = await router.route(text: "make the button bigger", routingState: state)
-        guard case let .route(session, message) = result else {
+        guard case .route(let session, let message) = result else {
             Issue.record("Expected .route, got \(result)")
             return
         }
@@ -54,7 +54,7 @@ internal struct MessageRouterRoutingTests {
         state.recordRoute(text: "fix the build", session: "sudo", timestamp: Date())
 
         let result = await router.route(text: "looks good", routingState: state)
-        guard case let .route(session, _) = result else {
+        guard case .route(let session, _) = result else {
             Issue.record("Expected .route via affinity, got \(result)")
             return
         }
@@ -75,7 +75,7 @@ internal struct MessageRouterRoutingTests {
             candidates: ["sudo", "frontend"],
             originalText: "looks good, merge it"
         )
-        guard case let .resolved(session) = result else {
+        guard case .resolved(let session) = result else {
             Issue.record("Expected .resolved, got \(result)")
             return
         }
@@ -191,7 +191,7 @@ internal struct MessageRouterRoutingTests {
             candidates: ["sudo", "frontend"],
             originalText: "test"
         )
-        guard case let .resolved(session) = result else {
+        guard case .resolved(let session) = result else {
             Issue.record("Expected .resolved, got \(result)")
             return
         }
@@ -212,7 +212,7 @@ internal struct MessageRouterRoutingTests {
             candidates: ["sudo", "frontend"],
             originalText: "test"
         )
-        guard case let .resolved(session) = result else {
+        guard case .resolved(let session) = result else {
             Issue.record("Expected .resolved, got \(result)")
             return
         }
@@ -233,7 +233,7 @@ internal struct MessageRouterRoutingTests {
             candidates: ["sudo", "frontend"],
             originalText: "test"
         )
-        guard case let .resolved(session) = result else {
+        guard case .resolved(let session) = result else {
             Issue.record("Expected .resolved, got \(result)")
             return
         }

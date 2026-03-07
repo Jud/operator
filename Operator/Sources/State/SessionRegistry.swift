@@ -9,7 +9,7 @@ import OSLog
 public enum SessionStatus: String, Codable, Sendable {
     case idle
     case thinking
-    case toolCalling = "toolCalling" // swiftlint:disable:this redundant_string_enum_value
+    case toolCalling = "toolCalling"  // swiftlint:disable:this redundant_string_enum_value
 }
 
 /// A single message exchanged in a session, used for routing context.
@@ -18,9 +18,12 @@ public enum SessionStatus: String, Codable, Sendable {
 /// with recent conversation history for routing decisions. Uses a struct
 /// instead of a tuple so it can be Codable for the HTTP /state response.
 public struct SessionMessage: Codable, Sendable {
+    /// The role of the message sender (e.g., "user" or "assistant").
     public let role: String
+    /// The text content of the message.
     public let text: String
 
+    /// Creates a new session message.
     public init(role: String, text: String) {
         self.role = role
         self.text = text
@@ -35,16 +38,26 @@ public struct SessionMessage: Codable, Sendable {
 ///
 /// Reference: technical-spec.md, Session State Model
 public struct SessionState: Sendable {
+    /// The human-readable session name.
     public let name: String
+    /// The TTY device path identifying this session.
     public let tty: String
+    /// The working directory of the session.
     public let cwd: String
+    /// A summary of what the session is working on.
     public var context: String
+    /// Recent conversation messages for routing context.
     public var recentMessages: [SessionMessage]
+    /// The current operational status of the session.
     public var status: SessionStatus
+    /// When the session last had activity.
     public var lastActivity: Date
+    /// The assigned speech synthesis voice.
     public let voice: AVSpeechSynthesisVoice
+    /// The pitch multiplier for auditory differentiation.
     public let pitchMultiplier: Float
 
+    /// Creates a new session state.
     public init(
         name: String,
         tty: String,
@@ -73,13 +86,21 @@ public struct SessionState: Sendable {
 /// Excludes AVSpeechSynthesisVoice (not Codable) and includes only
 /// the fields needed by external consumers querying GET /state.
 public struct SessionSnapshot: Codable, Sendable {
+    /// The human-readable session name.
     public let name: String
+    /// The TTY device path identifying this session.
     public let tty: String
+    /// The working directory of the session.
     public let cwd: String
+    /// A summary of what the session is working on.
     public let context: String
+    /// Recent conversation messages for routing context.
     public let recentMessages: [SessionMessage]
+    /// The current operational status of the session.
     public let status: SessionStatus
+    /// When the session last had activity.
     public let lastActivity: Date
+    /// The pitch multiplier for auditory differentiation.
     public let pitchMultiplier: Float
 }
 
@@ -87,7 +108,9 @@ public struct SessionSnapshot: Codable, Sendable {
 ///
 /// Contains all registered sessions as snapshots.
 public struct RegistrySnapshot: Codable, Sendable {
+    /// All registered sessions as snapshots.
     public let sessions: [SessionSnapshot]
+    /// The number of registered sessions.
     public let sessionCount: Int
 
     /// Serialize to JSON string.
@@ -151,7 +174,7 @@ public actor SessionRegistry {
 
     // MARK: - Deinitialization
 
-    deinit { // swiftlint:disable:this type_contents_order
+    deinit {  // swiftlint:disable:this type_contents_order
         discoveryTask?.cancel()
     }
 

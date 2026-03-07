@@ -10,6 +10,7 @@ internal final class MockSpeechTranscriber: SpeechTranscribing, @unchecked Senda
     private(set) var isListening = false
 
     /// The text to return from the next stopListening() / stopListeningWithTimeout() call.
+    ///
     /// Set this before simulating a trigger stop to script the user's "speech".
     var nextTranscription: String?
 

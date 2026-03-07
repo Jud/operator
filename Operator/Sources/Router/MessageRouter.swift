@@ -95,6 +95,7 @@ public class MessageRouter: @unchecked Sendable {
     /// The session registry providing current session state for routing decisions.
     let registry: SessionRegistry
 
+    /// Creates a new message router with the given session registry.
     public init(registry: SessionRegistry) {
         self.registry = registry
     }
@@ -191,7 +192,8 @@ extension MessageRouter {
         let range = NSRange(lowered.startIndex..., in: lowered)
         if let pattern = Self.whatDidSayPattern,
             let match = pattern.firstMatch(in: lowered, range: range),
-            let nameRange = Range(match.range(at: 1), in: lowered) {
+            let nameRange = Range(match.range(at: 1), in: lowered)
+        {
             let agentName = String(lowered[nameRange])
             if agentName.lowercased() != "i" {
                 return .replayAgent(name: agentName)
@@ -280,7 +282,8 @@ extension MessageRouter {
             let sessionName = json["session"] as? String
 
             if confident, let session = sessionName,
-                sessionNames.contains(where: { $0.lowercased() == session.lowercased() }) {
+                sessionNames.contains(where: { $0.lowercased() == session.lowercased() })
+            {
                 let canonical = sessionNames.first { $0.lowercased() == session.lowercased() } ?? session
                 return .route(session: canonical, message: text)
             }
@@ -360,7 +363,7 @@ extension MessageRouter {
         )
         lines.append(
             "Or if ambiguous: {\"session\": null, \"confident\": false, "
-            + "\"candidates\": [\(sessionNames)], \"question\": \"Was that for X or Y?\"}"
+                + "\"candidates\": [\(sessionNames)], \"question\": \"Was that for X or Y?\"}"
         )
 
         return lines.joined(separator: "\n")

@@ -27,6 +27,7 @@ public class AudioFeedback: @unchecked Sendable {
 
     private var players: [Cue: AVAudioPlayer] = [:]
 
+    /// Creates a new audio feedback player, pre-loading all tone files.
     public init() {
         for cue in Cue.allCases {
             guard let url = Bundle.module.url(forResource: cue.rawValue, withExtension: "caf") else {
@@ -44,7 +45,9 @@ public class AudioFeedback: @unchecked Sendable {
         }
     }
 
-    /// Play an audio feedback tone. Resets playback position to allow rapid re-triggering.
+    /// Play an audio feedback tone.
+    ///
+    /// Resets playback position to allow rapid re-triggering.
     public func play(_ cue: Cue) {
         guard let player = players[cue] else {
             Self.logger.warning("No player available for cue: \(cue.rawValue)")

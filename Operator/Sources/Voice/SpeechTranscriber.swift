@@ -28,6 +28,7 @@ public final class SpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
     /// Whether the audio engine is currently capturing microphone input.
     public private(set) var isListening = false
 
+    /// Creates a new speech transcriber with on-device recognition.
     public init() {
         guard let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")) else {
             fatalError("SFSpeechRecognizer could not be created for en-US locale")

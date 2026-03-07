@@ -18,21 +18,22 @@ public enum ITermBridgeError: Error, CustomStringConvertible {
     /// Failed to decode session discovery JSON output.
     case discoveryDecodeFailed(output: String, underlying: Error)
 
+    /// A human-readable description of the error.
     public var description: String {
         switch self {
-        case let .jxaFailed(status, stderr):
+        case .jxaFailed(let status, let stderr):
             return "osascript exited with status \(status): \(stderr)"
 
         case .itermNotRunning:
             return "iTerm2 is not running"
 
-        case let .sessionNotFound(tty):
+        case .sessionNotFound(let tty):
             return "iTerm session not found for TTY: \(tty)"
 
-        case let .tempFileWriteFailed(underlying):
+        case .tempFileWriteFailed(let underlying):
             return "Failed to write temp file for JXA delivery: \(underlying.localizedDescription)"
 
-        case let .discoveryDecodeFailed(output, underlying):
+        case .discoveryDecodeFailed(let output, let underlying):
             return
                 "Failed to decode session discovery output: "
                 + "\(underlying.localizedDescription) -- raw: \(output.prefix(200))"
@@ -46,13 +47,20 @@ public enum ITermBridgeError: Error, CustomStringConvertible {
 /// The TTY path is the primary stable identifier -- it remains constant across
 /// tab switches and pane moves (per research doc "Key Insight").
 public struct ITermSession: Codable, Sendable {
+    /// The unique session identifier from iTerm2.
     public let id: String
+    /// The TTY device path for this session.
     public let tty: String
+    /// The display name of the session.
     public let name: String
+    /// Whether the session is currently processing a command.
     public let isProcessing: Bool
+    /// The current working directory of the session, if available.
     public let workingDirectory: String?
+    /// The name of the running job in the session, if available.
     public let jobName: String?
 
+    /// Creates a new iTerm session representation.
     public init(
         id: String,
         tty: String,
@@ -91,6 +99,7 @@ public struct ITermSession: Codable, Sendable {
 public class ITermBridge: @unchecked Sendable {
     private static let logger = Logger(subsystem: "com.operator.app", category: "ITermBridge")
 
+    /// Creates a new iTerm bridge instance.
     public init() {}
 
     /// Deliver text to a specific iTerm2 session identified by TTY path.
@@ -250,7 +259,8 @@ public class ITermBridge: @unchecked Sendable {
             let lower = stderrText.lowercased()
             if lower.contains("is not running") || lower.contains("not running")
                 || lower.contains("connection is invalid")
-                || lower.contains("application can't be found") {
+                || lower.contains("application can't be found")
+            {
                 throw ITermBridgeError.itermNotRunning
             }
             throw ITermBridgeError.jxaFailed(status: process.terminationStatus, stderr: stderrText)

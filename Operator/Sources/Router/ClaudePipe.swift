@@ -15,15 +15,16 @@ public enum ClaudePipeError: Error, CustomStringConvertible {
     /// The `claude` CLI binary was not found on the system PATH.
     case cliNotFound
 
+    /// A human-readable description of the error.
     public var description: String {
         switch self {
-        case let .timeout(seconds):
+        case .timeout(let seconds):
             return "claude -p timed out after \(Int(seconds)) seconds"
 
-        case let .nonZeroExit(status, stderr):
+        case .nonZeroExit(let status, let stderr):
             return "claude -p exited with status \(status): \(stderr)"
 
-        case let .invalidResponse(output):
+        case .invalidResponse(let output):
             return "claude -p returned invalid response: \(output.prefix(200))"
 
         case .cliNotFound:
@@ -149,7 +150,8 @@ public enum ClaudePipe {
             let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
             if process.terminationStatus == 127
                 || stderrText.lowercased().contains("not found")
-                || stderrText.lowercased().contains("no such file") {
+                || stderrText.lowercased().contains("no such file")
+            {
                 throw ClaudePipeError.cliNotFound
             }
             throw ClaudePipeError.nonZeroExit(status: process.terminationStatus, stderr: stderrText)

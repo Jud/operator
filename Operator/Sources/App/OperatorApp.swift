@@ -1,7 +1,7 @@
-import AppKit
 import AVFoundation
-import OperatorCore
+import AppKit
 import OSLog
+import OperatorCore
 import ServiceManagement
 import Speech
 import SwiftUI
@@ -12,10 +12,12 @@ public struct OperatorApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self)
     var appDelegate
 
+    /// The app scene containing an empty settings view.
     public var body: some Scene {
         Settings { EmptyView() }
     }
 
+    /// Creates a new OperatorApp instance.
     public init() {}
 }
 
@@ -33,6 +35,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var audioQueue: AudioQueue?
     private var registry: SessionRegistry?
 
+    /// Called when the application finishes launching to bootstrap all components.
     nonisolated public func applicationDidFinishLaunching(_ notification: Notification) {
         Task { @MainActor in
             await self.bootstrap()

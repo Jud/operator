@@ -3,6 +3,7 @@ import OSLog
 import SwiftUI
 
 /// Animated waveform bar data driven by a timer during the listening state.
+///
 /// Each bar oscillates at a slightly different frequency to produce a natural waveform effect.
 @MainActor
 public final class WaveformModel: ObservableObject {
@@ -62,6 +63,7 @@ public struct WaveformView: View {
     private let barSpacing: CGFloat = 3
     private let maxBarHeight: CGFloat = 22
 
+    /// The view body rendering animated waveform bars.
     public var body: some View {
         HStack(spacing: barSpacing) {
             ForEach(0..<model.barHeights.count, id: \.self) { index in
@@ -110,6 +112,7 @@ public final class WaveformPanel: NSPanel {
     /// Prevent the panel from ever becoming the main window.
     override public var canBecomeMain: Bool { false }
 
+    /// Creates a new waveform panel positioned at bottom-center of the screen.
     public init() {
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 60, height: 30),
@@ -134,6 +137,7 @@ public final class WaveformPanel: NSPanel {
     }
 
     /// Show the waveform panel and begin bar animation.
+    ///
     /// Called when push-to-talk activates (trigger start).
     public func show() {
         cancelPendingFadeOut()
@@ -147,6 +151,7 @@ public final class WaveformPanel: NSPanel {
     }
 
     /// Fade out the waveform panel over approximately 1 second.
+    ///
     /// Called when the state machine returns to IDLE.
     public func fadeOut() {
         cancelPendingFadeOut()

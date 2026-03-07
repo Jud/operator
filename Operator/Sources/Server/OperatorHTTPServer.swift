@@ -73,12 +73,14 @@ public struct RegisterResponse: ResponseEncodable, Sendable {
 ///
 /// Reference: technical-spec.md Component 10, "Bearer token middleware"
 public struct BearerAuthMiddleware: RouterMiddleware {
+    /// The request context type used by this middleware.
     public typealias Context = BasicRequestContext
 
     private static let logger = Logger(subsystem: "com.operator.app", category: "BearerAuth")
 
     private let expectedToken: String
 
+    /// Creates a new bearer auth middleware by reading the token from disk.
     public init() throws {
         let tokenPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".operator")
@@ -96,6 +98,7 @@ public struct BearerAuthMiddleware: RouterMiddleware {
         Self.logger.info("Bearer auth middleware initialized")
     }
 
+    /// Validates the bearer token on each incoming request.
     public func handle(
         _ request: Request,
         context: BasicRequestContext,
@@ -130,6 +133,7 @@ public enum OperatorHTTPServerError: Error, CustomStringConvertible {
 
     case portInUse
 
+    /// A human-readable description of the error.
     public var description: String {
         switch self {
         case .tokenFileUnreadable:
@@ -160,8 +164,9 @@ public final class OperatorHTTPServer: Sendable {
     private let audioQueue: AudioQueue
     private let port: Int
 
-    /// Closure that returns the current daemon state string by querying the
-    /// StateMachine on @MainActor. Called from the HTTP request handler
+    /// Closure that returns the current daemon state string.
+    ///
+    /// Queries the StateMachine on @MainActor. Called from the HTTP request handler
     /// for GET /state.
     private let stateProvider: @Sendable () async -> String
 
@@ -183,8 +188,9 @@ public final class OperatorHTTPServer: Sendable {
         Self.logger.info("OperatorHTTPServer initialized on port \(port)")
     }
 
-    /// Start the HTTP server. This method runs until the server is shut down.
+    /// Start the HTTP server.
     ///
+    /// This method runs until the server is shut down.
     /// Binds to 127.0.0.1 only (localhost), not exposed to the network.
     /// Bearer token middleware is applied to all routes.
     public func start() async throws {
@@ -222,9 +228,12 @@ extension OperatorHTTPServer {
         registry: SessionRegistry,
         queue: AudioQueue
     ) {
+        // swiftlint:disable:next closure_body_length
         router.post("/register") { request, context -> RegisterResponse in
             let body = try await context.requestDecoder.decode(
-                RegisterRequest.self, from: request, context: context
+                RegisterRequest.self,
+                from: request,
+                context: context
             )
 
             let name = body.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -233,14 +242,16 @@ extension OperatorHTTPServer {
             }
 
             let ok = await registry.register(
-                name: name, tty: body.tty, cwd: body.cwd ?? "", context: body.context
+                name: name,
+                tty: body.tty,
+                cwd: body.cwd ?? "",
+                context: body.context
             )
             guard ok else {
                 throw HTTPError(.badRequest, message: "Name 'operator' is reserved")
             }
             let voice = await registry.voiceFor(session: name)
             let pitch = await registry.pitchFor(session: name)
-
             await queue.enqueue(
                 AudioQueue.QueuedMessage(
                     sessionName: "Operator",

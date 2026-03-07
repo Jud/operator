@@ -18,13 +18,15 @@ public final class VoiceManager: Sendable {
     /// The voice used for all Operator system messages (confirmations, errors, prompts).
     public let operatorVoice: AVSpeechSynthesisVoice
 
-    /// The default voice used for agent speech output. Individual agents may vary
-    /// pitch via `pitchMultiplier` to sound distinct.
+    /// The default voice used for agent speech output.
+    ///
+    /// Individual agents may vary pitch via `pitchMultiplier` to sound distinct.
     public let defaultAgentVoice: AVSpeechSynthesisVoice
 
     /// Thread-safe counter for pitch assignment, using atomic operations.
-    private let _pitchCounter = LockedValue<Int>(0)
+    private let pitchCounter = LockedValue<Int>(0)
 
+    /// Creates a new voice manager with premium voice fallback selection.
     public init() {
         let candidates = AVSpeechSynthesisVoice.speechVoices()
             .filter { $0.language.hasPrefix("en") }
@@ -59,7 +61,7 @@ public final class VoiceManager: Sendable {
     /// Each call returns a different value from a cycling set, so agents
     /// registered in sequence get distinct pitches. Thread-safe.
     public func nextAgentPitchMultiplier() -> Float {
-        let index = _pitchCounter.withLock { value in
+        let index = pitchCounter.withLock { value in
             let current = value
             value = (value + 1) % Self.pitchValues.count
             return current
@@ -73,18 +75,19 @@ public final class VoiceManager: Sendable {
 }
 
 /// Simple lock-based thread-safe wrapper for a mutable value.
+///
 /// Used internally by VoiceManager for the pitch counter.
 private final class LockedValue<T>: @unchecked Sendable {
-    private var _value: T
+    private var storedValue: T
     private let lock = NSLock()
 
     init(_ value: T) {
-        self._value = value
+        self.storedValue = value
     }
 
     func withLock<R>(_ body: (inout T) -> R) -> R {
         lock.lock()
         defer { lock.unlock() }
-        return body(&_value)
+        return body(&storedValue)
     }
 }

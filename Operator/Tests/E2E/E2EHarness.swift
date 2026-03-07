@@ -13,7 +13,9 @@ import OperatorCore
 internal final class E2EHarness {
     // MARK: - iTerm State
 
-    /// JXA window identifier for the test iTerm window. Used for teardown.
+    /// JXA window identifier for the test iTerm window.
+    ///
+    /// Used for teardown.
     private var testWindowIndex: Int?
 
     /// TTY paths for the test panes, keyed by session name ("alpha", "beta").
@@ -323,7 +325,8 @@ internal final class E2EHarness {
         let tokenFile = dir.appendingPathComponent("token")
 
         if let data = FileManager.default.contents(atPath: tokenFile.path),
-            let token = String(data: data, encoding: .utf8) {
+            let token = String(data: data, encoding: .utf8)
+        {
             let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
             if !trimmed.isEmpty {
                 return trimmed
@@ -380,16 +383,16 @@ internal enum E2EError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case let .setupFailed(msg):
+        case .setupFailed(let msg):
             return "Setup failed: \(msg)"
 
-        case let .jxaFailed(status, stderr):
+        case .jxaFailed(let status, let stderr):
             return "JXA failed (status \(status)): \(stderr)"
 
-        case let .httpError(path, status, body):
+        case .httpError(let path, let status, let body):
             return "HTTP \(path) failed (\(status)): \(body)"
 
-        case let .testFailed(scenario, reason):
+        case .testFailed(let scenario, let reason):
             return "Test '\(scenario)' failed: \(reason)"
         }
     }

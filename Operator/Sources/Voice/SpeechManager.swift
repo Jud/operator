@@ -15,12 +15,14 @@ import OSLog
 public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerDelegate {
     private static let logger = Logger(subsystem: "com.operator.app", category: "SpeechManager")
 
+    /// The underlying speech synthesizer instance.
     public let synthesizer = AVSpeechSynthesizer()
 
     /// The full text (including prefix) of the currently playing utterance.
     private var currentText: String = ""
 
     /// Character index marking how far speech has progressed through `currentText`.
+    ///
     /// Updated by the willSpeakRangeOfSpeechString delegate callback.
     private var lastSpokenCharIndex: Int = 0
 
@@ -28,6 +30,7 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     private var currentSession: String = ""
 
     /// Called when an utterance finishes playing (not interrupted).
+    ///
     /// AudioQueue uses this to trigger playback of the next queued message.
     public var onFinishedSpeaking: (() -> Void)?
 

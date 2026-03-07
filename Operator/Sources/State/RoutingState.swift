@@ -7,8 +7,11 @@ import Foundation
 ///
 /// Reference: technical-spec.md, Session State Model (RoutingState.routedMessages)
 public struct RoutedMessage: Codable, Sendable {
+    /// The message text that was routed.
     public let text: String
+    /// The target session name.
     public let session: String
+    /// When the message was routed.
     public let timestamp: Date
 }
 
@@ -22,8 +25,11 @@ public struct RoutedMessage: Codable, Sendable {
 /// Reference: technical-spec.md, Component 3, "Interruption Handler";
 /// design.md Section 3.1.7
 public struct PendingInterruption: Sendable {
+    /// The portion of the message that was spoken before interruption.
     public let heardText: String
+    /// The remaining portion that was not yet spoken.
     public let unheardText: String
+    /// The session whose response was interrupted.
     public let session: String
 }
 
@@ -37,7 +43,9 @@ public struct PendingInterruption: Sendable {
 /// Reference: technical-spec.md, Component 3, "Ambiguous fallback";
 /// design.md Section 3.1.6
 public struct PendingClarification: Sendable {
+    /// The session names that are potential targets.
     public let candidates: [String]
+    /// The user's original message text to deliver once resolved.
     public let originalText: String
 }
 
@@ -58,36 +66,45 @@ public struct RoutingState: Sendable {
     /// Maximum number of routing history entries retained for claude -p context.
     private static let maxRoutedMessages = 10
 
-    /// Session affinity timeout in seconds. Messages sent within this window after
-    /// the last routed message will go to the same session without re-routing,
-    /// unless the user explicitly names a different agent.
+    /// Session affinity timeout in seconds.
+    ///
+    /// Messages sent within this window after the last routed message will go to
+    /// the same session without re-routing, unless the user explicitly names a
+    /// different agent.
     ///
     /// Reference: technical-spec.md, Component 3; charter.md "Will Do" item 17;
     /// requirements.md AC-03.4
     public static let affinityTimeoutSeconds: TimeInterval = 15
 
     /// Recent routing history: last 10 messages with their target session and timestamp.
+    ///
     /// Provided to claude -p as context for routing decisions.
     public private(set) var routedMessages: [RoutedMessage] = []
 
-    /// State of an interrupted audio playback, if any. Set when the user activates
-    /// push-to-talk while an agent's response is being spoken. Cleared after the
-    /// interruption is resolved (skip, replay, or route).
+    /// State of an interrupted audio playback, if any.
+    ///
+    /// Set when the user activates push-to-talk while an agent's response is being
+    /// spoken. Cleared after the interruption is resolved (skip, replay, or route).
     public var pendingInterruption: PendingInterruption?
 
-    /// State of an in-progress clarification, if any. Set when routing produces
-    /// ambiguous results and Operator asks the user to clarify. Cleared after the
-    /// clarification resolves (user picks a target, times out, or cancels).
+    /// State of an in-progress clarification, if any.
+    ///
+    /// Set when routing produces ambiguous results and Operator asks the user to
+    /// clarify. Cleared after the clarification resolves (user picks a target,
+    /// times out, or cancels).
     public var pendingClarification: PendingClarification?
 
     /// The session name that received the most recent routed message.
+    ///
     /// Used together with lastRoutedTimestamp for session affinity.
     public private(set) var lastRoutedSession: String?
 
     /// Timestamp of the most recent routed message.
+    ///
     /// Used together with lastRoutedSession for session affinity.
     public private(set) var lastRoutedTimestamp: Date?
 
+    /// Creates a new empty routing state.
     public init() {}
 
     // MARK: - Routing History

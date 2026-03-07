@@ -32,9 +32,10 @@ public struct InterruptionContext: Sendable {
     /// The full text of the message that was being spoken.
     let fullText: String
 
-    /// The portion of the message that had been spoken (heard by the user)
-    /// before the interruption occurred. Based on word-level tracking from
-    /// AVSpeechSynthesizer's willSpeakRangeOfSpeechString delegate.
+    /// The portion of the message that had been spoken (heard by the user).
+    ///
+    /// Based on word-level tracking from AVSpeechSynthesizer's
+    /// willSpeakRangeOfSpeechString delegate.
     let heardText: String
 
     /// The portion of the message that had not yet been spoken (unheard).
@@ -59,6 +60,7 @@ public enum InterruptionHandler {
     private static let logger = Logger(subsystem: "com.operator.app", category: "InterruptionHandler")
 
     /// Keywords that indicate the user wants to skip the interrupted message.
+    ///
     /// Matched case-insensitively against the full (trimmed) user utterance.
     private static let skipKeywords: Set<String> = [
         "skip",
@@ -67,6 +69,7 @@ public enum InterruptionHandler {
     ]
 
     /// Keywords that indicate the user wants to replay the interrupted message.
+    ///
     /// Matched case-insensitively against the full (trimmed) user utterance.
     private static let replayKeywords: Set<String> = [
         "replay",
