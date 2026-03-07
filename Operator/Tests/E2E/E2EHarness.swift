@@ -233,10 +233,13 @@ internal final class E2EHarness {
 
     // MARK: - Session Registration
 
-    /// Register the test sessions via HTTP POST /register.
+    /// Register the test sessions directly via the registry actor.
     private func registerTestSessions() async throws {
+        guard let reg = registry else {
+            throw E2EError.setupFailed("Registry not initialized")
+        }
         for (name, tty) in testTTYs {
-            try await httpRegister(name: name, tty: tty, cwd: "/tmp/e2e-\(name)")
+            await reg.register(name: name, tty: tty, cwd: "/tmp/e2e-\(name)", context: nil)
         }
         print("[harness] Registered \(testTTYs.count) test sessions")
     }
@@ -276,12 +279,6 @@ internal final class E2EHarness {
             print("[harness] Failed to read pane contents for \(tty): \(error)")
             return ""
         }
-    }
-
-    /// Send an HTTP POST /register request.
-    func httpRegister(name: String, tty: String, cwd: String) async throws {
-        let body: [String: String] = ["name": name, "tty": tty, "cwd": cwd]
-        _ = try await httpPost(path: "/register", body: body)
     }
 
     /// Send an HTTP POST /speak request.
