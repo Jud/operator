@@ -1,6 +1,5 @@
 import AppKit
 import CoreGraphics
-import OSLog
 
 /// Push-to-talk trigger using the FN/Globe key via CGEventTap.
 ///
@@ -14,7 +13,7 @@ import OSLog
 /// that may not have a usable FN key. The secondary hotkey is specified as a
 /// CGKeyCode and optional modifier flags, and uses kCGEventKeyDown/kCGEventKeyUp.
 public final class FNKeyTrigger: TriggerSource {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "FNKeyTrigger")
+    private static let logger = Log.logger(for: "FNKeyTrigger")
 
     /// Callback invoked when the push-to-talk key is pressed.
     public var onStart: (@Sendable @MainActor () -> Void)?

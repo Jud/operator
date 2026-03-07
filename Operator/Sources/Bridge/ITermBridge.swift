@@ -1,5 +1,4 @@
 import Foundation
-import OSLog
 
 /// Errors that can occur during iTerm2 JXA bridge operations.
 public enum ITermBridgeError: Error, CustomStringConvertible {
@@ -97,7 +96,7 @@ public struct ITermSession: Codable, Sendable {
 ///
 /// Reference: technical-spec.md Component 5; research doc "What Worked: The Proven Recipe"
 public class ITermBridge: @unchecked Sendable {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "ITermBridge")
+    private static let logger = Log.logger(for: "ITermBridge")
 
     /// Creates a new iTerm bridge instance.
     public init() {}

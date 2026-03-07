@@ -8,6 +8,7 @@ import AVFoundation
 @MainActor
 public protocol SpeechManaging: AnyObject, Sendable {
     var synthesizer: AVSpeechSynthesizer { get }
+    var isSpeaking: Bool { get }
     var onFinishedSpeaking: (() -> Void)? { get set }
 
     func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String, pitchMultiplier: Float)

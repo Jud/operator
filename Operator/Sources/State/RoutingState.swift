@@ -94,6 +94,12 @@ public struct RoutingState: Sendable {
     /// times out, or cancels).
     public var pendingClarification: PendingClarification?
 
+    /// Count of clarification attempts for the current ambiguous message.
+    ///
+    /// Incremented on each re-ask. Max 2 attempts before giving up.
+    /// Reset when clarification is cleared.
+    public var clarificationAttempts: Int = 0
+
     /// The session name that received the most recent routed message.
     ///
     /// Used together with lastRoutedTimestamp for session affinity.
@@ -187,6 +193,7 @@ public struct RoutingState: Sendable {
     /// Clear the pending clarification after it has been resolved or timed out.
     public mutating func clearClarification() {
         pendingClarification = nil
+        clarificationAttempts = 0
     }
 
     /// Clear all pending state (both interruption and clarification).

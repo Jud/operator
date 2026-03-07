@@ -1,5 +1,4 @@
 import AVFoundation
-import OSLog
 
 /// Plays non-verbal audio feedback tones at state transitions.
 ///
@@ -23,7 +22,7 @@ public class AudioFeedback: @unchecked Sendable {
         case pending
     }
 
-    private static let logger = Logger(subsystem: "com.operator.app", category: "AudioFeedback")
+    private static let logger = Log.logger(for: "AudioFeedback")
 
     private var players: [Cue: AVAudioPlayer] = [:]
 

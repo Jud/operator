@@ -1,7 +1,5 @@
 // swiftlint:disable file_length
-import AVFoundation
 import Foundation
-import OSLog
 
 /// Operational states of the Operator daemon.
 ///
@@ -56,7 +54,7 @@ public enum OperatorState: String, Sendable, CustomStringConvertible {
 /// Reference: technical-spec.md Component 6; design.md Section 3.1.12, 3.3
 @MainActor
 public final class StateMachine {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "StateMachine")
+    private static let logger = Log.logger(for: "StateMachine")
 
     // MARK: - State
 
@@ -70,11 +68,6 @@ public final class StateMachine {
     /// Passed to MessageRouter for routing decisions (affinity, history) and
     /// updated after successful routes.
     public private(set) var routingState = RoutingState()
-
-    /// Count of clarification attempts for the current ambiguous message.
-    ///
-    /// Incremented on each re-ask. Max 2 attempts before giving up.
-    private var clarificationAttempts = 0
 
     /// Handle to the current in-flight async work (transcription, routing, delivery).
     ///
@@ -99,6 +92,8 @@ public final class StateMachine {
     private let voiceManager: VoiceManager
     private let waveformPanel: WaveformPanel?
     private let speechManager: any SpeechManaging
+    private let commandHandler: OperatorCommandHandler
+    private let deliveryCoordinator: DeliveryCoordinator
 
     // MARK: - Initialization
 
@@ -132,6 +127,16 @@ public final class StateMachine {
         self.voiceManager = voiceManager
         self.waveformPanel = waveformPanel
         self.speechManager = speechManager
+        self.commandHandler = OperatorCommandHandler(
+            registry: registry,
+            audioQueue: audioQueue,
+            voiceManager: voiceManager
+        )
+        self.deliveryCoordinator = DeliveryCoordinator(
+            itermBridge: itermBridge,
+            registry: registry,
+            feedback: feedback
+        )
 
         Self.logger.info("StateMachine initialized in IDLE state")
     }
@@ -154,7 +159,7 @@ public final class StateMachine {
         // We check SpeechManager directly (synchronous on @MainActor) rather than
         // going through AudioQueue (async actor) to capture the interruption info
         // immediately before it's lost.
-        if speechManager.synthesizer.isSpeaking {
+        if speechManager.isSpeaking {
             let info = speechManager.interrupt()
             if !info.session.isEmpty {
                 routingState.storeInterruption(
@@ -348,8 +353,8 @@ extension StateMachine {
 
     /// Enqueue a replay of an interrupted message.
     private func enqueueReplay(context: PendingInterruption) async {
-        let voice = await registry.voiceFor(session: context.session)
-        let pitch = await registry.pitchFor(session: context.session)
+        async let voice = registry.voiceFor(session: context.session)
+        async let pitch = registry.pitchFor(session: context.session)
 
         let fullText = context.heardText + context.unheardText
 
@@ -370,105 +375,63 @@ extension StateMachine {
 extension StateMachine {
     /// Deliver a routed message to a specific Claude Code session via JXA.
     ///
-    /// Enters DELIVERING state, writes to iTerm via the three-step sequence
-    /// (Escape + text + CR), plays the delivered tone, and speaks a confirmation.
+    /// Enters DELIVERING state, delegates to DeliveryCoordinator, and handles
+    /// state transitions based on the result.
     ///
     /// Reference: technical-spec.md Component 5; research doc "Proven Recipe"
     private func deliverMessage(_ message: String, to session: String) async {
         transition(to: .delivering)
         startTimeout(seconds: 5)
 
-        guard let sessionState = await registry.session(named: session) else {
-            Self.logger.error("Session '\(session)' not found in registry for delivery")
-            cancelTimeout()
-            speakOperator("Couldn't deliver to \(session). The session may have closed.")
-            feedback.play(.error)
-            enterIdle()
-            return
-        }
+        let result = await deliveryCoordinator.deliver(message, to: session)
 
-        let tty = sessionState.tty
-
-        do {
-            let success = try await itermBridge.writeToSession(tty: tty, text: message)
-
-            guard !Task.isCancelled else {
-                return
-            }
-            guard currentState == .delivering else {
-                Self.logger.debug("Delivery completed but state changed; discarding")
-                return
-            }
-
-            cancelTimeout()
-
-            if success {
-                await handleDeliverySuccess(message: message, session: session)
-            } else {
-                Self.logger.error("writeToSession returned false for \(session)")
-                speakOperator("Couldn't deliver to \(session). The session may have closed.")
-                feedback.play(.error)
-                enterIdle()
-            }
-        } catch ITermBridgeError.itermNotRunning {
-            handleDeliveryError(session: session, isItermNotRunning: true)
-        } catch {
-            Self.logger.error("Delivery failed for \(session): \(error)")
-            handleDeliveryError(session: session, isItermNotRunning: false)
-        }
-    }
-
-    /// Handle a successful message delivery.
-    private func handleDeliverySuccess(message: String, session: String) async {
-        Self.logger.info("Delivered message to \(session)")
-        feedback.play(.delivered)
-        routingState.recordRoute(text: message, session: session)
-
-        let sessionCount = await registry.sessionCount
-
-        if sessionCount <= 1 {
-            speakOperator("Sent.")
-        } else {
-            speakOperator("Sent to \(session).")
-        }
-
-        enterIdle()
-    }
-
-    /// Handle a delivery error, distinguishing iTerm-not-running from other errors.
-    private func handleDeliveryError(session: String, isItermNotRunning: Bool) {
         guard !Task.isCancelled else {
             return
         }
         guard currentState == .delivering else {
+            Self.logger.debug("Delivery completed but state changed; discarding")
             return
         }
 
         cancelTimeout()
 
-        if isItermNotRunning {
-            Self.logger.error("iTerm not running during delivery to \(session)")
-            speakOperator("iTerm doesn't seem to be running.")
-        } else {
-            speakOperator("Couldn't deliver to \(session). The session may have closed.")
-        }
+        switch result {
+        case .success(let msg, let sess):
+            routingState.recordRoute(text: msg, session: sess)
+            let sessionCount = await registry.sessionCount
+            if sessionCount <= 1 {
+                speakOperator("Sent.")
+            } else {
+                speakOperator("Sent to \(sess).")
+            }
+            enterIdle()
 
-        feedback.play(.error)
-        enterIdle()
+        case .sessionNotFound(let sess):
+            speakOperator("Couldn't deliver to \(sess). The session may have closed.")
+            feedback.play(.error)
+            enterIdle()
+
+        case .writeFailed(let sess):
+            speakOperator("Couldn't deliver to \(sess). The session may have closed.")
+            feedback.play(.error)
+            enterIdle()
+
+        case .itermNotRunning:
+            speakOperator("iTerm doesn't seem to be running.")
+            feedback.play(.error)
+            enterIdle()
+
+        case .deliveryError(let sess):
+            speakOperator("Couldn't deliver to \(sess). The session may have closed.")
+            feedback.play(.error)
+            enterIdle()
+        }
     }
 
     /// Deliver a message to a session without state transitions (used for multi-send).
     private func deliverToSessionDirect(_ message: String, to session: String) async {
-        guard let sessionState = await registry.session(named: session) else {
-            Self.logger.warning("Session '\(session)' not found for direct delivery")
-            return
-        }
-        do {
-            _ = try await itermBridge.writeToSession(tty: sessionState.tty, text: message)
+        if await deliveryCoordinator.deliverDirect(message, to: session) {
             routingState.recordRoute(text: message, session: session)
-            Self.logger.info("Direct delivery to \(session) succeeded")
-        } catch {
-            Self.logger.error("Direct delivery to \(session) failed: \(error)")
         }
     }
 }
@@ -485,9 +448,9 @@ extension StateMachine {
     /// Reference: technical-spec.md Component 3, "Ambiguous fallback";
     /// requirements.md AC-13.6
     private func enterClarifying(candidates: [String], question: String, originalText: String) {
-        clarificationAttempts += 1
+        routingState.clarificationAttempts += 1
 
-        if clarificationAttempts > 2 {
+        if routingState.clarificationAttempts > 2 {
             Self.logger.info("Max clarification attempts reached; giving up")
             speakOperator("I couldn't figure out who that's for. Try saying the agent name.")
             enterIdle()
@@ -576,120 +539,21 @@ extension StateMachine {
 extension StateMachine {
     /// Handle an operator voice command (status, list, replay, etc.).
     ///
-    /// These are handled directly by the daemon without routing to any session.
+    /// Delegates to OperatorCommandHandler for the actual command logic,
+    /// then speaks the result and returns to IDLE.
     /// Reference: technical-spec.md Component 7
     private func handleOperatorCommand(_ command: OperatorCommand) async {
         Self.logger.info("Handling operator command: \(String(describing: command))")
 
-        switch command {
-        case .status:
-            await handleStatusCommand()
-
-        case .listAgents:
-            await handleListAgentsCommand()
-
-        case .replay:
-            await handleReplayCommand()
-
-        case .replayAgent(let name):
-            await handleReplayAgentCommand(name: name)
-
-        case .whatDidIMiss:
-            await handleWhatDidIMissCommand()
-
-        case .help:
-            speakOperator(
-                "Available commands: operator status, list agents, replay, what did I miss, and operator help."
-            )
+        let response = await commandHandler.handle(
+            command,
+            pendingInterruption: routingState.pendingInterruption
+        )
+        if let text = response {
+            speakOperator(text)
         }
 
         enterIdle()
-    }
-
-    /// Handle the "operator status" voice command.
-    private func handleStatusCommand() async {
-        let sessions = await registry.allSessions()
-        if sessions.isEmpty {
-            speakOperator("No agents are connected.")
-        } else {
-            var parts: [String] = ["\(sessions.count) agent\(sessions.count == 1 ? "" : "s") connected."]
-            for session in sessions {
-                var line = "\(session.name), working in \(session.cwd)"
-                if !session.context.isEmpty {
-                    line += ". \(session.context)"
-                }
-                parts.append(line)
-            }
-            speakOperator(parts.joined(separator: " "))
-        }
-    }
-
-    /// Handle the "list agents" voice command.
-    private func handleListAgentsCommand() async {
-        let sessions = await registry.allSessions()
-        if sessions.isEmpty {
-            speakOperator("No agents are connected.")
-        } else {
-            let names = sessions.map { $0.name }
-            let list = names.joined(separator: ", ")
-            speakOperator("\(sessions.count) agent\(sessions.count == 1 ? "" : "s"): \(list).")
-        }
-    }
-
-    /// Handle the "operator replay" voice command.
-    private func handleReplayCommand() async {
-        if let last = await audioQueue.lastSpokenMessage() {
-            let voice = await registry.voiceFor(session: last.session)
-            let pitch = await registry.pitchFor(session: last.session)
-            await audioQueue.enqueue(
-                AudioQueue.QueuedMessage(
-                    sessionName: last.session,
-                    text: last.text,
-                    priority: .urgent,
-                    voice: voice,
-                    pitchMultiplier: pitch
-                )
-            )
-        } else {
-            speakOperator("Nothing to replay.")
-        }
-    }
-
-    /// Handle the "what did [name] say" voice command.
-    private func handleReplayAgentCommand(name: String) async {
-        let sessions = await registry.allSessions()
-        let canonical = sessions.first { $0.name.lowercased() == name.lowercased() }?.name
-        if let agentName = canonical,
-            let text = await audioQueue.lastMessage(forAgent: agentName)
-        {
-            let voice = await registry.voiceFor(session: agentName)
-            let pitch = await registry.pitchFor(session: agentName)
-            await audioQueue.enqueue(
-                AudioQueue.QueuedMessage(
-                    sessionName: agentName,
-                    text: text,
-                    priority: .urgent,
-                    voice: voice,
-                    pitchMultiplier: pitch
-                )
-            )
-        } else if let agentName = canonical {
-            speakOperator("I don't have a recent message from \(agentName).")
-        } else {
-            speakOperator("I don't know an agent called \(name).")
-        }
-    }
-
-    /// Handle the "what did I miss" voice command.
-    private func handleWhatDidIMissCommand() async {
-        let pendingCount = await audioQueue.pendingCount
-        if pendingCount > 0 {
-            speakOperator("You have \(pendingCount) message\(pendingCount == 1 ? "" : "s") waiting.")
-        } else if let interruption = routingState.pendingInterruption {
-            speakOperator("You interrupted \(interruption.session). They were saying: \(interruption.heardText)")
-        } else {
-            speakOperator("You're all caught up.")
-        }
     }
 }
 

@@ -1,5 +1,4 @@
 import AVFoundation
-import OSLog
 
 /// Manages voice selection for Operator and agent speech output.
 ///
@@ -12,7 +11,7 @@ import OSLog
 /// so that each registered agent sounds slightly different, aiding auditory
 /// differentiation when multiple agents are active.
 public final class VoiceManager: Sendable {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "VoiceManager")
+    private static let logger = Log.logger(for: "VoiceManager")
     private static let pitchValues: [Float] = [1.0, 1.05, 0.95, 1.1, 0.9, 1.15, 0.85]
 
     /// The voice used for all Operator system messages (confirmations, errors, prompts).

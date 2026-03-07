@@ -12,6 +12,7 @@ import OperatorCore
 @MainActor
 internal final class MockSpeechManager: SpeechManaging {
     let synthesizer = AVSpeechSynthesizer()
+    var isSpeaking: Bool { false }
     var onFinishedSpeaking: (() -> Void)?
 
     /// All messages passed to speak(), in order.

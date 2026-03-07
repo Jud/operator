@@ -1,5 +1,4 @@
 import AVFoundation
-import OSLog
 
 /// Manages speech synthesis with word-level tracking for interruption support.
 ///
@@ -13,10 +12,13 @@ import OSLog
 /// delegate callbacks operate on the main thread.
 @MainActor
 public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerDelegate {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "SpeechManager")
+    private static let logger = Log.logger(for: "SpeechManager")
 
     /// The underlying speech synthesizer instance.
     public let synthesizer = AVSpeechSynthesizer()
+
+    /// Whether the synthesizer is currently speaking.
+    public var isSpeaking: Bool { synthesizer.isSpeaking }
 
     /// The full text (including prefix) of the currently playing utterance.
     private var currentText: String = ""

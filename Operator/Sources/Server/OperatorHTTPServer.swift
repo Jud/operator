@@ -1,6 +1,5 @@
 import Foundation
 import Hummingbird
-import OSLog
 
 /// JSON body for POST /register.
 ///
@@ -76,7 +75,7 @@ public struct BearerAuthMiddleware: RouterMiddleware {
     /// The request context type used by this middleware.
     public typealias Context = BasicRequestContext
 
-    private static let logger = Logger(subsystem: "com.operator.app", category: "BearerAuth")
+    private static let logger = Log.logger(for: "BearerAuth")
 
     private let expectedToken: String
 
@@ -158,7 +157,7 @@ public enum OperatorHTTPServerError: Error, CustomStringConvertible {
 ///
 /// Reference: technical-spec.md Component 10; design.md Section 3.1.13
 public final class OperatorHTTPServer: Sendable {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "HTTPServer")
+    private static let logger = Log.logger(for: "HTTPServer")
 
     private let sessionRegistry: SessionRegistry
     private let audioQueue: AudioQueue
@@ -250,8 +249,8 @@ extension OperatorHTTPServer {
             guard ok else {
                 throw HTTPError(.badRequest, message: "Name 'operator' is reserved")
             }
-            let voice = await registry.voiceFor(session: name)
-            let pitch = await registry.pitchFor(session: name)
+            async let voice = registry.voiceFor(session: name)
+            async let pitch = registry.pitchFor(session: name)
             await queue.enqueue(
                 AudioQueue.QueuedMessage(
                     sessionName: "Operator",
@@ -286,8 +285,8 @@ extension OperatorHTTPServer {
             let sessionName = body.session ?? "Unknown"
             let priority: AudioQueue.QueuedMessage.Priority =
                 body.priority == "urgent" ? .urgent : .normal
-            let voice = await registry.voiceFor(session: body.session)
-            let pitch = await registry.pitchFor(session: body.session)
+            async let voice = registry.voiceFor(session: body.session)
+            async let pitch = registry.pitchFor(session: body.session)
 
             await queue.enqueue(
                 AudioQueue.QueuedMessage(

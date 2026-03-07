@@ -1,5 +1,4 @@
 import AVFoundation
-import OSLog
 
 /// Thread-safe audio queue that manages sequential playback of agent speech messages.
 ///
@@ -67,7 +66,7 @@ public actor AudioQueue {
 
     // MARK: - Type Properties
 
-    private static let logger = Logger(subsystem: "com.operator.app", category: "AudioQueue")
+    private static let logger = Log.logger(for: "AudioQueue")
 
     // MARK: - Instance Properties
 

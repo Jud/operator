@@ -1,6 +1,5 @@
 import AVFoundation
 import AppKit
-import OSLog
 import OperatorCore
 import ServiceManagement
 import Speech
@@ -24,7 +23,7 @@ public struct OperatorApp: App {
 /// Application delegate that bootstraps all Operator daemon components.
 @MainActor
 public class AppDelegate: NSObject, NSApplicationDelegate {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "AppDelegate")
+    private static let logger = Log.logger(for: "AppDelegate")
 
     private var stateMachine: StateMachine?
     private var waveformPanel: WaveformPanel?

@@ -1,5 +1,4 @@
 import Foundation
-import OSLog
 
 /// Errors that can occur when running claude -p subprocess.
 public enum ClaudePipeError: Error, CustomStringConvertible {
@@ -40,7 +39,7 @@ public enum ClaudePipeError: Error, CustomStringConvertible {
 /// timeout via DispatchSource timer, and extracts the first JSON object from the output
 /// (since claude -p may emit preamble text before the JSON response).
 public enum ClaudePipe {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "ClaudePipe")
+    private static let logger = Log.logger(for: "ClaudePipe")
 
     /// Default timeout for claude -p invocations (10 seconds per spec).
     public static let defaultTimeout: TimeInterval = 10

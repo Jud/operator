@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import OSLog
 
 /// Status of a registered Claude Code session.
 ///
@@ -137,7 +136,7 @@ public struct RegistrySnapshot: Codable, Sendable {
 public actor SessionRegistry {
     // MARK: - Type Properties
 
-    private static let logger = Logger(subsystem: "com.operator.app", category: "SessionRegistry")
+    private static let logger = Log.logger(for: "SessionRegistry")
 
     // MARK: - Instance Properties
 

@@ -1,5 +1,4 @@
 import AVFoundation
-import OSLog
 import Speech
 
 /// Wraps SFSpeechRecognizer and AVAudioEngine for on-device speech-to-text.
@@ -17,7 +16,7 @@ import Speech
 /// The AVAudioEngine tap runs on its own thread; the recognition task callback
 /// runs on an internal Speech framework thread.
 public final class SpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "SpeechTranscriber")
+    private static let logger = Log.logger(for: "SpeechTranscriber")
 
     private let recognizer: SFSpeechRecognizer
     private let audioEngine = AVAudioEngine()

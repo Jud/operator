@@ -1,5 +1,4 @@
 import AppKit
-import OSLog
 import SwiftUI
 
 /// Animated waveform bar data driven by a timer during the listening state.
@@ -100,7 +99,7 @@ public struct WaveformView: View {
 /// 1 second after returning to IDLE state.
 @MainActor
 public final class WaveformPanel: NSPanel {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "WaveformPanel")
+    private static let logger = Log.logger(for: "WaveformPanel")
     private let waveformModel = WaveformModel()
     private let panelWidth: CGFloat = 60
     private let panelHeight: CGFloat = 30

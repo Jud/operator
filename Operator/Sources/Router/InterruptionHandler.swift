@@ -1,5 +1,4 @@
 import Foundation
-import OSLog
 
 /// The action determined by the InterruptionHandler when the user interrupts
 /// an agent's speech by activating push-to-talk.
@@ -57,7 +56,7 @@ public struct InterruptionContext: Sendable {
 /// Reference: technical-spec.md Component 3, "Interruption Handler";
 /// design.md Section 3.1.7
 public enum InterruptionHandler {
-    private static let logger = Logger(subsystem: "com.operator.app", category: "InterruptionHandler")
+    private static let logger = Log.logger(for: "InterruptionHandler")
 
     /// Keywords that indicate the user wants to skip the interrupted message.
     ///
@@ -77,14 +76,6 @@ public enum InterruptionHandler {
         "what?",
         "what"
     ]
-
-    /// Regex pattern for detecting explicit agent targeting in the user's utterance.
-    private static let agentTargetPattern: NSRegularExpression? = {
-        try? NSRegularExpression(
-            pattern: #"(?:tell |hey |@)(\w+)[,:]?\s*(.*)"#,
-            options: [.caseInsensitive]
-        )
-    }()
 
     /// Determine what action to take when the user interrupts agent speech.
     ///
@@ -134,36 +125,10 @@ public enum InterruptionHandler {
         utterance: String,
         registeredSessionNames: [String]
     ) -> (target: String, action: InterruptionAction)? {
-        guard let pattern = agentTargetPattern else {
+        guard let result = AgentNameMatcher.match(in: utterance, sessionNames: registeredSessionNames) else {
             return nil
         }
-
-        let range = NSRange(utterance.startIndex..., in: utterance)
-        guard let match = pattern.firstMatch(in: utterance, range: range) else {
-            return nil
-        }
-
-        guard let nameRange = Range(match.range(at: 1), in: utterance) else {
-            return nil
-        }
-
-        let targetName = String(utterance[nameRange]).lowercased()
-
-        guard registeredSessionNames.contains(where: { $0.lowercased() == targetName }) else {
-            return nil
-        }
-
-        let message: String
-        if let messageRange = Range(match.range(at: 2), in: utterance) {
-            let extracted = String(utterance[messageRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-            message = extracted.isEmpty ? utterance : extracted
-        } else {
-            message = utterance
-        }
-
-        let canonicalName = registeredSessionNames.first { $0.lowercased() == targetName } ?? targetName
-
-        return (target: canonicalName, action: .route(target: canonicalName, message: message))
+        return (target: result.session, action: .route(target: result.session, message: result.message))
     }
 
     /// Fall back to claude -p for genuinely ambiguous interruptions.

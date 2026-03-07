@@ -1,5 +1,4 @@
 import Foundation
-import OSLog
 
 /// Result of routing a user's transcribed message through the priority chain.
 ///
@@ -90,7 +89,7 @@ public enum ClarificationResult: Sendable {
 /// Reference: technical-spec.md Component 3; design.md Section 3.1.6;
 /// requirements.md FR-03, FR-09, FR-13
 public class MessageRouter: @unchecked Sendable {
-    static let logger = Logger(subsystem: "com.operator.app", category: "MessageRouter")
+    static let logger = Log.logger(for: "MessageRouter")
 
     /// The session registry providing current session state for routing decisions.
     let registry: SessionRegistry
@@ -210,46 +209,15 @@ extension MessageRouter {
 // MARK: - Keyword Extraction
 
 extension MessageRouter {
-    /// Regex pattern for explicit agent targeting in user utterances.
-    private static let keywordPattern: NSRegularExpression? = {
-        try? NSRegularExpression(
-            pattern: #"(?:tell |hey |@)(\w+)[,:]?\s*(.*)"#,
-            options: [.caseInsensitive]
-        )
-    }()
-
     /// Extract an explicit agent name and message from the user's utterance.
     private func extractKeyword(
         from text: String,
         sessionNames: [String]
     ) -> (session: String, message: String)? {
-        guard let pattern = Self.keywordPattern else {
+        guard let result = AgentNameMatcher.match(in: text, sessionNames: sessionNames) else {
             return nil
         }
-
-        let range = NSRange(text.startIndex..., in: text)
-        guard let match = pattern.firstMatch(in: text, range: range) else {
-            return nil
-        }
-
-        guard let nameRange = Range(match.range(at: 1), in: text) else {
-            return nil
-        }
-
-        let extractedName = String(text[nameRange]).lowercased()
-
-        guard let canonical = sessionNames.first(where: { $0.lowercased() == extractedName }) else {
-            return nil
-        }
-
-        if let messageRange = Range(match.range(at: 2), in: text) {
-            let message = String(text[messageRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-            if !message.isEmpty {
-                return (session: canonical, message: message)
-            }
-        }
-
-        return (session: canonical, message: text)
+        return (session: result.session, message: result.message)
     }
 }
 
