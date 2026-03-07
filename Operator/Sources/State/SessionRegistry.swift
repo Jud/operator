@@ -272,6 +272,82 @@ public actor SessionRegistry {
         return match?.pitchMultiplier ?? 1.0
     }
 
+    // MARK: - Hook Handlers
+
+    /// Handle a Claude Code session-start hook.
+    ///
+    /// Registers or re-registers a session using the hook payload's session ID and TTY.
+    /// If a session with the same TTY already exists, it is updated with the new session ID.
+    ///
+    /// - Parameters:
+    ///   - sessionId: The Claude Code session identifier.
+    ///   - tty: The TTY device path for the session.
+    ///   - cwd: The working directory of the session.
+    public func handleSessionStart(sessionId: String, tty: String, cwd: String) {
+        if var existing = sessions[tty] {
+            existing.sessionId = sessionId
+            existing.lastActivity = Date()
+            sessions[tty] = existing
+            Self.logger.info("Hook session-start: updated session ID for TTY \(tty)")
+        } else {
+            let pitch = voiceManager.nextAgentPitchMultiplier()
+            let voice = voiceManager.defaultAgentVoice
+            let state = SessionState(
+                name: sessionId,
+                tty: tty,
+                cwd: cwd,
+                context: "",
+                recentMessages: [],
+                status: .idle,
+                lastActivity: Date(),
+                voice: voice,
+                pitchMultiplier: pitch,
+                sessionId: sessionId
+            )
+            sessions[tty] = state
+            Self.logger.info("Hook session-start: registered new session \(sessionId) at TTY \(tty)")
+        }
+    }
+
+    /// Handle a Claude Code stop hook.
+    ///
+    /// Updates the session's last assistant message as context and marks it active.
+    ///
+    /// - Parameters:
+    ///   - sessionId: The Claude Code session identifier.
+    ///   - tty: The TTY device path for the session.
+    ///   - lastAssistantMessage: The last message from the assistant, if any.
+    public func handleStop(sessionId: String, tty: String, lastAssistantMessage: String?) {
+        guard sessions[tty] != nil else {
+            Self.logger.warning("Hook stop: no session found for TTY \(tty)")
+            return
+        }
+        sessions[tty]?.sessionId = sessionId
+        sessions[tty]?.lastActivity = Date()
+        if let message = lastAssistantMessage, !message.isEmpty {
+            sessions[tty]?.context = message
+        }
+        Self.logger.info("Hook stop: updated session at TTY \(tty)")
+    }
+
+    /// Handle a Claude Code session-end hook.
+    ///
+    /// Removes the session identified by TTY from the registry.
+    ///
+    /// - Parameters:
+    ///   - sessionId: The Claude Code session identifier.
+    ///   - tty: The TTY device path for the session.
+    /// - Returns: The name of the removed session, or nil if not found.
+    @discardableResult
+    public func handleSessionEnd(sessionId: String, tty: String) -> String? {
+        guard let state = sessions.removeValue(forKey: tty) else {
+            Self.logger.debug("Hook session-end: no session found for TTY \(tty)")
+            return nil
+        }
+        Self.logger.info("Hook session-end: removed session '\(state.name)' from TTY \(tty)")
+        return state.name
+    }
+
     // MARK: - State Queries
 
     /// Get a snapshot of all registered sessions for the HTTP /state endpoint.

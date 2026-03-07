@@ -1,17 +1,6 @@
 import Foundation
 import Hummingbird
 
-/// JSON body for POST /register.
-///
-/// Matches the MCP server's register() tool output: session name, TTY path,
-/// and optional working directory and context summary.
-public struct RegisterRequest: Decodable, Sendable {
-    let name: String
-    let tty: String
-    let cwd: String?
-    let context: String?
-}
-
 /// JSON body for POST /speak.
 ///
 /// Matches the MCP server's speak() tool output: message text, optional
@@ -20,22 +9,6 @@ public struct SpeakRequest: Decodable, Sendable {
     let message: String
     let session: String?
     let priority: String?
-}
-
-/// JSON body for POST /update.
-///
-/// Matches the MCP server's update_context() tool output: TTY to identify
-/// the session, and optional summary and recent messages for routing context.
-public struct UpdateRequest: Decodable, Sendable {
-    enum CodingKeys: String, CodingKey {
-        case tty
-        case summary
-        case recentMessages = "recent_messages"
-    }
-
-    let tty: String
-    let summary: String?
-    let recentMessages: [SessionMessage]?
 }
 
 /// JSON response for successful operations.
@@ -57,10 +30,47 @@ public struct StateResponse: ResponseEncodable, Sendable {
     let sessions: [SessionSnapshot]
 }
 
-/// JSON response for POST /register with session details.
-public struct RegisterResponse: ResponseEncodable, Sendable {
-    let ok: Bool
-    let name: String
+/// JSON body for POST /hook/session-start.
+///
+/// Accepts the Claude Code hook payload for session start events.
+public struct HookSessionStartRequest: Decodable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case tty
+        case cwd
+    }
+
+    let sessionId: String
+    let tty: String
+    let cwd: String
+}
+
+/// JSON body for POST /hook/stop.
+///
+/// Accepts the Claude Code hook payload for stop events, including
+/// the last assistant message for context tracking.
+public struct HookStopRequest: Decodable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case tty
+        case lastAssistantMessage = "last_assistant_message"
+    }
+
+    let sessionId: String
+    let tty: String
+    let lastAssistantMessage: String?
+}
+
+/// JSON body for POST /hook/session-end.
+///
+/// Accepts the Claude Code hook payload for session end events.
+public struct HookSessionEndRequest: Decodable, Sendable {
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case tty
+    }
+
+    let sessionId: String
     let tty: String
 }
 
@@ -146,11 +156,13 @@ public enum OperatorHTTPServerError: Error, CustomStringConvertible {
 
 /// Hummingbird HTTP server on localhost:7420 with bearer token authentication.
 ///
-/// Exposes four endpoints for the MCP server to communicate with the daemon:
-/// - POST /register: Register a Claude Code session
+/// Exposes endpoints for the MCP server and Claude Code hooks to communicate
+/// with the daemon:
 /// - POST /speak: Queue a speech message
-/// - POST /update: Update session context
 /// - GET /state: Query daemon state
+/// - POST /hook/session-start: Handle Claude Code session start hook
+/// - POST /hook/stop: Handle Claude Code stop hook
+/// - POST /hook/session-end: Handle Claude Code session end hook
 ///
 /// All mutations are dispatched to the SessionRegistry and AudioQueue actors
 /// for thread-safe state management.
@@ -201,10 +213,9 @@ public final class OperatorHTTPServer: Sendable {
         let registry = self.sessionRegistry
         let queue = self.audioQueue
 
-        configureRegisterRoute(router: router, registry: registry, queue: queue)
         configureSpeakRoute(router: router, registry: registry, queue: queue)
-        configureUpdateRoute(router: router, registry: registry)
         configureStateRoute(router: router, registry: registry, queue: queue)
+        configureHookRoutes(router: router, registry: registry)
 
         let app = Application(
             router: router,
@@ -221,50 +232,6 @@ public final class OperatorHTTPServer: Sendable {
 // MARK: - Route Configuration
 
 extension OperatorHTTPServer {
-    /// Configure POST /register route.
-    private func configureRegisterRoute(
-        router: Router<BasicRequestContext>,
-        registry: SessionRegistry,
-        queue: AudioQueue
-    ) {
-        // swiftlint:disable:next closure_body_length
-        router.post("/register") { request, context -> RegisterResponse in
-            let body = try await context.requestDecoder.decode(
-                RegisterRequest.self,
-                from: request,
-                context: context
-            )
-
-            let name = body.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else {
-                throw HTTPError(.badRequest, message: "Session name cannot be empty")
-            }
-
-            let ok = await registry.register(
-                name: name,
-                tty: body.tty,
-                cwd: body.cwd ?? "",
-                context: body.context
-            )
-            guard ok else {
-                throw HTTPError(.badRequest, message: "Name 'operator' is reserved")
-            }
-            async let voice = registry.voiceFor(session: name)
-            async let pitch = registry.pitchFor(session: name)
-            await queue.enqueue(
-                AudioQueue.QueuedMessage(
-                    sessionName: "Operator",
-                    text: "\(name) connected.",
-                    priority: .urgent,
-                    voice: voice,
-                    pitchMultiplier: pitch
-                )
-            )
-            Self.logger.info("Registered session '\(name)' via HTTP")
-            return RegisterResponse(ok: true, name: name, tty: body.tty)
-        }
-    }
-
     /// Configure POST /speak route.
     private func configureSpeakRoute(
         router: Router<BasicRequestContext>,
@@ -305,26 +272,6 @@ extension OperatorHTTPServer {
         }
     }
 
-    /// Configure POST /update route.
-    private func configureUpdateRoute(router: Router<BasicRequestContext>, registry: SessionRegistry) {
-        router.post("/update") { request, context -> OkResponse in
-            let body = try await context.requestDecoder.decode(
-                UpdateRequest.self,
-                from: request,
-                context: context
-            )
-
-            await registry.updateContext(
-                tty: body.tty,
-                summary: body.summary ?? "",
-                recentMessages: body.recentMessages ?? []
-            )
-
-            Self.logger.info("Updated context for TTY \(body.tty) via HTTP")
-            return OkResponse(ok: true)
-        }
-    }
-
     /// Configure GET /state route.
     private func configureStateRoute(
         router: Router<BasicRequestContext>,
@@ -342,6 +289,49 @@ extension OperatorHTTPServer {
                 queueLength: queueLength,
                 sessions: registryState.sessions
             )
+        }
+    }
+
+    /// Configure hook routes for Claude Code integration.
+    ///
+    /// These endpoints receive raw hook JSON from Claude Code and route
+    /// the payloads to the session registry for lifecycle management.
+    private func configureHookRoutes(router: Router<BasicRequestContext>, registry: SessionRegistry) {
+        router.post("/hook/session-start") { request, context -> OkResponse in
+            let body = try await context.requestDecoder.decode(
+                HookSessionStartRequest.self,
+                from: request,
+                context: context
+            )
+            await registry.handleSessionStart(sessionId: body.sessionId, tty: body.tty, cwd: body.cwd)
+            Self.logger.info("Hook session-start for session \(body.sessionId)")
+            return OkResponse(ok: true)
+        }
+
+        router.post("/hook/stop") { request, context -> OkResponse in
+            let body = try await context.requestDecoder.decode(
+                HookStopRequest.self,
+                from: request,
+                context: context
+            )
+            await registry.handleStop(
+                sessionId: body.sessionId,
+                tty: body.tty,
+                lastAssistantMessage: body.lastAssistantMessage
+            )
+            Self.logger.info("Hook stop for session \(body.sessionId)")
+            return OkResponse(ok: true)
+        }
+
+        router.post("/hook/session-end") { request, context -> OkResponse in
+            let body = try await context.requestDecoder.decode(
+                HookSessionEndRequest.self,
+                from: request,
+                context: context
+            )
+            await registry.handleSessionEnd(sessionId: body.sessionId, tty: body.tty)
+            Self.logger.info("Hook session-end for session \(body.sessionId)")
+            return OkResponse(ok: true)
         }
     }
 }
