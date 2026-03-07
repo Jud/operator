@@ -14,4 +14,7 @@ public protocol TriggerSource: AnyObject {
 
     /// Called when the push-to-talk key is released (voice capture should end).
     var onStop: (@Sendable @MainActor () -> Void)? { get set }
+
+    /// Called when the user presses Escape to cancel the current recording.
+    var onCancel: (@Sendable @MainActor () -> Void)? { get set }
 }
