@@ -109,27 +109,29 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
     /// Build and run the JXA write script.
     private func runWriteScript(tty: String, tempFilePath: String) async throws -> String {
         let script = """
-            ObjC.import('Foundation');
-            const textData = $.NSString.stringWithContentsOfFileEncodingError(
-                '\(tempFilePath)', $.NSUTF8StringEncoding, null);
-            const text = textData.js;
-            const tty = '\(tty)';
-            const app = Application("iTerm2");
-            for (const win of app.windows()) {
-                for (const tab of win.tabs()) {
-                    for (const sess of tab.sessions()) {
-                        if (sess.tty() === tty) {
-                            sess.write({ text: "\\u001b", newline: false });
-                            delay(0.3);
-                            sess.write({ text: text, newline: false });
-                            delay(0.2);
-                            sess.write({ text: "\\r", newline: false });
-                            return "ok";
+            (function() {
+                ObjC.import('Foundation');
+                const textData = $.NSString.stringWithContentsOfFileEncodingError(
+                    '\(tempFilePath)', $.NSUTF8StringEncoding, null);
+                const text = textData.js;
+                const tty = '\(tty)';
+                const app = Application("iTerm2");
+                for (const win of app.windows()) {
+                    for (const tab of win.tabs()) {
+                        for (const sess of tab.sessions()) {
+                            if (sess.tty() === tty) {
+                                sess.write({ text: "\\u0015", newline: false });
+                                delay(0.1);
+                                sess.write({ text: text, newline: false });
+                                delay(0.1);
+                                sess.write({ text: "\\r", newline: false });
+                                return "ok";
+                            }
                         }
                     }
                 }
-            }
-            return "session_not_found";
+                return "session_not_found";
+            })();
             """
 
         return try await runOsascript(script)
