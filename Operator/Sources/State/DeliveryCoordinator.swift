@@ -34,7 +34,7 @@ public struct DeliveryCoordinator {
 
     private let itermBridge: ITermBridge
     private let registry: SessionRegistry
-    private let feedback: AudioFeedback
+    private let feedback: any AudioFeedbackProviding
 
     /// Creates a new delivery coordinator.
     ///
@@ -42,7 +42,7 @@ public struct DeliveryCoordinator {
     ///   - itermBridge: JXA bridge for iTerm2 text delivery.
     ///   - registry: Actor managing registered Claude Code sessions.
     ///   - feedback: Non-verbal audio tone player.
-    public init(itermBridge: ITermBridge, registry: SessionRegistry, feedback: AudioFeedback) {
+    public init(itermBridge: ITermBridge, registry: SessionRegistry, feedback: any AudioFeedbackProviding) {
         self.itermBridge = itermBridge
         self.registry = registry
         self.feedback = feedback

@@ -10,8 +10,8 @@ import AVFoundation
 /// Playback flow:
 /// 1. External code calls `enqueue(_:)` to add a message.
 /// 2. If idle, `playNextIfIdle()` dequeues the front message and hands it to SpeechManager.
-/// 3. SpeechManager's `onFinishedSpeaking` callback fires when the utterance completes.
-/// 4. The callback calls `handleSpeechFinished()`, which transitions back to idle and
+/// 3. SpeechManager yields to its `finishedSpeaking` AsyncStream when the utterance completes.
+/// 4. The stream consumer calls `handleSpeechFinished()`, which transitions back to idle and
 ///    triggers `playNextIfIdle()` again for the next message.
 ///
 /// Mute-on-talk:
@@ -73,7 +73,7 @@ public actor AudioQueue {
     private var queue: [QueuedMessage] = []
     private var state: AudioState = .idle
     private let speechManager: any SpeechManaging
-    private let feedback: AudioFeedback
+    private let feedback: any AudioFeedbackProviding
 
     /// Tracks the last spoken message text per agent session name, for replay support.
     private var lastSpokenPerAgent: [String: String] = [:]
@@ -98,27 +98,22 @@ public actor AudioQueue {
     /// - Parameters:
     ///   - speechManager: The speech synthesis manager.
     ///   - feedback: The audio feedback tone player.
-    public init(speechManager: any SpeechManaging, feedback: AudioFeedback) {
+    public init(speechManager: any SpeechManaging, feedback: any AudioFeedbackProviding) {
         self.speechManager = speechManager
         self.feedback = feedback
     }
 
     // MARK: - Setup
 
-    /// Wire up the SpeechManager delegate callback to drive sequential playback.
+    /// Start consuming the speech manager's `finishedSpeaking` stream to drive sequential playback.
     ///
-    /// Must be called once after init to connect the SpeechManager's onFinishedSpeaking
-    /// callback to this actor's handleSpeechFinished method.
-    public func setUp() async {
-        let manager = speechManager
-        await MainActor.run {
-            manager.onFinishedSpeaking = { [weak self] in
-                guard let self else {
-                    return
-                }
-                Task {
-                    await self.handleSpeechFinished()
-                }
+    /// Spawns a detached task that awaits each stream element and calls `handleSpeechFinished()`.
+    /// The task ends automatically when the stream terminates (i.e., the speech manager deallocates).
+    public func startListening() async {
+        let stream = await MainActor.run { speechManager.finishedSpeaking }
+        Task { [weak self] in
+            for await _ in stream {
+                await self?.handleSpeechFinished()
             }
         }
     }
@@ -149,7 +144,7 @@ public actor AudioQueue {
         state = .userSpeaking
         Self.logger.info("User started speaking; queue paused (pending: \(self.queue.count))")
 
-        let isSpeaking = await MainActor.run { speechManager.synthesizer.isSpeaking }
+        let isSpeaking = await MainActor.run { speechManager.isSpeaking }
         guard isSpeaking else {
             return nil
         }
@@ -165,7 +160,7 @@ public actor AudioQueue {
         Self.logger.info("User stopped speaking; resuming queue (pending: \(self.queue.count))")
 
         if !queue.isEmpty {
-            feedback.play(.pending)
+            await feedback.play(.pending)
         }
         await playNextIfIdle()
     }

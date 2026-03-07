@@ -57,7 +57,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         let aq = AudioQueue(speechManager: sm, feedback: fb)
         audioQueue = aq
-        await aq.setUp()
+        await aq.startListening()
 
         let transcriber = SpeechTranscriber()
         let itermBridge = ITermBridge()
@@ -209,7 +209,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
 
-        let speechStatus = await SpeechTranscriber.requestAuthorization()
+        let speechStatus = await AppleSpeechEngine.requestAuthorization()
         if speechStatus != .authorized {
             Self.logger.warning(
                 "Speech recognition permission not granted: \(String(describing: speechStatus))"

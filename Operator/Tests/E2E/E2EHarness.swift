@@ -29,7 +29,7 @@ internal final class E2EHarness {
 
     private(set) var itermBridge: ITermBridge?
     private(set) var voiceManager: VoiceManager?
-    private(set) var feedback: AudioFeedback?
+    private(set) var feedback: (any AudioFeedbackProviding)?
     private(set) var audioQueue: AudioQueue?
     private(set) var registry: SessionRegistry?
     private(set) var router: MessageRouter?
@@ -167,7 +167,7 @@ internal final class E2EHarness {
 
         let aq = AudioQueue(speechManager: mockSpeechManager, feedback: fb)
         audioQueue = aq
-        await aq.setUp()
+        await aq.startListening()
 
         let reg = SessionRegistry(itermBridge: bridge, voiceManager: vm)
         registry = reg

@@ -86,7 +86,7 @@ public final class StateMachine {
     private let transcriber: any SpeechTranscribing
     private let audioQueue: AudioQueue
     private let router: MessageRouter
-    private let feedback: AudioFeedback
+    private let feedback: any AudioFeedbackProviding
     private let itermBridge: ITermBridge
     private let registry: SessionRegistry
     private let voiceManager: VoiceManager
@@ -111,7 +111,7 @@ public final class StateMachine {
         transcriber: any SpeechTranscribing,
         audioQueue: AudioQueue,
         router: MessageRouter,
-        feedback: AudioFeedback,
+        feedback: any AudioFeedbackProviding,
         itermBridge: ITermBridge,
         registry: SessionRegistry,
         voiceManager: VoiceManager,

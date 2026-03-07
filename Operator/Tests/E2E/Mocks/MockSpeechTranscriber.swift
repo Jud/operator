@@ -6,7 +6,8 @@ import OperatorCore
 /// Set `nextTranscription` before each trigger cycle to control what text
 /// the StateMachine receives from "transcription". The mock immediately
 /// returns the scripted text without any audio processing.
-internal final class MockSpeechTranscriber: SpeechTranscribing, @unchecked Sendable {
+@MainActor
+internal final class MockSpeechTranscriber: SpeechTranscribing {
     private(set) var isListening = false
 
     /// The text to return from the next stopListening() / stopListeningWithTimeout() call.
