@@ -4,7 +4,7 @@ import OperatorCore
 /// E2E test runner entry point.
 ///
 /// Creates a real iTerm window with 2 tabs, boots the Operator daemon with
-/// mock voice I/O and real routing/delivery, runs 10 test scenarios, prints
+/// mock voice I/O and real routing/delivery, runs 12 test scenarios, prints
 /// a pass/fail summary, and exits with code 0 if all pass or 1 if any fail.
 ///
 /// Signal handling ensures the test iTerm window is closed on ctrl-C.

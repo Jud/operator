@@ -11,7 +11,7 @@ internal struct ScenarioResult: Sendable {
 // MARK: - Test Scenarios
 
 extension E2EHarness {
-    /// Run all 10 test scenarios sequentially and return results.
+    /// Run all test scenarios sequentially and return results.
     func runAllScenarios() async -> [ScenarioResult] {
         var results: [ScenarioResult] = []
 
@@ -25,6 +25,8 @@ extension E2EHarness {
         results.append(await testSessionRemoval())
         results.append(await testNoSessionsError())
         results.append(await testMCPSpeak())
+        results.append(await testTriggerCancel())
+        results.append(await testHookSessionLifecycle())
 
         return results
     }

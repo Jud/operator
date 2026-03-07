@@ -195,6 +195,9 @@ internal final class E2EHarness {
         mockTrigger.onStop = { [weak sm] in
             sm?.triggerStop()
         }
+        mockTrigger.onCancel = { [weak sm] in
+            sm?.triggerCancel()
+        }
 
         print("[harness] Components booted with mock voice I/O")
     }
@@ -290,7 +293,7 @@ internal final class E2EHarness {
 
     /// Send an HTTP POST request to the test server.
     @discardableResult
-    private func httpPost(path: String, body: [String: String]) async throws -> Data {
+    func httpPost(path: String, body: [String: String]) async throws -> Data {
         guard let url = URL(string: "http://127.0.0.1:\(testPort)\(path)") else {
             throw E2EError.setupFailed("Invalid URL for path: \(path)")
         }
