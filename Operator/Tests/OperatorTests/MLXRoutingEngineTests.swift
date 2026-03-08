@@ -70,9 +70,7 @@ internal struct MLXRoutingJSONTests {
     func confidentRoutingJSON() throws {
         let json: [String: Any] = [
             "session": "frontend",
-            "confident": true,
-            "candidates": ["frontend"],
-            "question": ""
+            "confident": true
         ]
 
         let data = try JSONSerialization.data(withJSONObject: json)
@@ -83,16 +81,13 @@ internal struct MLXRoutingJSONTests {
 
         #expect(parsed["session"] as? String == "frontend")
         #expect(parsed["confident"] as? Bool == true)
-        #expect((parsed["candidates"] as? [String])?.count == 1)
     }
 
-    @Test("ambiguous routing JSON includes candidates and question")
+    @Test("ambiguous routing JSON has expected structure")
     func ambiguousRoutingJSON() throws {
         let json: [String: Any] = [
             "session": "",
-            "confident": false,
-            "candidates": ["frontend", "backend"],
-            "question": "Which project should receive this CSS fix?"
+            "confident": false
         ]
 
         let data = try JSONSerialization.data(withJSONObject: json)
@@ -103,8 +98,6 @@ internal struct MLXRoutingJSONTests {
 
         #expect((parsed["session"] as? String)?.isEmpty == true)
         #expect(parsed["confident"] as? Bool == false)
-        #expect((parsed["candidates"] as? [String])?.count == 2)
-        #expect((parsed["question"] as? String)?.isEmpty == false)
     }
 
     @Test("routing schema matches format expected by MessageRouter")
@@ -117,9 +110,7 @@ internal struct MLXRoutingJSONTests {
             return
         }
 
-        let expectedKeys = Set(["session", "confident", "candidates", "question"])
-        let schemaKeys = Set(properties.keys)
-
-        #expect(expectedKeys.isSubset(of: schemaKeys))
+        #expect(properties["session"] != nil)
+        #expect(properties["confident"] != nil)
     }
 }

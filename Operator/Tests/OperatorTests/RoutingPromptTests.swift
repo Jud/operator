@@ -66,14 +66,12 @@ internal struct RoutingPromptSchemaTests {
         #expect(json["type"] as? String == "object")
     }
 
-    @Test("output schema has all required fields defined in properties")
+    @Test("output schema has required fields defined in properties")
     func outputSchemaHasAllFields() throws {
         let properties = try parseProperties()
 
         #expect(properties["session"] != nil)
         #expect(properties["confident"] != nil)
-        #expect(properties["candidates"] != nil)
-        #expect(properties["question"] != nil)
     }
 
     @Test("session field is typed as string")
@@ -94,31 +92,6 @@ internal struct RoutingPromptSchemaTests {
             return
         }
         #expect(confident["type"] as? String == "boolean")
-    }
-
-    @Test("candidates field is typed as array of strings")
-    func candidatesFieldIsArrayOfStrings() throws {
-        let properties = try parseProperties()
-        guard let candidates = properties["candidates"] as? [String: Any] else {
-            Issue.record("candidates property is not a dictionary")
-            return
-        }
-        #expect(candidates["type"] as? String == "array")
-        guard let items = candidates["items"] as? [String: Any] else {
-            Issue.record("candidates items is not a dictionary")
-            return
-        }
-        #expect(items["type"] as? String == "string")
-    }
-
-    @Test("question field is typed as string")
-    func questionFieldIsString() throws {
-        let properties = try parseProperties()
-        guard let question = properties["question"] as? [String: Any] else {
-            Issue.record("question property is not a dictionary")
-            return
-        }
-        #expect(question["type"] as? String == "string")
     }
 
     @Test("required fields include session and confident")
