@@ -543,7 +543,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static func runPluginRegistration(claudePath: String) async {
-        // Add marketplace (idempotent — no-ops if already added)
         let addResult = Self.runProcess(
             claudePath,
             ["plugin", "marketplace", "add", "Jud/operator-plugin"]
@@ -554,7 +553,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             logger.info("Plugin marketplace registered")
         }
 
-        // Install + enable plugin (idempotent — no-ops if already installed)
         let installResult = Self.runProcess(
             claudePath,
             ["plugin", "install", "operator@operator"]

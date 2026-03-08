@@ -227,14 +227,11 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
         Task {
             await manager.registerDownloadHandler(for: .routing) { _, progressCallback in
                 await progressCallback(0.0)
-                // Use LLMModelFactory to trigger the download without loading.
-                // The factory downloads to the HuggingFace Hub cache automatically.
                 let configuration = ModelConfiguration(id: modelID)
                 _ = try await LLMModelFactory.shared.loadContainer(
                     configuration: configuration
                 )
                 await progressCallback(1.0)
-                // Return the HF cache directory
                 let cacheDir = FileManager.default
                     .urls(for: .cachesDirectory, in: .userDomainMask)[0]
                     .appendingPathComponent("huggingface/hub", isDirectory: true)

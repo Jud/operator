@@ -42,7 +42,11 @@ public final class SpeechTranscriber: SpeechTranscribing {
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         let capturedEngine = engine
 
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: recordingFormat) { buffer, _ in
+        inputNode.installTap(
+            onBus: 0,
+            bufferSize: 1_024,
+            format: recordingFormat
+        ) { @Sendable buffer, _ in
             capturedEngine.append(buffer)
         }
 

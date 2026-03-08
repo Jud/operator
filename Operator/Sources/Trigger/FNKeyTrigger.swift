@@ -63,6 +63,7 @@ public final class FNKeyTrigger: TriggerSource {
     /// Retained references to prevent the tap and run loop source from being deallocated.
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
+    private var tapWatchdogTimer: Timer?
 
     /// Whether either trigger source is currently in an active listening state.
     private var isListening: Bool {
@@ -104,15 +105,15 @@ public final class FNKeyTrigger: TriggerSource {
             let tap = CGEvent.tapCreate(
                 tap: .cgSessionEventTap,
                 place: .headInsertEventTap,
-                options: .defaultTap,
+                options: .listenOnly,
                 eventsOfInterest: mask,
                 callback: { _, type, event, refcon -> Unmanaged<CGEvent>? in
                     guard let refcon else {
-                        return Unmanaged.passRetained(event)
+                        return Unmanaged.passUnretained(event)
                     }
                     let trigger = Unmanaged<FNKeyTrigger>.fromOpaque(refcon).takeUnretainedValue()
                     trigger.handleEvent(type: type, event: event)
-                    return Unmanaged.passRetained(event)
+                    return Unmanaged.passUnretained(event)
                 },
                 userInfo: Unmanaged.passUnretained(self).toOpaque()
             )
@@ -129,6 +130,7 @@ public final class FNKeyTrigger: TriggerSource {
         self.runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+        startTapWatchdog()
 
         Self.logger.info("CGEventTap installed for FN key monitoring")
         if let keyCode = secondaryKeyCode {
@@ -136,7 +138,21 @@ public final class FNKeyTrigger: TriggerSource {
         }
     }
 
+    /// Periodically re-enable the event tap in case macOS disables it due to timeout.
+    private func startTapWatchdog() {
+        tapWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
+            guard let self, let tap = self.eventTap else {
+                return
+            }
+            if !CGEvent.tapIsEnabled(tap: tap) {
+                CGEvent.tapEnable(tap: tap, enable: true)
+                Self.logger.warning("Re-enabled event tap (was disabled by system)")
+            }
+        }
+    }
+
     deinit {
+        tapWatchdogTimer?.invalidate()
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
         }
