@@ -8,13 +8,11 @@ import OSLog
 /// It coordinates lazy loading (no models load at startup), coalesces concurrent download requests,
 /// and publishes state changes via AsyncStream for Settings UI observation.
 ///
-/// Each model type requires a registered download handler (provided by the engine implementations
-/// in T4-T6) that performs the actual download. ModelManager wraps these with state tracking,
-/// progress reporting, and cache directory management.
+/// Each model type requires a registered download handler (provided by its engine implementation,
+/// e.g. ParakeetEngine, Qwen3TTSSpeechManager, MLXRoutingEngine) that performs the actual download.
+/// ModelManager wraps these with state tracking, progress reporting, and cache directory management.
 ///
 /// Cache location: ~/Library/Caches/com.operator.app/models/
-///
-/// Reference: design.md Section 3.5
 public actor ModelManager {
     // MARK: - Type Aliases
 
