@@ -168,6 +168,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             audioQueue: aq,
             voiceManager: vm
         )
+        wireSettingsModel(
+            adaptiveSTT: engines.adaptiveSTT,
+            adaptiveTTS: engines.adaptiveTTS,
+            adaptiveRouting: engines.adaptiveRouting,
+            modelManager: mm
+        )
 
         registerLoginItem()
         sm.speak("Operator is ready.", voice: vm.operatorVoice, prefix: "Operator")
@@ -459,6 +465,27 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                 )
             }
+        }
+    }
+
+    /// Connect the EngineSettingsModel singleton to the adaptive engines
+    /// and ModelManager so that Settings UI changes propagate live.
+    private func wireSettingsModel(
+        adaptiveSTT: AdaptiveTranscriptionEngine,
+        adaptiveTTS: AdaptiveSpeechManager,
+        adaptiveRouting: AdaptiveRoutingEngine,
+        modelManager: ModelManager
+    ) {
+        let settings = EngineSettingsModel.shared
+        settings.attach(modelManager: modelManager)
+        settings.onSTTEngineChanged = { [weak adaptiveSTT] useLocal in
+            adaptiveSTT?.setUseLocal(useLocal)
+        }
+        settings.onTTSEngineChanged = { [weak adaptiveTTS] useLocal in
+            adaptiveTTS?.setUseLocal(useLocal)
+        }
+        settings.onRoutingEngineChanged = { [weak adaptiveRouting] useLocal in
+            adaptiveRouting?.setUseLocal(useLocal)
         }
     }
 
