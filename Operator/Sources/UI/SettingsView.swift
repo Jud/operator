@@ -20,16 +20,37 @@ public struct SettingsView: View {
     @AppStorage("feedbackSoundsEnabled")
     private var feedbackSoundsEnabled: Bool = true
 
+    /// UID of the selected input (microphone) device.
+    ///
+    /// Empty string means system default.
+    @AppStorage("inputDeviceUID")
+    private var inputDeviceUID: String = ""
+
+    /// UID of the selected output (speaker) device.
+    ///
+    /// Empty string means system default.
+    @AppStorage("outputDeviceUID")
+    private var outputDeviceUID: String = ""
+
+    // MARK: - Local State
+
+    @State private var inputDevices: [AudioDevice] = []
+    @State private var outputDevices: [AudioDevice] = []
+
     /// The view body rendering the settings form.
     public var body: some View {
         Form {
+            audioDeviceSection
             triggerKeySection
             triggerBehaviorSection
             audioSection
             aboutSection
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 350)
+        .frame(width: 450, height: 450)
+        .onAppear {
+            refreshDevices()
+        }
     }
 
     /// Creates a new settings view.
@@ -39,6 +60,32 @@ public struct SettingsView: View {
 // MARK: - Sections
 
 extension SettingsView {
+    private var audioDeviceSection: some View {
+        Section("Audio Devices") {
+            Picker("Microphone", selection: $inputDeviceUID) {
+                Text("System Default").tag("")
+                ForEach(inputDevices) { device in
+                    Text(device.name).tag(device.uid)
+                }
+            }
+
+            Picker("Speaker", selection: $outputDeviceUID) {
+                Text("System Default").tag("")
+                ForEach(outputDevices) { device in
+                    Text(device.name).tag(device.uid)
+                }
+            }
+            Text("Speaker setting applies to audio cues. Voice synthesis uses the system default output.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+
+            Button("Refresh Devices") {
+                refreshDevices()
+            }
+            .font(.caption)
+        }
+    }
+
     private var triggerKeySection: some View {
         Section("Trigger Key") {
             LabeledContent("Current Key") {
@@ -97,5 +144,12 @@ extension SettingsView {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
         return "\(version) (\(build))"
+    }
+
+    // MARK: - Actions
+
+    private func refreshDevices() {
+        inputDevices = AudioDeviceManager.inputDevices()
+        outputDevices = AudioDeviceManager.outputDevices()
     }
 }

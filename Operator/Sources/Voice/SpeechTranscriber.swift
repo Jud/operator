@@ -1,4 +1,6 @@
 import AVFoundation
+import AudioToolbox
+import CoreAudio
 
 /// Wraps a ``TranscriptionEngine`` and AVAudioEngine for on-device speech-to-text.
 ///
@@ -33,6 +35,8 @@ public final class SpeechTranscriber: SpeechTranscribing {
         cancelExistingSession()
 
         try engine.prepare()
+
+        applyInputDevice()
 
         let inputNode = audioEngine.inputNode
         let recordingFormat = inputNode.outputFormat(forBus: 0)
@@ -83,6 +87,33 @@ public final class SpeechTranscriber: SpeechTranscribing {
         let result = await transcriptionTask.value
         timeoutTask.cancel()
         return result
+    }
+
+    /// Apply the user-selected input device to the audio engine, if configured.
+    private func applyInputDevice() {
+        let uid = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? ""
+        guard !uid.isEmpty, let deviceID = AudioDeviceManager.deviceID(forUID: uid) else {
+            return
+        }
+
+        guard let audioUnit = audioEngine.inputNode.audioUnit else {
+            Self.logger.warning("No audio unit on input node, cannot set device")
+            return
+        }
+        var devID = deviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &devID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        if status == noErr {
+            Self.logger.info("Set input device to \(uid)")
+        } else {
+            Self.logger.warning("Failed to set input device (status: \(status)), using default")
+        }
     }
 
     /// Cancel any in-flight session and stop audio capture.

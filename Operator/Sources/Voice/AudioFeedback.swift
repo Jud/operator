@@ -56,6 +56,16 @@ public final class AudioFeedback: AudioFeedbackProviding {
         players = loaded
     }
 
+    /// Apply the user-selected output device to a player, if configured.
+    private func applyOutputDevice(to player: AVAudioPlayer) {
+        let uid = UserDefaults.standard.string(forKey: "outputDeviceUID") ?? ""
+        if uid.isEmpty {
+            player.currentDevice = nil
+        } else {
+            player.currentDevice = uid
+        }
+    }
+
     /// Play an audio feedback tone.
     ///
     /// Resets playback position to allow rapid re-triggering.
@@ -67,6 +77,7 @@ public final class AudioFeedback: AudioFeedbackProviding {
             Self.logger.warning("No player available for cue: \(cue.rawValue)")
             return
         }
+        applyOutputDevice(to: player)
         player.currentTime = 0
         player.play()
         Self.logger.debug("Playing cue: \(cue.rawValue)")

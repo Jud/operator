@@ -285,7 +285,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.register(defaults: [
             "toggleModeEnabled": true,
             "feedbackSoundsEnabled": true,
-            "triggerKeyCode": 63
+            "triggerKeyCode": 63,
+            "inputDeviceUID": "",
+            "outputDeviceUID": ""
         ])
     }
 
