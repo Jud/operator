@@ -13,6 +13,7 @@ let package = Package(
             name: "OperatorCore",
             dependencies: [
                 .product(name: "Hummingbird", package: "hummingbird"),
+                .product(name: "AudioCommon", package: "speech-swift"),
                 .product(name: "Qwen3TTS", package: "speech-swift"),
                 .product(name: "ParakeetASR", package: "speech-swift"),
             ],
