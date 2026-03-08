@@ -94,7 +94,7 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
     private static func generateConstrained(
         prompt: String,
         context: ModelContext,
-        configuration: ModelConfiguration,
+        processor: GrammarMaskedLogitProcessor,
         maxTokens: Int
     ) async throws -> String {
         let userInput = UserInput(
@@ -105,14 +105,28 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
         )
         let input = try await context.processor.prepare(input: userInput)
 
-        let grammar = Grammar.schema(RoutingPrompt.outputSchemaString)
-        let parameters = GenerateParameters(maxTokens: maxTokens, temperature: 0)
+        let sampler = GenerateParameters(temperature: 0).sampler()
+        processor.grammarMatcher.reset()
 
-        let result = try await MLXStructured.generate(
+        let iterator = try TokenIterator(
             input: input,
-            parameters: parameters,
+            model: context.model,
+            processor: processor,
+            sampler: sampler,
+            maxTokens: maxTokens
+        )
+
+        let didGenerate: ([Int]) -> GenerateDisposition = { _ in
+            if processor.grammarMatcher.isTerminated() {
+                return .stop
+            }
+            return .more
+        }
+        let result: GenerateResult = MLXLMCommon.generate(
+            input: input,
             context: context,
-            grammar: grammar
+            iterator: iterator,
+            didGenerate: didGenerate
         )
 
         return result.output
@@ -138,8 +152,12 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
         }
 
         let wrappedPrompt = RoutingPrompt.wrapForLocalModel(prompt)
-        let configuration = modelConfiguration
         let maxTokens = Self.maxGenerationTokens
+
+        // Build/cache the grammar processor (first call loads tokenizer, ~1s; subsequent calls instant)
+        let processor = try await container.perform { [self] context in
+            try await self.ensureGrammarProcessor(context: context)
+        }
 
         Self.logger.info("Running local routing inference")
 
@@ -149,7 +167,7 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
                     try await Self.generateConstrained(
                         prompt: wrappedPrompt,
                         context: context,
-                        configuration: configuration,
+                        processor: processor,
                         maxTokens: maxTokens
                     )
                 }
@@ -179,6 +197,23 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
     }
 
     // MARK: - Model Lifecycle
+
+    /// Build or return the cached grammar processor for the routing schema.
+    ///
+    /// The processor loads tokenizer vocab from Hub configuration, which takes ~1s.
+    /// Caching it eliminates this overhead on subsequent calls.
+    private func ensureGrammarProcessor(context: ModelContext) async throws -> GrammarMaskedLogitProcessor {
+        if let cached = grammarProcessor {
+            return cached
+        }
+        let grammar = Grammar.schema(RoutingPrompt.outputSchemaString)
+        let processor = try await GrammarMaskedLogitProcessor.from(
+            configuration: context.configuration,
+            grammar: grammar
+        )
+        grammarProcessor = processor
+        return processor
+    }
 
     /// Load the routing model if not already in memory.
     ///

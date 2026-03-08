@@ -5,6 +5,8 @@ included:
 excluded:
   - .build
   - DerivedData
+  - Tests/Benchmarks
+  - Tests/OperatorTests/PerformanceBenchmarkTests.swift
 
 opt_in_rules:
   - array_init

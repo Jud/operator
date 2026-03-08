@@ -40,11 +40,9 @@ public enum RoutingPrompt {
     /// Raw JSON schema string for grammar-constrained decoding.
     ///
     /// Defines the output structure that ``MLXRoutingEngine`` enforces via xgrammar.
-    /// All fields are strings/booleans/arrays to avoid nullable type complexity.
-    /// When the model is not confident, `session` is set to an empty string.
-    ///
-    /// This schema matches the format that ``MessageRouter.claudePipeRoute()`` already
-    /// parses from the ``RoutingEngine`` output.
+    /// Minimal schema (session + confident only) to minimize token generation.
+    /// ``MessageRouter`` has fallback defaults for candidates and question fields
+    /// when they're absent from the response.
     public static let outputSchemaString = """
         {
           "type": "object",
@@ -56,17 +54,6 @@ public enum RoutingPrompt {
             "confident": {
               "type": "boolean",
               "description": "Whether the routing decision is confident"
-            },
-            "candidates": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "List of likely target session names when ambiguous"
-            },
-            "question": {
-              "type": "string",
-              "description": "Clarification question when ambiguous"
             }
           },
           "required": ["session", "confident"],
