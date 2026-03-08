@@ -93,7 +93,9 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     /// Signal end of audio and return the transcribed text.
     ///
     /// Loads the model if not already in memory, runs CoreML inference on the
-    /// accumulated audio samples, then unloads the model to free memory.
+    /// accumulated audio samples. The model stays resident after transcription
+    /// to avoid the ~2s warmup penalty on each call; use ``unloadModel()``
+    /// explicitly when memory pressure requires it.
     public func finishAndTranscribe() async -> String? {
         let samples = audioSamples.withLock { buf in
             let copy = buf
@@ -131,7 +133,6 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
             return nil
         }
 
-        unloadModel()
         return text.isEmpty ? nil : text
     }
 
@@ -173,8 +174,9 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     /// Load the Parakeet model if not already in memory.
     ///
     /// Uses `ParakeetASRModel.fromPretrained()` which handles downloading from
-    /// HuggingFace Hub (if not cached) and loading CoreML models. Includes a
-    /// warmup pass to trigger CoreML graph compilation.
+    /// HuggingFace Hub (if not cached) and loading CoreML models. The first
+    /// transcription triggers CoreML graph compilation (~2s one-time cost);
+    /// subsequent transcriptions complete in ~30ms.
     private func ensureModelLoaded() async throws {
         guard model == nil else {
             return
@@ -184,15 +186,17 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
         Self.logger.info("Loading Parakeet model...")
 
         let loaded = try await ParakeetASRModel.fromPretrained()
-        try loaded.warmUp()
         model = loaded
 
         await modelManager.markLoaded(.stt)
-        Self.logger.info("Parakeet model loaded and warmed up")
+        Self.logger.info("Parakeet model loaded")
     }
 
     /// Unload the CoreML model to free memory and update ModelManager state.
-    private func unloadModel() {
+    ///
+    /// Call this when memory pressure is high and the STT model is not actively
+    /// needed. The model will be reloaded on the next transcription.
+    public func unloadModel() {
         model?.unload()
         model = nil
         let manager = modelManager

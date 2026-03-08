@@ -5,6 +5,7 @@ import OperatorCore
 
 private enum BenchmarkTarget: String, CaseIterable {
     case routing
+    case routingSingle = "routing-single"
     case routingLatency = "routing-latency"
     case routingAccuracy = "routing-accuracy"
     case tts
@@ -24,6 +25,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("")
     print("Targets:")
     print("  routing           Run routing latency and routing accuracy benchmarks")
+    print("  routing-single    Run one profiled routing inference with phase timings")
     print("  routing-latency   Run only routing latency benchmark")
     print("  routing-accuracy  Run only routing accuracy benchmark")
     print("  tts               Run TTS time-to-first-audio benchmark")
@@ -38,6 +40,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("")
     print("Examples:")
     print("  ./scripts/run-benchmarks.sh routing")
+    print("  ./scripts/run-benchmarks.sh routing-single")
     print("  ./scripts/run-benchmarks.sh --no-build routing-latency")
     print("  ./scripts/run-benchmarks.sh stt-long")
     print("  ./scripts/run-benchmarks.sh --release memory")
@@ -110,6 +113,99 @@ private func startModelProgressObserver(
     }
 }
 
+private func makeBenchmarkVoice() -> VoiceDescriptor? {
+    guard let appleVoice = AVSpeechSynthesisVoice(language: "en-US") else {
+        return nil
+    }
+    return VoiceDescriptor(appleVoice: appleVoice, qwenSpeakerID: "benchmark")
+}
+
+private func makeRoutingBenchmarkSessions(voice: VoiceDescriptor) -> [SessionState] {
+    [
+        SessionState(
+            name: "ui-shell",
+            tty: "/dev/benchmark1",
+            cwd: "/Users/jud/work/operator-ui",
+            context: "Branch feat/settings-loading. Editing web/src/routes/settings.tsx, web/src/components/LoadingCard.tsx, and web/src/styles/dashboard.css for React loading states, layout polish, and responsive CSS.",
+            recentMessages: [
+                SessionMessage(role: "user", text: "Fix the janky loading state on the settings dashboard and make the cards stop shifting on mobile."),
+                SessionMessage(role: "assistant", text: "I updated LoadingCard.tsx, SettingsRoute.tsx, and dashboard.css; next I am wiring the pending query state and skeleton layout.")
+            ],
+            status: .idle,
+            lastActivity: Date(),
+            voice: voice,
+            pitchMultiplier: 1.0
+        ),
+        SessionState(
+            name: "profile-api",
+            tty: "/dev/benchmark2",
+            cwd: "/Users/jud/work/operator-api",
+            context: "Branch feat/profile-endpoints. Editing api/routes/profile.py, services/user_profile.py, and db/queries/profile.sql for REST endpoints, auth middleware, and Postgres query performance.",
+            recentMessages: [
+                SessionMessage(role: "user", text: "The user profile endpoint is timing out under load and we still need a new REST route for profile preferences."),
+                SessionMessage(role: "assistant", text: "I traced the slowdown to profile.sql and the connection pool, and I am adding the preferences endpoint in profile.py.")
+            ],
+            status: .idle,
+            lastActivity: Date(),
+            voice: voice,
+            pitchMultiplier: 1.0
+        ),
+        SessionState(
+            name: "staging-infra",
+            tty: "/dev/benchmark3",
+            cwd: "/Users/jud/work/operator-infra",
+            context: "Branch chore/staging-network. Editing infra/envs/staging/main.tf, modules/vpc, and modules/iam_policy for Terraform apply failures, private subnet layout, IAM policies, and S3 logging.",
+            recentMessages: [
+                SessionMessage(role: "user", text: "The staging VPC rollout failed after the Terraform change and logging still needs the new S3 bucket policy."),
+                SessionMessage(role: "assistant", text: "I am updating the private subnet module, the IAM policy document, and the S3 logging resources in staging Terraform.")
+            ],
+            status: .idle,
+            lastActivity: Date(),
+            voice: voice,
+            pitchMultiplier: 1.0
+        )
+    ]
+}
+
+private func makeRoutingBenchmarkPrompt(
+    text: String,
+    sessions: [SessionState]
+) -> String {
+    RoutingPrompt.buildPrompt(
+        text: text,
+        sessions: sessions,
+        routingState: RoutingState()
+    )
+}
+
+private func makeBenchmarkRouter(
+    sessions: [SessionState],
+    engine: any RoutingEngine
+) async -> MessageRouter {
+    let voiceManager = VoiceManager()
+    let registry = SessionRegistry(voiceManager: voiceManager)
+
+    for session in sessions {
+        _ = await registry.register(
+            name: session.name,
+            tty: session.tty,
+            cwd: session.cwd,
+            context: session.context
+        )
+        await registry.updateContext(
+            tty: session.tty,
+            summary: session.context,
+            recentMessages: session.recentMessages
+        )
+    }
+
+    return MessageRouter(registry: registry, engine: engine)
+}
+
+private func wordCount(in text: String) -> Int {
+    text.split(whereSeparator: \.isWhitespace).count
+}
+
 @MainActor
 func runBenchmarks() async {
     guard ProcessInfo.processInfo.environment[benchmarkRunnerEnvKey] == "1" else {
@@ -146,6 +242,9 @@ func runBenchmarks() async {
         runAll || args.contains(target.rawValue)
     }
 
+    if includes(.routingSingle) {
+        await benchmarkRoutingSingle()
+    }
     if includes(.routing) || includes(.routingLatency) || includes(.routingAccuracy) {
         await benchmarkRouting(
             runLatency: includes(.routing) || includes(.routingLatency),
@@ -169,6 +268,107 @@ func runBenchmarks() async {
 // MARK: - Routing Benchmarks (AC-007.1, AC-007.5)
 
 @MainActor
+func benchmarkRoutingSingle() async {
+    print("\n=== ROUTING SINGLE INFERENCE ===\n")
+
+    let modelManager = ModelManager()
+    let engine = MLXRoutingEngine(modelManager: modelManager)
+    guard let benchmarkVoice = makeBenchmarkVoice() else {
+        print("FAIL: Could not create AVSpeechSynthesisVoice")
+        return
+    }
+
+    let sessions = makeRoutingBenchmarkSessions(voice: benchmarkVoice)
+    let coldMessage = "add a new REST endpoint for user profiles"
+    let coldPrompt = makeRoutingBenchmarkPrompt(text: coldMessage, sessions: sessions)
+
+    let routingProgress = await startModelProgressObserver(
+        modelManager: modelManager,
+        type: .routing,
+        label: "Routing"
+    )
+
+    do {
+        print("Cold message: \"\(coldMessage)\"")
+        print("Cold prompt: \(coldPrompt.count) chars, \(wordCount(in: coldPrompt)) words")
+
+        let result = try await engine.runProfiled(prompt: coldPrompt, timeout: 120)
+        routingProgress.cancel()
+
+        let metrics = result.metrics
+        let session = result.json["session"] as? String ?? ""
+        let confident = result.json["confident"] as? Bool ?? false
+
+        print("Cold output: session=\(session.isEmpty ? "<empty>" : session) confident=\(confident)")
+        print("Cold raw JSON: \(result.rawOutput)")
+        print("")
+        print("Cold phases:")
+        print("  model load:      \(String(format: "%.1f", metrics.modelLoadMs))ms")
+        print("  grammar setup:   \(String(format: "%.1f", metrics.grammarSetupMs))ms")
+        print("  prefix cache:    \(String(format: "%.1f", metrics.promptPrefixCacheMs))ms")
+        print("  inference RTT:   \(String(format: "%.1f", metrics.inferenceRoundTripMs))ms")
+        print("  task grp ovhd:   \(String(format: "%.1f", metrics.taskGroupOverheadMs))ms")
+        print("  perform RTT:     \(String(format: "%.1f", metrics.containerPerformRoundTripMs))ms")
+        print("  perform queue:   \(String(format: "%.1f", metrics.containerPerformSchedulingMs))ms")
+        print("  closure total:   \(String(format: "%.1f", metrics.containerClosureMs))ms")
+        print("  inf. overhead:   \(String(format: "%.1f", metrics.inferenceOverheadMs))ms")
+        print("  prompt prepare:  \(String(format: "%.1f", metrics.promptPreparationMs))ms")
+        print("  iterator init:   \(String(format: "%.1f", metrics.tokenIteratorInitMs))ms")
+        print("  token generate:  \(String(format: "%.1f", metrics.generationMs))ms")
+        print("  json parse:      \(String(format: "%.1f", metrics.jsonParseMs))ms")
+        print("  total:           \(String(format: "%.1f", metrics.totalMs))ms")
+        print("")
+        print("Cold flags:")
+        print("  cached grammar:  \(metrics.usedCachedGrammar ? "yes" : "no")")
+        print("  prefix cache:    \(metrics.usedPromptPrefixCache ? "yes" : "no")")
+        print("  prefix cache hit:\(metrics.promptPrefixCacheHit ? "yes" : "no")")
+        print("  model preloaded: \(metrics.modelWasLoadedBeforeRun ? "yes" : "no")")
+        print("  cached context:  \(metrics.cachedContextCharacters) chars, \(metrics.cachedContextWords) words")
+        print("  runtime prompt:  \(metrics.runtimePromptCharacters) chars, \(metrics.runtimePromptWords) words")
+
+        let warmMessage = "fix the CSS grid layout"
+        let warmPrompt = makeRoutingBenchmarkPrompt(text: warmMessage, sessions: sessions)
+        let warmResult = try await engine.runProfiled(prompt: warmPrompt, timeout: 30)
+        let warmMetrics = warmResult.metrics
+        let warmSession = warmResult.json["session"] as? String ?? ""
+        let warmConfident = warmResult.json["confident"] as? Bool ?? false
+
+        print("")
+        print("Warm message: \"\(warmMessage)\"")
+        print("Warm prompt: \(warmPrompt.count) chars, \(wordCount(in: warmPrompt)) words")
+        print("Warm output: session=\(warmSession.isEmpty ? "<empty>" : warmSession) confident=\(warmConfident)")
+        print("Warm raw JSON: \(warmResult.rawOutput)")
+        print("")
+        print("Warm phases:")
+        print("  model load:      \(String(format: "%.1f", warmMetrics.modelLoadMs))ms")
+        print("  grammar setup:   \(String(format: "%.1f", warmMetrics.grammarSetupMs))ms")
+        print("  prefix cache:    \(String(format: "%.1f", warmMetrics.promptPrefixCacheMs))ms")
+        print("  inference RTT:   \(String(format: "%.1f", warmMetrics.inferenceRoundTripMs))ms")
+        print("  task grp ovhd:   \(String(format: "%.1f", warmMetrics.taskGroupOverheadMs))ms")
+        print("  perform RTT:     \(String(format: "%.1f", warmMetrics.containerPerformRoundTripMs))ms")
+        print("  perform queue:   \(String(format: "%.1f", warmMetrics.containerPerformSchedulingMs))ms")
+        print("  closure total:   \(String(format: "%.1f", warmMetrics.containerClosureMs))ms")
+        print("  inf. overhead:   \(String(format: "%.1f", warmMetrics.inferenceOverheadMs))ms")
+        print("  prompt prepare:  \(String(format: "%.1f", warmMetrics.promptPreparationMs))ms")
+        print("  iterator init:   \(String(format: "%.1f", warmMetrics.tokenIteratorInitMs))ms")
+        print("  token generate:  \(String(format: "%.1f", warmMetrics.generationMs))ms")
+        print("  json parse:      \(String(format: "%.1f", warmMetrics.jsonParseMs))ms")
+        print("  total:           \(String(format: "%.1f", warmMetrics.totalMs))ms")
+        print("")
+        print("Warm flags:")
+        print("  cached grammar:  \(warmMetrics.usedCachedGrammar ? "yes" : "no")")
+        print("  prefix cache:    \(warmMetrics.usedPromptPrefixCache ? "yes" : "no")")
+        print("  prefix cache hit:\(warmMetrics.promptPrefixCacheHit ? "yes" : "no")")
+        print("  model preloaded: \(warmMetrics.modelWasLoadedBeforeRun ? "yes" : "no")")
+        print("  cached context:  \(warmMetrics.cachedContextCharacters) chars, \(warmMetrics.cachedContextWords) words")
+        print("  runtime prompt:  \(warmMetrics.runtimePromptCharacters) chars, \(warmMetrics.runtimePromptWords) words")
+    } catch {
+        routingProgress.cancel()
+        print("FAIL: \(error)")
+    }
+}
+
+@MainActor
 func benchmarkRouting(runLatency: Bool, runAccuracy: Bool) async {
     guard runLatency || runAccuracy else {
         return
@@ -178,15 +378,16 @@ func benchmarkRouting(runLatency: Bool, runAccuracy: Bool) async {
 
     let modelManager = ModelManager()
     let engine = MLXRoutingEngine(modelManager: modelManager)
+    guard let benchmarkVoice = makeBenchmarkVoice() else {
+        print("FAIL: Could not create AVSpeechSynthesisVoice")
+        return
+    }
+    let benchmarkSessions = makeRoutingBenchmarkSessions(voice: benchmarkVoice)
 
-    let prompt = """
-        Sessions:
-        1. "frontend" (cwd: /Users/jud/web-app) - React TypeScript dashboard
-        2. "backend" (cwd: /Users/jud/api-server) - FastAPI Python endpoints
-        3. "infra" (cwd: /Users/jud/deploy) - Terraform AWS infrastructure
-
-        User message: "add a loading spinner to the dashboard"
-        """
+    let prompt = makeRoutingBenchmarkPrompt(
+        text: "add a loading spinner to the dashboard",
+        sessions: benchmarkSessions
+    )
 
     // Cold start (includes model download + load)
     print("Loading routing model (first run downloads ~622MB)...")
@@ -208,6 +409,10 @@ func benchmarkRouting(runLatency: Bool, runAccuracy: Bool) async {
     print("Cold start (download+load+inference): \(String(format: "%.0f", coldMs))ms")
 
     if runLatency {
+        let router = await makeBenchmarkRouter(
+            sessions: benchmarkSessions,
+            engine: engine
+        )
         let testMessages = [
             "fix the database migration",
             "update the terraform module for the new VPC",
@@ -223,25 +428,11 @@ func benchmarkRouting(runLatency: Bool, runAccuracy: Bool) async {
 
         print("\n--- Routing Latency ---")
         for message in testMessages {
-            let warmPrompt = """
-                Sessions:
-                1. "frontend" (cwd: /Users/jud/web-app) - React TypeScript dashboard
-                2. "backend" (cwd: /Users/jud/api-server) - FastAPI Python endpoints
-                3. "infra" (cwd: /Users/jud/deploy) - Terraform AWS infrastructure
-
-                User message: "\(message)"
-                """
             let start = CFAbsoluteTimeGetCurrent()
-            do {
-                _ = try await engine.run(prompt: warmPrompt, timeout: 10)
-                let durationMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
-                latencies.append(durationMs)
-                print("  \(String(format: "%5.0f", durationMs))ms | \"\(message)\"")
-            } catch {
-                let durationMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
-                latencies.append(durationMs)
-                print("  ERROR \(String(format: "%5.0f", durationMs))ms | \"\(message)\" -> \(error)")
-            }
+            _ = await router.route(text: message, routingState: RoutingState())
+            let durationMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+            latencies.append(durationMs)
+            print("  \(String(format: "%5.0f", durationMs))ms | \"\(message)\"")
         }
 
         let sorted = latencies.sorted()
@@ -261,51 +452,194 @@ func benchmarkRouting(runLatency: Bool, runAccuracy: Bool) async {
     }
 
     if runAccuracy {
+        struct SessionCase {
+            let name: String
+            let cwd: String
+            let context: String
+            let recentMessages: [SessionMessage]
+        }
+
         struct TestCase {
             let message: String
             let expected: String
         }
 
-        let testCases: [TestCase] = [
-            TestCase(message: "add a loading spinner to the React dashboard", expected: "frontend"),
-            TestCase(message: "fix the CSS grid layout", expected: "frontend"),
-            TestCase(message: "add a new REST endpoint for user profiles", expected: "backend"),
-            TestCase(message: "fix the database connection pool", expected: "backend"),
-            TestCase(message: "optimize the SQL query", expected: "backend"),
-            TestCase(message: "update the terraform module for the new VPC", expected: "infra"),
-            TestCase(message: "add a new S3 bucket for logs", expected: "infra"),
-            TestCase(message: "fix the AWS IAM permissions", expected: "infra"),
-            TestCase(message: "add TypeScript types for the API response", expected: "frontend"),
-            TestCase(message: "update the Python requirements.txt", expected: "backend")
+        struct Scenario {
+            let name: String
+            let sessions: [SessionCase]
+            let cases: [TestCase]
+        }
+
+        let scenarios: [Scenario] = [
+            Scenario(
+                name: "operator stack",
+                sessions: [
+                    SessionCase(
+                        name: "ui-shell",
+                        cwd: "/Users/jud/work/operator-ui",
+                        context: "Branch feat/settings-loading. Editing web/src/routes/settings.tsx, web/src/components/LoadingCard.tsx, and web/src/styles/dashboard.css for React loading states, responsive layout bugs, and dashboard polish.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "Fix the janky loading state on the settings dashboard and make the cards stop shifting on mobile."),
+                            SessionMessage(role: "assistant", text: "I updated LoadingCard.tsx, SettingsRoute.tsx, and dashboard.css; next I am wiring the pending query state and skeleton layout.")
+                        ]
+                    ),
+                    SessionCase(
+                        name: "profile-api",
+                        cwd: "/Users/jud/work/operator-api",
+                        context: "Branch feat/profile-endpoints. Editing api/routes/profile.py, services/user_profile.py, and db/queries/profile.sql for REST endpoints, auth middleware, and Postgres performance.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "The user profile endpoint is timing out under load and we still need a new REST route for profile preferences."),
+                            SessionMessage(role: "assistant", text: "I traced the slowdown to profile.sql and the connection pool, and I am adding the preferences endpoint in profile.py.")
+                        ]
+                    ),
+                    SessionCase(
+                        name: "staging-infra",
+                        cwd: "/Users/jud/work/operator-infra",
+                        context: "Branch chore/staging-network. Editing infra/envs/staging/main.tf, modules/vpc, and modules/iam_policy for Terraform apply failures, private subnet layout, IAM policy changes, and S3 logging.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "The staging VPC rollout failed after the Terraform change and logging still needs the new S3 bucket policy."),
+                            SessionMessage(role: "assistant", text: "I am updating the private subnet module, the IAM policy document, and the S3 logging resources in staging Terraform.")
+                        ]
+                    )
+                ],
+                cases: [
+                    TestCase(message: "add a loading spinner to the React dashboard", expected: "ui-shell"),
+                    TestCase(message: "fix the CSS grid layout", expected: "ui-shell"),
+                    TestCase(message: "add a new REST endpoint for user profiles", expected: "profile-api"),
+                    TestCase(message: "fix the database connection pool", expected: "profile-api"),
+                    TestCase(message: "optimize the SQL query", expected: "profile-api"),
+                    TestCase(message: "update the terraform module for the new VPC", expected: "staging-infra"),
+                    TestCase(message: "add a new S3 bucket for logs", expected: "staging-infra"),
+                    TestCase(message: "fix the AWS IAM permissions", expected: "staging-infra"),
+                    TestCase(message: "add TypeScript types for the API response", expected: "ui-shell"),
+                    TestCase(message: "update the Python requirements.txt", expected: "profile-api")
+                ]
+            ),
+            Scenario(
+                name: "agent handles",
+                sessions: [
+                    SessionCase(
+                        name: "jules",
+                        cwd: "/Users/jud/sessions/jules",
+                        context: "Branch feat/onboarding-shell. Editing app/routes/onboarding.tsx, app/components/StepCard.tsx, and app/styles/forms.css for React onboarding UI, form spacing, and loading transitions.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "The onboarding cards are misaligned on smaller screens and the loading placeholders flash."),
+                            SessionMessage(role: "assistant", text: "I refined StepCard.tsx, onboarding.tsx, and forms.css to stabilize the skeletons and spacing.")
+                        ]
+                    ),
+                    SessionCase(
+                        name: "marco",
+                        cwd: "/Users/jud/sessions/marco",
+                        context: "Branch feat/billing-api. Editing api/routes/billing.py, services/refunds.py, and db/queries/invoices.sql for Python endpoints, refund status APIs, and invoice query tuning.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "Refund status still needs an endpoint and invoice totals are off in Postgres."),
+                            SessionMessage(role: "assistant", text: "I am updating billing.py, refunds.py, and invoices.sql to fix the endpoint and invoice aggregation.")
+                        ]
+                    ),
+                    SessionCase(
+                        name: "tess",
+                        cwd: "/Users/jud/sessions/tess",
+                        context: "Branch chore/cluster-rollout. Editing infra/prod/cluster.tf, modules/network, and modules/iam_role for EKS rollout issues, private subnets, IAM roles, and S3 access policies.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "The cluster rollout still needs subnet changes and the IAM role is blocking S3 access."),
+                            SessionMessage(role: "assistant", text: "I am editing cluster.tf, the network module, and the IAM role policy to finish the rollout.")
+                        ]
+                    )
+                ],
+                cases: [
+                    TestCase(message: "add skeleton states to the onboarding flow", expected: "jules"),
+                    TestCase(message: "fix the CSS grid layout", expected: "jules"),
+                    TestCase(message: "add an endpoint for refund status", expected: "marco"),
+                    TestCase(message: "fix the database connection pool", expected: "marco"),
+                    TestCase(message: "update the terraform module for the new VPC", expected: "tess"),
+                    TestCase(message: "fix the AWS IAM permissions", expected: "tess")
+                ]
+            ),
+            Scenario(
+                name: "project codenames",
+                sessions: [
+                    SessionCase(
+                        name: "mercury",
+                        cwd: "/Users/jud/projects/mercury",
+                        context: "Branch feat/workspace-shell. Editing client/src/shell/AppFrame.tsx, client/src/settings/PreferencesPanel.tsx, and client/src/styles/shell.css for workspace UI, keyboard shortcuts, and TypeScript component polish.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "The preferences screen needs skeleton states, tighter spacing, and better keyboard shortcut hints."),
+                            SessionMessage(role: "assistant", text: "I am polishing AppFrame.tsx, PreferencesPanel.tsx, and shell.css to fix the UI shell and settings flow.")
+                        ]
+                    ),
+                    SessionCase(
+                        name: "saturn",
+                        cwd: "/Users/jud/projects/saturn",
+                        context: "Branch feat/identity-sync. Editing server/routes/users.py, server/services/sync.py, and sql/user_sync.sql for user APIs, background sync jobs, and Postgres query correctness.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "User sync still needs a status endpoint and the Postgres query for profiles is too slow."),
+                            SessionMessage(role: "assistant", text: "I am adding the sync status endpoint in users.py and tightening the user_sync.sql query plan.")
+                        ]
+                    ),
+                    SessionCase(
+                        name: "neptune",
+                        cwd: "/Users/jud/projects/neptune",
+                        context: "Branch chore/deploy-networking. Editing deploy/envs/prod/main.tf, deploy/modules/vpc, and deploy/modules/iam for production networking, IAM hardening, and rollout automation.",
+                        recentMessages: [
+                            SessionMessage(role: "user", text: "The production rollout still needs IAM hardening, subnet changes, and the logging bucket policy update."),
+                            SessionMessage(role: "assistant", text: "I am updating main.tf, the VPC module, and the IAM module to unblock the production deploy.")
+                        ]
+                    )
+                ],
+                cases: [
+                    TestCase(message: "add skeleton states to the settings screen", expected: "mercury"),
+                    TestCase(message: "fix the postgres query for user sync", expected: "saturn"),
+                    TestCase(message: "add an endpoint for sync status", expected: "saturn"),
+                    TestCase(message: "rotate the IAM policy for the cluster", expected: "neptune"),
+                    TestCase(message: "update the Terraform module for the private subnets", expected: "neptune"),
+                    TestCase(message: "tighten the button spacing in the React shell", expected: "mercury")
+                ]
+            )
         ]
 
         var correct = 0
+        var total = 0
 
         print("\n--- Routing Accuracy ---")
-        for tc in testCases {
-            let warmPrompt = """
-                Sessions:
-                1. "frontend" (cwd: /Users/jud/web-app) - React TypeScript dashboard, CSS, components
-                2. "backend" (cwd: /Users/jud/api-server) - FastAPI Python endpoints, SQL, database
-                3. "infra" (cwd: /Users/jud/deploy) - Terraform AWS infrastructure, IAM, S3, VPC
 
-                User message: "\(tc.message)"
-                """
-            do {
-                let json = try await engine.run(prompt: warmPrompt, timeout: 10)
-                let session = json["session"] as? String ?? ""
-                let match = session == tc.expected
+        for scenario in scenarios {
+            print("  Scenario: \(scenario.name)")
+
+            let sessions = scenario.sessions.enumerated().map { index, session in
+                SessionState(
+                    name: session.name,
+                    tty: "/dev/benchmark\(index + 1)",
+                    cwd: session.cwd,
+                    context: session.context,
+                    recentMessages: session.recentMessages,
+                    status: .idle,
+                    lastActivity: Date(),
+                    voice: benchmarkVoice,
+                    pitchMultiplier: 1.0
+                )
+            }
+            let router = await makeBenchmarkRouter(sessions: sessions, engine: engine)
+
+            for tc in scenario.cases {
+                let result = await router.route(text: tc.message, routingState: RoutingState())
+                let resolvedSession: String
+                switch result {
+                case .route(let session, _):
+                    resolvedSession = session
+                default:
+                    resolvedSession = "<unresolved>"
+                }
+                let match = resolvedSession == tc.expected
+                total += 1
                 if match { correct += 1 }
                 let mark = match ? "✓" : "✗"
-                print("  \(mark) \"\(tc.message)\" -> \(session) (expected: \(tc.expected))")
-            } catch {
-                print("  ✗ \"\(tc.message)\" -> ERROR: \(error)")
+                print("    \(mark) \"\(tc.message)\" -> \(resolvedSession) (expected: \(tc.expected))")
             }
         }
 
-        let accuracy = Double(correct) / Double(testCases.count) * 100
+        let accuracy = Double(correct) / Double(total) * 100
         print("")
-        print("Accuracy: \(correct)/\(testCases.count) (\(String(format: "%.0f", accuracy))%)")
+        print("Accuracy: \(correct)/\(total) (\(String(format: "%.0f", accuracy))%)")
         print("AC-007.5 (accuracy >=90%%): \(accuracy >= 90 ? "PASS" : "FAIL") (\(String(format: "%.0f", accuracy))%%)")
     }
 }

@@ -103,7 +103,7 @@ public final class WaveformPanel: NSPanel {
     private let waveformModel = WaveformModel()
     private let panelWidth: CGFloat = 60
     private let panelHeight: CGFloat = 30
-    private var fadeOutTask: Task<Void, Never>?
+    private var fadeOutWorkItem: DispatchWorkItem?
 
     /// Prevent the panel from ever becoming the key window.
     override public var canBecomeKey: Bool { false }
@@ -157,30 +157,23 @@ public final class WaveformPanel: NSPanel {
 
         waveformModel.stopAnimating()
 
-        fadeOutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled, let self else {
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else {
                 return
             }
-
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                NSAnimationContext.runAnimationGroup(
-                    { context in
-                        context.duration = 0.5
-                        self.animator().alphaValue = 0.0
-                    },
-                    completionHandler: {
-                        continuation.resume()
-                    }
-                )
-            }
-
-            guard !Task.isCancelled else {
-                return
-            }
-            self.orderOut(nil)
-            self.alphaValue = 1.0
+            NSAnimationContext.runAnimationGroup(
+                { context in
+                    context.duration = 0.5
+                    self.animator().alphaValue = 0.0
+                },
+                completionHandler: { [weak self] in
+                    self?.orderOut(nil)
+                    self?.alphaValue = 1.0
+                }
+            )
         }
+        fadeOutWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
 
         Self.logger.debug("WaveformPanel fade-out scheduled")
     }
@@ -188,8 +181,8 @@ public final class WaveformPanel: NSPanel {
     // MARK: - Private
 
     private func cancelPendingFadeOut() {
-        fadeOutTask?.cancel()
-        fadeOutTask = nil
+        fadeOutWorkItem?.cancel()
+        fadeOutWorkItem = nil
     }
 
     private func positionAtTopCenter() {

@@ -16,6 +16,8 @@ make zip
 # Swift only
 cd Operator && swift build
 cd Operator && swift test
+./scripts/verify-all.sh
+make verify
 
 # MCP server only
 cd mcp-server && npm ci && npm run build

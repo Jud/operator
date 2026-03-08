@@ -56,13 +56,13 @@ public final class VoiceManager: Sendable {
             appleVoice: selectedAgentVoice,
             qwenSpeakerID: Self.qwenSpeakers.count > 1 ? Self.qwenSpeakers[1] : Self.qwenSpeakers[0]
         )
+        let agentSpeaker = Self.qwenSpeakers.count > 1 ? Self.qwenSpeakers[1] : Self.qwenSpeakers[0]
 
         Self.logger.info(
             "Operator voice initialized with Qwen speaker \(Self.qwenSpeakers[0])"
         )
         Self.logger.info(
-            "Agent voice initialized with Qwen speaker "
-                + "\(Self.qwenSpeakers.count > 1 ? Self.qwenSpeakers[1] : Self.qwenSpeakers[0])"
+            "Agent voice initialized with Qwen speaker \(agentSpeaker)"
         )
     }
 

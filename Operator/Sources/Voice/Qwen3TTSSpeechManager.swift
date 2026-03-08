@@ -3,6 +3,28 @@
 import AudioCommon
 import Qwen3TTS
 
+/// Serializes access to the non-thread-safe Qwen3TTSModel to prevent
+/// concurrent MLX CompilerCache access (causes EXC_BAD_ACCESS).
+private actor TTSModelSerializer {
+    private let model: Qwen3TTSModel
+
+    init(model: sending Qwen3TTSModel) {
+        self.model = model
+    }
+
+    func synthesizeStream(
+        text: String,
+        speaker: String,
+        streaming: StreamingConfig
+    ) -> AsyncThrowingStream<AudioChunk, Error> {
+        model.synthesizeStream(
+            text: text,
+            speaker: speaker,
+            streaming: streaming
+        )
+    }
+}
+
 /// Qwen3-TTS speech synthesis manager with streaming AVAudioEngine playback.
 ///
 /// Uses the Qwen3-TTS model from speech-swift with ``AVAudioPlayerNode`` for
@@ -22,7 +44,7 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
 
     // MARK: - Model State
 
-    private var model: Qwen3TTSModel?
+    private var serializer: TTSModelSerializer?
     private var isModelLoading = false
 
     // MARK: - Audio Engine
@@ -100,7 +122,6 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
         currentText = fullText
         currentSession = prefix
         totalScheduledSamples = 0
-        speaking = true
 
         Self.logger.info("Speaking: \"\(prefix): \(text.prefix(60))...\" (speaker: \(voice.qwenSpeakerID))")
 
@@ -169,7 +190,7 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
             return
         }
 
-        guard let model else {
+        guard let serializer else {
             Self.logger.error("Qwen3-TTS model is nil after loading")
             modelLoadFailed = true
             speaking = false
@@ -181,7 +202,7 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
             return
         }
 
-        await streamAndScheduleBuffers(model: model, text: fullText, speakerID: speakerID)
+        await streamAndScheduleBuffers(serializer: serializer, text: fullText, speakerID: speakerID)
 
         guard !Task.isCancelled else {
             return
@@ -209,11 +230,11 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
 
     /// Stream TTS chunks from the model and schedule each as an AVAudioPCMBuffer.
     private func streamAndScheduleBuffers(
-        model: Qwen3TTSModel,
+        serializer: TTSModelSerializer,
         text: String,
         speakerID: String
     ) async {
-        let stream = model.synthesizeStream(
+        let stream = await serializer.synthesizeStream(
             text: text,
             speaker: speakerID,
             streaming: .lowLatency
@@ -231,6 +252,10 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
                 let buffer = createBuffer(from: chunk.samples)
                 totalScheduledSamples += Int64(buffer.frameLength)
                 playerNode.scheduleBuffer(buffer, completionCallbackType: .dataConsumed) { _ in }
+
+                if !speaking {
+                    speaking = true
+                }
             }
         } catch {
             if !Task.isCancelled {
@@ -247,7 +272,7 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
     /// HuggingFace Hub (if not cached) and loading model weights. The model
     /// remains resident after loading for the application session.
     private func ensureModelLoaded() async throws {
-        guard model == nil else {
+        guard serializer == nil else {
             return
         }
         guard !isModelLoading else {
@@ -262,10 +287,14 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
         Self.logger.info("Loading Qwen3-TTS model...")
 
         do {
-            let loaded = try await Qwen3TTSModel.fromPretrained(
-                modelId: TTSModelVariant.customVoice.rawValue
-            )
-            model = loaded
+            // Inner scope limits `loaded` lifetime so it's consumed by the
+            // actor init before any subsequent suspension points.
+            do {
+                let loaded = try await Qwen3TTSModel.fromPretrained(
+                    modelId: TTSModelVariant.customVoice.rawValue
+                )
+                serializer = TTSModelSerializer(model: loaded)
+            }
             isModelLoading = false
             await modelManager.markLoaded(.tts)
             Self.logger.info("Qwen3-TTS model loaded and ready")

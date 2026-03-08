@@ -424,9 +424,8 @@ extension StateMachine {
         case .success(let msg, let sess):
             routingState.recordRoute(text: msg, session: sess)
             let sessionCount = await registry.sessionCount
-            if sessionCount <= 1 {
-                speakOperator("Sent.")
-            } else {
+            feedback.play(.delivered)
+            if sessionCount > 1 {
                 speakOperator("Sent to \(sess).")
             }
             enterIdle()
@@ -530,7 +529,7 @@ extension StateMachine {
             for candidate in clarification.candidates {
                 await deliverToSessionDirect(clarification.originalText, to: candidate)
             }
-            speakOperator("Sent to all.")
+            feedback.play(.delivered)
             enterIdle()
 
         case .cancelled:

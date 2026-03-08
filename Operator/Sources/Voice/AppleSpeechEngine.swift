@@ -68,13 +68,15 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Signal end of audio input and return the recognized text.
     public func finishAndTranscribe() async -> String? {
-        recognitionRequest?.endAudio()
-
         guard let request = recognitionRequest else {
             Self.logger.error("No recognition request available")
             return nil
         }
 
+        // Start the recognition task BEFORE calling endAudio().
+        // The recognizer must be actively processing when the stream ends;
+        // calling endAudio() first produces an immediate error because the
+        // recognizer sees a closed stream with no active task.
         let result = await performRecognition(with: request)
 
         recognitionRequest = nil
@@ -119,10 +121,13 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
                         Self.logger.info("Transcription complete: \(text)")
                         continuation.resume(returning: text.isEmpty ? nil : text)
                     } else if let error {
-                        Self.logger.error("Transcription error: \(error.localizedDescription)")
+                        Self.logger.error("Transcription error: \(error.localizedDescription, privacy: .public)")
                         continuation.resume(returning: nil)
                     }
                 }
+
+                // Signal end of audio AFTER recognition task is running.
+                request.endAudio()
             }
         } onCancel: {
             Self.logger.warning("Transcription cancelled (likely timeout)")

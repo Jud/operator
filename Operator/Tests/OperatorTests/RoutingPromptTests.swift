@@ -15,7 +15,7 @@ internal struct RoutingPromptSystemInstructionTests {
         let instruction = RoutingPrompt.systemInstruction
 
         #expect(!instruction.isEmpty)
-        #expect(instruction.contains("message router"))
+        #expect(instruction.contains("Route the user message"))
         #expect(instruction.contains("session"))
         #expect(instruction.contains("confident"))
     }
@@ -26,16 +26,15 @@ internal struct RoutingPromptSystemInstructionTests {
 
         #expect(instruction.contains("JSON"))
         #expect(instruction.contains("session"))
-        #expect(instruction.contains("candidates"))
-        #expect(instruction.contains("question"))
+        #expect(instruction.contains("confident"))
     }
 
     @Test("system instruction includes ambiguity handling rules")
     func systemInstructionAmbiguityRules() {
         let instruction = RoutingPrompt.systemInstruction
 
-        #expect(instruction.contains("ambiguous"))
-        #expect(instruction.contains("clarify"))
+        #expect(instruction.contains("empty"))
+        #expect(instruction.contains("true|false"))
     }
 }
 
@@ -139,6 +138,21 @@ internal struct RoutingPromptConstructionTests {
 
         #expect(wrapped.contains("\n/no_think"))
     }
+
+    @Test("buildPrompt separates reusable context from current user message")
+    func buildPromptSupportsLocalModelSplit() {
+        let prompt = RoutingPrompt.buildPrompt(
+            text: "fix the CSS grid layout",
+            sessions: [],
+            routingState: RoutingState()
+        )
+
+        let parts = RoutingPrompt.splitForLocalModel(prompt)
+
+        #expect(parts != nil)
+        #expect(parts?.context.contains("Routing context:") == true)
+        #expect(parts?.currentMessage == "fix the CSS grid layout")
+    }
 }
 
 // MARK: - Performance
@@ -148,16 +162,16 @@ internal struct RoutingPromptPerformanceTests {
     @Test("prompt construction completes in under 1ms")
     func promptConstructionPerformance() {
         let sessionContext = """
-            Sessions:
-            1. "frontend" (cwd: /Users/dev/myapp/frontend, context: React dashboard)
-            2. "backend" (cwd: /Users/dev/myapp/api, context: Express API server)
-            3. "infra" (cwd: /Users/dev/myapp/terraform, context: AWS infrastructure)
+            Routing context:
+            Active Claude Code sessions:
+            1. "frontend" (/Users/dev/myapp/frontend) - React dashboard
+            2. "backend" (/Users/dev/myapp/api) - Express API server
+            3. "infra" (/Users/dev/myapp/terraform) - AWS infrastructure
 
-            Recent routing history:
-            - "fix the login form" -> frontend (15s ago)
-            - "add rate limiting" -> backend (45s ago)
+            Use only the session details above to choose the best target.
 
-            User message: "update the dashboard CSS"
+            Current user message:
+            update the dashboard CSS
             """
 
         let start = ContinuousClock.now

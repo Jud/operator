@@ -111,6 +111,35 @@ public final class MessageRouter: Sendable {
 // MARK: - Primary Routing
 
 extension MessageRouter {
+    private struct HeuristicCandidate {
+        let session: String
+        let score: Int
+        let directHits: Int
+    }
+
+    private static let heuristicStopWords: Set<String> = [
+        "a", "an", "and", "the", "to", "for", "of", "on", "in", "at", "with", "from", "new",
+        "fix", "add", "update", "make", "check", "look", "into", "that", "this", "it", "my",
+        "your", "their", "our", "please", "need", "still", "just", "agent", "session"
+    ]
+
+    private static let heuristicConceptGroups: [[String]] = [
+        ["react", "tsx", "typescript", "frontend", "client", "ui", "css", "layout", "dashboard", "shell", "button", "spacing", "skeleton", "spinner", "loading", "component"],
+        ["api", "backend", "server", "endpoint", "rest", "route", "service", "python", "py", "sql", "postgres", "database", "db", "query", "middleware", "auth", "billing", "refund", "profile", "sync", "requirements"],
+        ["infra", "terraform", "tf", "deploy", "deployment", "staging", "prod", "production", "cluster", "eks", "vpc", "subnet", "network", "iam", "policy", "s3", "logging", "rollout"]
+    ]
+
+    private static let heuristicConceptMap: [String: Set<String>] = {
+        var map: [String: Set<String>] = [:]
+        for group in heuristicConceptGroups {
+            let expanded = Set(group)
+            for token in group {
+                map[token] = expanded
+            }
+        }
+        return map
+    }()
+
     /// Route a transcribed user message through the full priority chain.
     ///
     /// - Parameters:
@@ -154,6 +183,11 @@ extension MessageRouter {
                 return .route(session: affinityTarget, message: trimmed)
             }
             Self.logger.debug("Affinity target '\(affinityTarget)' no longer registered; falling through")
+        }
+
+        if let heuristicTarget = heuristicRoute(text: trimmed, sessions: sessions) {
+            Self.logger.info("Context heuristic: routing to '\(heuristicTarget)'")
+            return .route(session: heuristicTarget, message: trimmed)
         }
 
         Self.logger.info("Invoking claude -p for smart routing")
@@ -232,14 +266,123 @@ extension MessageRouter {
 // MARK: - claude -p Smart Routing
 
 extension MessageRouter {
-    /// Format a time interval as a human-readable "N min ago" or "N sec ago" string.
-    private static func timeAgoString(from past: Date, to now: Date) -> String {
-        let seconds = Int(now.timeIntervalSince(past))
-        guard seconds < 60 else {
-            let minutes = seconds / 60
-            return "\(minutes) min ago"
+    private func heuristicRoute(
+        text: String,
+        sessions: [SessionState]
+    ) -> String? {
+        let messageTokens = Self.heuristicMessageTokens(from: text)
+        guard !messageTokens.isEmpty else {
+            return nil
         }
-        return "\(seconds) sec ago"
+
+        let ranked = sessions
+            .map { session in
+                Self.scoreHeuristicRoute(messageTokens: messageTokens, session: session)
+            }
+            .filter { $0.score > 0 }
+            .sorted {
+                if $0.score == $1.score {
+                    return $0.directHits > $1.directHits
+                }
+                return $0.score > $1.score
+            }
+
+        guard let best = ranked.first else {
+            return nil
+        }
+
+        let runnerUpScore = ranked.dropFirst().first?.score ?? 0
+        let strongDirectMatch = best.directHits >= 2 && best.score >= 10
+        let strongMargin = best.score >= 12 && best.score >= runnerUpScore + 4
+        guard strongDirectMatch || strongMargin else {
+            return nil
+        }
+
+        return best.session
+    }
+
+    private static func scoreHeuristicRoute(
+        messageTokens: Set<String>,
+        session: SessionState
+    ) -> HeuristicCandidate {
+        let nameTokens = heuristicExpandedTokens(
+            from: session.name,
+            dropStopWords: false
+        )
+        let cwdTokens = heuristicExpandedTokens(from: session.cwd)
+        let contextTokens = heuristicExpandedTokens(from: session.context)
+        let recentTokens = heuristicExpandedTokens(
+            from: session.recentMessages.map(\.text).joined(separator: " ")
+        )
+
+        let tokenWeights = [
+            (nameTokens, 8),
+            (cwdTokens, 6),
+            (contextTokens, 4),
+            (recentTokens, 3)
+        ]
+
+        var score = 0
+        var directHits = 0
+
+        for token in messageTokens {
+            var matched = false
+            for (sourceTokens, weight) in tokenWeights where sourceTokens.contains(token) {
+                score += weight
+                matched = true
+            }
+
+            if matched {
+                directHits += 1
+            }
+        }
+
+        return HeuristicCandidate(session: session.name, score: score, directHits: directHits)
+    }
+
+    private static func heuristicMessageTokens(from text: String) -> Set<String> {
+        heuristicExpandedTokens(from: text)
+    }
+
+    private static func heuristicExpandedTokens(
+        from text: String,
+        dropStopWords: Bool = true
+    ) -> Set<String> {
+        let baseTokens = heuristicBaseTokens(from: text)
+        var expanded: Set<String> = []
+
+        for token in baseTokens {
+            if dropStopWords && heuristicStopWords.contains(token) {
+                continue
+            }
+            expanded.insert(token)
+            if let conceptTokens = heuristicConceptMap[token] {
+                expanded.formUnion(conceptTokens)
+            }
+        }
+
+        return expanded
+    }
+
+    private static func heuristicBaseTokens(from text: String) -> Set<String> {
+        let separators = CharacterSet.alphanumerics.inverted
+        let lowered = text
+            .replacingOccurrences(
+                of: "([a-z0-9])([A-Z])",
+                with: "$1 $2",
+                options: .regularExpression
+            )
+            .lowercased()
+
+        let rawTokens = lowered
+            .components(separatedBy: separators)
+            .filter { !$0.isEmpty }
+
+        var tokens = Set(rawTokens)
+        for token in rawTokens where token.count > 3 && token.hasSuffix("s") {
+            tokens.insert(String(token.dropLast()))
+        }
+        return tokens
     }
 
     /// Invoke claude -p for smart routing with session context and routing history.
@@ -248,7 +391,11 @@ extension MessageRouter {
         sessions: [SessionState],
         routingState: RoutingState
     ) async -> RoutingResult {
-        let prompt = buildRoutingPrompt(text: text, sessions: sessions, routingState: routingState)
+        let prompt = RoutingPrompt.buildPrompt(
+            text: text,
+            sessions: sessions,
+            routingState: routingState
+        )
         let sessionNames = sessions.map { $0.name }
 
         do {
@@ -295,53 +442,5 @@ extension MessageRouter {
             let question = "Which agent is this for? \(sessionNames.joined(separator: " or "))?"
             return .clarify(candidates: sessionNames, question: question, originalText: text)
         }
-    }
-
-    /// Build the prompt for claude -p smart routing.
-    private func buildRoutingPrompt(
-        text: String,
-        sessions: [SessionState],
-        routingState: RoutingState
-    ) -> String {
-        var lines: [String] = [
-            "You are a message router. Active Claude Code sessions:"
-        ]
-
-        for (index, session) in sessions.enumerated() {
-            var sessionLine = "\(index + 1). \"\(session.name)\" (\(session.cwd))"
-            if !session.context.isEmpty {
-                sessionLine += " - \(session.context)"
-            }
-            if let lastMsg = session.recentMessages.last {
-                sessionLine += ", last msg: \"\(lastMsg.text.prefix(80))\""
-            }
-            lines.append(sessionLine)
-        }
-
-        if !routingState.routedMessages.isEmpty {
-            lines.append("")
-            lines.append("Recent routing history:")
-
-            let now = Date()
-
-            for entry in routingState.routedMessages.suffix(5) {
-                let ago = Self.timeAgoString(from: entry.timestamp, to: now)
-                lines.append("- \"\(entry.text.prefix(60))\" -> \(entry.session) (\(ago))")
-            }
-        }
-
-        lines.append("")
-        lines.append("User said: \"\(text)\"")
-        lines.append("")
-        let sessionNames = sessions.map { "\"\($0.name)\"" }.joined(separator: ", ")
-        lines.append(
-            "Reply ONLY as JSON: {\"session\": \"name\", \"confident\": true}"
-        )
-        lines.append(
-            "Or if ambiguous: {\"session\": null, \"confident\": false, "
-                + "\"candidates\": [\(sessionNames)], \"question\": \"Was that for X or Y?\"}"
-        )
-
-        return lines.joined(separator: "\n")
     }
 }

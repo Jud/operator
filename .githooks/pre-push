@@ -1,0 +1,4 @@
+#!/bin/bash
+set -euo pipefail
+
+"$(git rev-parse --show-toplevel)/scripts/verify-all.sh"

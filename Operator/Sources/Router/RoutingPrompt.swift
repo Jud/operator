@@ -10,6 +10,8 @@ import Foundation
 /// The JSON output schema is defined here as the source of truth for both the grammar
 /// constraint (in ``MLXRoutingEngine``) and the format expected by ``MessageRouter``.
 public enum RoutingPrompt {
+    private static let currentUserMessageHeading = "Current user message:"
+
     // MARK: - System Prompt
 
     /// System instruction optimized for the 0.8B model's classification task.
@@ -19,20 +21,10 @@ public enum RoutingPrompt {
     /// - Explicitly states the JSON output format
     /// - Requests non-thinking mode for fast direct answers (Qwen 3 `/no_think`)
     public static let systemInstruction = """
-        You are a fast message router. Given active Claude Code sessions and a user message, \
-        classify which session should receive the message.
-
-        Rules:
-        - If you can confidently determine the target session, set "confident": true and \
-        "session" to the session name.
-        - If ambiguous, set "confident": false, "session" to "", list likely "candidates", \
-        and provide a brief "question" asking the user to clarify.
-        - Match based on session context (working directory, recent messages, project type).
-        - Consider routing history for conversation continuity.
-
-        Reply ONLY as JSON matching this schema:
-        {"session": "<name or empty>", "confident": true/false, "candidates": ["name1", ...], \
-        "question": "clarification question"}
+        Route the user message to the best active session.
+        Match using the provided session name, working directory, project context, and recent messages.
+        Base the decision on those session details, not on assumptions about common team names; if the match is weak or ambiguous, return an empty session with confident=false.
+        Reply only with JSON: {"session":"<name or empty>","confident":true|false}
         """
 
     // MARK: - JSON Schema
@@ -65,14 +57,75 @@ public enum RoutingPrompt {
 
     /// Wrap a routing prompt from ``MessageRouter`` for optimal results with the local model.
     ///
-    /// Prepends the system instruction and appends non-thinking mode flag. The incoming
-    /// prompt already contains session context, routing history, and the user message
-    /// (built by ``MessageRouter.buildRoutingPrompt()``).
+    /// Appends the Qwen non-thinking flag. This is retained for compatibility with
+    /// callers that still provide the routing request as a single flat string.
     ///
     /// - Parameter routingPrompt: The prompt string built by MessageRouter.
     /// - Returns: A wrapped prompt suitable for the local 0.8B model.
     public static func wrapForLocalModel(_ routingPrompt: String) -> String {
-        // Append /no_think to disable Qwen 3's thinking mode for faster inference
         "\(routingPrompt)\n/no_think"
+    }
+
+    /// Build the static routing context section shared by MessageRouter and benchmarks.
+    ///
+    /// This excludes the current user utterance so local-model routing can prefill and
+    /// reuse the session snapshot across repeated routing calls.
+    public static func buildContextPrompt(sessions: [SessionState]) -> String {
+        var lines: [String] = [
+            "Routing context:",
+            "Active Claude Code sessions:"
+        ]
+
+        for (index, session) in sessions.enumerated() {
+            var sessionLine = "\(index + 1). \"\(session.name)\" (\(session.cwd))"
+            if !session.context.isEmpty {
+                sessionLine += " - \(session.context)"
+            }
+            let recentMessages = session.recentMessages.suffix(2)
+            if !recentMessages.isEmpty {
+                let recentSummary = recentMessages.map { message in
+                    "\(message.role): \"\(message.text.prefix(60))\""
+                }
+                .joined(separator: " | ")
+                sessionLine += ", recent: \(recentSummary)"
+            }
+            lines.append(sessionLine)
+        }
+
+        lines.append("")
+        lines.append("Use only the session details above to choose the best target.")
+        return lines.joined(separator: "\n")
+    }
+
+    /// Build the routing request body shared by MessageRouter and benchmarks.
+    public static func buildPrompt(
+        text: String,
+        sessions: [SessionState],
+        routingState: RoutingState
+    ) -> String {
+        _ = routingState
+        var lines: [String] = [buildContextPrompt(sessions: sessions)]
+        lines.append("")
+        lines.append(currentUserMessageHeading)
+        lines.append(text)
+
+        return lines.joined(separator: "\n")
+    }
+
+    /// Split a flat routing prompt into its reusable context and dynamic utterance.
+    public static func splitForLocalModel(_ routingPrompt: String) -> (context: String, currentMessage: String)? {
+        let marker = "\n\n\(currentUserMessageHeading)\n"
+        guard let range = routingPrompt.range(of: marker) else {
+            return nil
+        }
+        return (
+            context: String(routingPrompt[..<range.lowerBound]),
+            currentMessage: String(routingPrompt[range.upperBound...])
+        )
+    }
+
+    /// Build the dynamic user turn appended to a prefetched local-model routing context.
+    public static func buildLocalModelCurrentTurn(_ currentMessage: String) -> String {
+        "\(currentUserMessageHeading)\n\(currentMessage)\n/no_think"
     }
 }

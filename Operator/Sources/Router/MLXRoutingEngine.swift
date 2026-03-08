@@ -5,6 +5,41 @@ import MLXLMCommon
 import MLXStructured
 import os
 
+/// Phase timings captured for a single MLX routing inference.
+public struct MLXRoutingRunMetrics {
+    public let promptCharacters: Int
+    public let promptWords: Int
+    public let cachedContextCharacters: Int
+    public let cachedContextWords: Int
+    public let runtimePromptCharacters: Int
+    public let runtimePromptWords: Int
+    public let modelLoadMs: Double
+    public let grammarSetupMs: Double
+    public let promptPrefixCacheMs: Double
+    public let inferenceRoundTripMs: Double
+    public let taskGroupOverheadMs: Double
+    public let containerPerformRoundTripMs: Double
+    public let containerPerformSchedulingMs: Double
+    public let containerClosureMs: Double
+    public let inferenceOverheadMs: Double
+    public let promptPreparationMs: Double
+    public let tokenIteratorInitMs: Double
+    public let generationMs: Double
+    public let jsonParseMs: Double
+    public let totalMs: Double
+    public let usedCachedGrammar: Bool
+    public let usedPromptPrefixCache: Bool
+    public let promptPrefixCacheHit: Bool
+    public let modelWasLoadedBeforeRun: Bool
+}
+
+/// Parsed routing output plus phase timings for a single inference.
+public struct MLXRoutingProfiledResult {
+    public let json: [String: Any]
+    public let rawOutput: String
+    public let metrics: MLXRoutingRunMetrics
+}
+
 /// Errors produced by ``MLXRoutingEngine`` operations.
 public enum MLXRoutingError: Error, CustomStringConvertible {
     /// The model failed to load into memory.
@@ -62,7 +97,8 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
     /// Maximum tokens to generate.
     ///
     /// Routing output is small (~50-80 tokens).
-    private static let maxGenerationTokens = 150
+    private static let maxGenerationTokens = 32
+    private static let prefillStepSize = 512
 
     // MARK: - Properties
 
@@ -73,6 +109,33 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
 
     /// Cached grammar processor for the routing schema, reused across calls.
     private var grammarProcessor: GrammarMaskedLogitProcessor?
+
+    private struct PromptPrefixCache {
+        let key: String
+        let baseOffset: Int
+        let cache: [KVCache]
+    }
+
+    private var promptPrefixCache: PromptPrefixCache?
+
+    private struct GenerationProfile {
+        let output: String
+        let closureMs: Double
+        let promptPreparationMs: Double
+        let tokenIteratorInitMs: Double
+        let generationMs: Double
+    }
+
+    private struct InferenceProfile {
+        let generation: GenerationProfile
+        let containerPerformRoundTripMs: Double
+    }
+
+    private struct PrefixCacheProfile: Sendable {
+        let baseOffset: Int
+        let buildMs: Double
+        let cacheHit: Bool
+    }
 
     // MARK: - Initialization
 
@@ -92,29 +155,44 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
 
     /// Run grammar-constrained generation within a ModelContainer's perform block.
     private static func generateConstrained(
-        prompt: String,
+        messages: [Chat.Message],
         context: ModelContext,
         processor: GrammarMaskedLogitProcessor,
-        maxTokens: Int
-    ) async throws -> String {
-        let userInput = UserInput(
-            chat: [
-                .system(RoutingPrompt.systemInstruction),
-                .user(prompt)
-            ]
-        )
+        maxTokens: Int,
+        prefixCache: [KVCache]? = nil,
+        prefixBaseOffset: Int? = nil
+    ) async throws -> GenerationProfile {
+        let closureStart = CFAbsoluteTimeGetCurrent()
+        let prepareStart = CFAbsoluteTimeGetCurrent()
+        let userInput = UserInput(chat: messages)
         let input = try await context.processor.prepare(input: userInput)
+        let promptPreparationMs = (CFAbsoluteTimeGetCurrent() - prepareStart) * 1000
 
         let sampler = GenerateParameters(temperature: 0).sampler()
         processor.grammarMatcher.reset()
 
+        let prefixOffset = prefixBaseOffset ?? prefixCache?.first?.offset ?? 0
+        defer {
+            if let prefixCache {
+                let currentOffset = prefixCache.first?.offset ?? prefixOffset
+                let delta = max(0, currentOffset - prefixOffset)
+                if delta > 0 {
+                    trimPromptCache(prefixCache, numTokens: delta)
+                }
+            }
+        }
+
+        let iteratorStart = CFAbsoluteTimeGetCurrent()
         let iterator = try TokenIterator(
             input: input,
             model: context.model,
+            cache: prefixCache,
             processor: processor,
             sampler: sampler,
+            prefillStepSize: Self.prefillStepSize,
             maxTokens: maxTokens
         )
+        let tokenIteratorInitMs = (CFAbsoluteTimeGetCurrent() - iteratorStart) * 1000
 
         let didGenerate: ([Int]) -> GenerateDisposition = { _ in
             if processor.grammarMatcher.isTerminated() {
@@ -122,14 +200,23 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
             }
             return .more
         }
+        let generationStart = CFAbsoluteTimeGetCurrent()
         let result: GenerateResult = MLXLMCommon.generate(
             input: input,
             context: context,
             iterator: iterator,
             didGenerate: didGenerate
         )
+        let generationMs = (CFAbsoluteTimeGetCurrent() - generationStart) * 1000
+        let closureMs = (CFAbsoluteTimeGetCurrent() - closureStart) * 1000
 
-        return result.output
+        return GenerationProfile(
+            output: result.output,
+            closureMs: closureMs,
+            promptPreparationMs: promptPreparationMs,
+            tokenIteratorInitMs: tokenIteratorInitMs,
+            generationMs: generationMs
+        )
     }
 
     // MARK: - RoutingEngine
@@ -145,32 +232,86 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
     /// - Returns: A dictionary parsed from the constrained JSON output.
     /// - Throws: ``MLXRoutingError`` on model load failure, invalid output, or timeout.
     public func run(prompt: String, timeout: TimeInterval) async throws -> [String: Any] {
+        try await runProfiled(prompt: prompt, timeout: timeout).json
+    }
+
+    /// Run a routing prompt and capture phase timings for benchmarking.
+    public func runProfiled(
+        prompt: String,
+        timeout: TimeInterval
+    ) async throws -> MLXRoutingProfiledResult {
+        let totalStart = CFAbsoluteTimeGetCurrent()
+        let promptWords = Self.wordCount(in: prompt)
+        let modelWasLoadedBeforeRun = modelContainer != nil
+
+        let modelLoadStart = CFAbsoluteTimeGetCurrent()
         try await ensureModelLoaded()
+        let modelLoadMs = (CFAbsoluteTimeGetCurrent() - modelLoadStart) * 1000
 
         guard let container = modelContainer else {
             throw MLXRoutingError.modelNotLoaded
         }
 
-        let wrappedPrompt = RoutingPrompt.wrapForLocalModel(prompt)
         let maxTokens = Self.maxGenerationTokens
+        let usedCachedGrammar = grammarProcessor != nil
 
         // Build/cache the grammar processor (first call loads tokenizer, ~1s; subsequent calls instant)
+        let grammarStart = CFAbsoluteTimeGetCurrent()
         let processor = try await container.perform { [self] context in
             try await self.ensureGrammarProcessor(context: context)
         }
+        let grammarSetupMs = (CFAbsoluteTimeGetCurrent() - grammarStart) * 1000
+
+        let promptParts = RoutingPrompt.splitForLocalModel(prompt)
+        let cachedContextPrompt = promptParts?.context
+        let runtimePrompt: String
+        let promptPrefixProfile: PrefixCacheProfile?
+
+        if let promptParts {
+            runtimePrompt = RoutingPrompt.buildLocalModelCurrentTurn(promptParts.currentMessage)
+            let prefixProfile = try await container.perform { [self] context in
+                try await self.ensurePromptPrefixCache(
+                    contextPrompt: promptParts.context,
+                    context: context
+                )
+            }
+            promptPrefixProfile = prefixProfile
+        } else {
+            runtimePrompt = RoutingPrompt.wrapForLocalModel(prompt)
+            promptPrefixProfile = nil
+        }
+
+        let cachedContextWords = Self.wordCount(in: cachedContextPrompt ?? "")
+        let runtimePromptWords = Self.wordCount(in: runtimePrompt)
 
         Self.logger.info("Running local routing inference")
 
-        let jsonString: String = try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask {
-                try await container.perform { [wrappedPrompt] context in
+        let inferenceStart = CFAbsoluteTimeGetCurrent()
+        let inferenceProfile: InferenceProfile = try await withThrowingTaskGroup(
+            of: InferenceProfile.self
+        ) { group in
+            let prefixBaseOffset = promptPrefixProfile?.baseOffset
+            group.addTask { [self, runtimePrompt, prefixBaseOffset] in
+                let performStart = CFAbsoluteTimeGetCurrent()
+                let profile = try await container.perform { [self] context in
                     try await Self.generateConstrained(
-                        prompt: wrappedPrompt,
+                        messages: prefixBaseOffset == nil
+                            ? [
+                                .system(RoutingPrompt.systemInstruction),
+                                .user(runtimePrompt)
+                            ]
+                            : [.user(runtimePrompt)],
                         context: context,
                         processor: processor,
-                        maxTokens: maxTokens
+                        maxTokens: maxTokens,
+                        prefixCache: self.promptPrefixCache?.cache,
+                        prefixBaseOffset: prefixBaseOffset
                     )
                 }
+                return InferenceProfile(
+                    generation: profile,
+                    containerPerformRoundTripMs: (CFAbsoluteTimeGetCurrent() - performStart) * 1000
+                )
             }
 
             group.addTask {
@@ -184,16 +325,60 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
             group.cancelAll()
             return result
         }
+        let inferenceRoundTripMs = (CFAbsoluteTimeGetCurrent() - inferenceStart) * 1000
+        let generationProfile = inferenceProfile.generation
+        let containerPerformRoundTripMs = inferenceProfile.containerPerformRoundTripMs
+        let jsonString = generationProfile.output
 
         Self.logger.debug("Local routing output: \(jsonString.prefix(200))")
 
+        let parseStart = CFAbsoluteTimeGetCurrent()
         guard let data = jsonString.data(using: .utf8),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             throw MLXRoutingError.invalidOutput(jsonString)
         }
+        let jsonParseMs = (CFAbsoluteTimeGetCurrent() - parseStart) * 1000
+        let totalMs = (CFAbsoluteTimeGetCurrent() - totalStart) * 1000
+        let taskGroupOverheadMs = max(0, inferenceRoundTripMs - containerPerformRoundTripMs)
+        let containerPerformSchedulingMs = max(
+            0,
+            containerPerformRoundTripMs - generationProfile.closureMs
+        )
+        let inferenceOverheadMs = max(
+            0,
+            inferenceRoundTripMs - generationProfile.promptPreparationMs
+                - generationProfile.tokenIteratorInitMs - generationProfile.generationMs
+        )
 
-        return json
+        let metrics = MLXRoutingRunMetrics(
+            promptCharacters: prompt.count,
+            promptWords: promptWords,
+            cachedContextCharacters: cachedContextPrompt?.count ?? 0,
+            cachedContextWords: cachedContextWords,
+            runtimePromptCharacters: runtimePrompt.count,
+            runtimePromptWords: runtimePromptWords,
+            modelLoadMs: modelLoadMs,
+            grammarSetupMs: grammarSetupMs,
+            promptPrefixCacheMs: promptPrefixProfile?.buildMs ?? 0,
+            inferenceRoundTripMs: inferenceRoundTripMs,
+            taskGroupOverheadMs: taskGroupOverheadMs,
+            containerPerformRoundTripMs: containerPerformRoundTripMs,
+            containerPerformSchedulingMs: containerPerformSchedulingMs,
+            containerClosureMs: generationProfile.closureMs,
+            inferenceOverheadMs: inferenceOverheadMs,
+            promptPreparationMs: generationProfile.promptPreparationMs,
+            tokenIteratorInitMs: generationProfile.tokenIteratorInitMs,
+            generationMs: generationProfile.generationMs,
+            jsonParseMs: jsonParseMs,
+            totalMs: totalMs,
+            usedCachedGrammar: usedCachedGrammar,
+            usedPromptPrefixCache: promptPrefixProfile != nil,
+            promptPrefixCacheHit: promptPrefixProfile?.cacheHit ?? false,
+            modelWasLoadedBeforeRun: modelWasLoadedBeforeRun
+        )
+
+        return MLXRoutingProfiledResult(json: json, rawOutput: jsonString, metrics: metrics)
     }
 
     // MARK: - Model Lifecycle
@@ -213,6 +398,43 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
         )
         grammarProcessor = processor
         return processor
+    }
+
+    /// Build or return a cached prompt-prefix KV cache for the current session snapshot.
+    private func ensurePromptPrefixCache(
+        contextPrompt: String,
+        context: ModelContext
+    ) async throws -> PrefixCacheProfile {
+        if let cached = promptPrefixCache, cached.key == contextPrompt {
+            return PrefixCacheProfile(
+                baseOffset: cached.baseOffset,
+                buildMs: 0,
+                cacheHit: true
+            )
+        }
+
+        let buildStart = CFAbsoluteTimeGetCurrent()
+        let input = try await context.processor.prepare(
+            input: UserInput(
+                chat: [
+                    .system(RoutingPrompt.systemInstruction),
+                    .user(contextPrompt)
+                ]
+            )
+        )
+        let cache = try Self.prefillPromptCache(input: input, context: context)
+        let baseOffset = cache.first?.offset ?? 0
+        let profile = PrefixCacheProfile(
+            baseOffset: baseOffset,
+            buildMs: (CFAbsoluteTimeGetCurrent() - buildStart) * 1000,
+            cacheHit: false
+        )
+        promptPrefixCache = PromptPrefixCache(
+            key: contextPrompt,
+            baseOffset: baseOffset,
+            cache: cache
+        )
+        return profile
     }
 
     /// Load the routing model if not already in memory.
@@ -273,5 +495,32 @@ public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
                 return cacheDir
             }
         }
+    }
+
+    /// Prefill a prompt into a reusable KV cache without generating output tokens.
+    private static func prefillPromptCache(
+        input: LMInput,
+        context: ModelContext
+    ) throws -> [KVCache] {
+        let cache = context.model.newCache(parameters: nil)
+
+        switch try context.model.prepare(input, cache: cache, windowSize: Self.prefillStepSize) {
+        case .tokens(let tokens):
+            let result = context.model(
+                tokens[text: .newAxis],
+                cache: cache.isEmpty ? nil : cache,
+                state: nil
+            )
+            eval(result.logits)
+
+        case .logits(let result):
+            eval(result.logits)
+        }
+
+        return cache
+    }
+
+    private static func wordCount(in text: String) -> Int {
+        text.split { $0.isWhitespace || $0.isNewline }.count
     }
 }

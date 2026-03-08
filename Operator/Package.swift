@@ -9,11 +9,11 @@ let package = Package(
         .package(url: "https://github.com/jud/speech-swift.git", branch: "operator-fork"),
         .package(
             url: "https://github.com/ml-explore/mlx-swift-lm.git",
-            .upToNextMinor(from: "2.30.6")
+            branch: "main"
         ),
         .package(
-            url: "https://github.com/petrukha-ivan/mlx-swift-structured.git",
-            from: "0.0.2"
+            url: "https://github.com/Jud/mlx-swift-structured.git",
+            branch: "main"
         ),
     ],
     targets: [
@@ -48,6 +48,11 @@ let package = Package(
             name: "OperatorTests",
             dependencies: ["OperatorCore"],
             path: "Tests/OperatorTests"
+        ),
+        .executableTarget(
+            name: "Benchmarks",
+            dependencies: ["OperatorCore"],
+            path: "Tests/Benchmarks"
         ),
     ]
 )

@@ -8,7 +8,7 @@ SWIFT_BUILD := Operator/.build/release
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo "0.1.0")
 NODE := $(shell nodenv which node 2>/dev/null || command -v node 2>/dev/null || echo "node")
 
-.PHONY: all clean app mcp zip bench bench-list bench-routing bench-routing-latency bench-routing-accuracy bench-tts bench-stt bench-stt-latency bench-stt-long bench-memory
+.PHONY: all clean app mcp zip verify bench bench-list bench-routing bench-routing-latency bench-routing-accuracy bench-tts bench-stt bench-stt-latency bench-stt-long bench-memory
 
 all: app
 
@@ -66,6 +66,9 @@ zip: app
 clean:
 	rm -rf $(BUILD_DIR)
 	cd Operator && swift package clean
+
+verify:
+	./scripts/verify-all.sh
 
 bench:
 	./scripts/run-benchmarks.sh $(BENCH_ARGS) $(TARGET)
