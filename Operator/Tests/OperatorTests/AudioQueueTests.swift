@@ -12,7 +12,7 @@ private final class MockSpeech: SpeechManaging {
     var finishedSpeaking: AsyncStream<Void> = AsyncStream { _ in }
     var spokenTexts: [String] = []
 
-    func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String, pitchMultiplier: Float) {
+    func speak(_ text: String, voice: VoiceDescriptor, prefix: String, pitchMultiplier: Float) {
         isSpeaking = true
         spokenTexts.append(text)
     }
@@ -38,8 +38,8 @@ private final class MockFeedback: AudioFeedbackProviding {
 // which would deadlock since AudioQueue.enqueue hops to MainActor for speechManager.speak().
 @Suite("AudioQueue", .serialized)
 internal struct AudioQueueTests {
-    private func makeVoice() -> AVSpeechSynthesisVoice {
-        AVSpeechSynthesisVoice()
+    private func makeVoice() -> VoiceDescriptor {
+        VoiceDescriptor(appleVoice: AVSpeechSynthesisVoice(), qwenSpeakerID: "ryan")
     }
 
     @Test("lastSpokenMessage is nil initially")

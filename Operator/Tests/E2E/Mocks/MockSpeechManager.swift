@@ -29,7 +29,7 @@ internal final class MockSpeechManager: SpeechManaging {
         self.finishedContinuation = continuation
     }
 
-    func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String, pitchMultiplier: Float) {
+    func speak(_ text: String, voice: VoiceDescriptor, prefix: String, pitchMultiplier: Float) {
         spokenMessages.append((text: text, prefix: prefix))
         // Immediately signal finished so AudioQueue advances without delay
         finishedContinuation.yield()

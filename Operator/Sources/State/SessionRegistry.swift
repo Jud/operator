@@ -51,8 +51,8 @@ public struct SessionState: Sendable {
     public var status: SessionStatus
     /// When the session last had activity.
     public var lastActivity: Date
-    /// The assigned speech synthesis voice.
-    public let voice: AVSpeechSynthesisVoice
+    /// The assigned speech synthesis voice descriptor (Apple + Qwen3-TTS).
+    public let voice: VoiceDescriptor
     /// The pitch multiplier for auditory differentiation.
     public let pitchMultiplier: Float
     /// The Claude Code session identifier, set via hook integration.
@@ -67,7 +67,7 @@ public struct SessionState: Sendable {
         recentMessages: [SessionMessage],
         status: SessionStatus,
         lastActivity: Date,
-        voice: AVSpeechSynthesisVoice,
+        voice: VoiceDescriptor,
         pitchMultiplier: Float,
         sessionId: String? = nil
     ) {
@@ -86,7 +86,7 @@ public struct SessionState: Sendable {
 
 /// Codable snapshot of a session for the HTTP /state endpoint.
 ///
-/// Excludes AVSpeechSynthesisVoice (not Codable) and includes only
+/// Excludes VoiceDescriptor (not Codable) and includes only
 /// the fields needed by external consumers querying GET /state.
 public struct SessionSnapshot: Codable, Sendable {
     /// The human-readable session name.
@@ -187,7 +187,7 @@ public actor SessionRegistry {
         }
 
         let pitch = voiceManager.nextAgentPitchMultiplier()
-        let voice = voiceManager.defaultAgentVoice
+        let voice = voiceManager.nextAgentVoice()
 
         let state = SessionState(
             name: name,
@@ -251,8 +251,8 @@ public actor SessionRegistry {
     /// Look up the assigned voice for a session by name.
     ///
     /// - Parameter session: The session name to look up.
-    /// - Returns: The AVSpeechSynthesisVoice assigned to the session.
-    public func voiceFor(session: String?) -> AVSpeechSynthesisVoice {
+    /// - Returns: The VoiceDescriptor assigned to the session.
+    public func voiceFor(session: String?) -> VoiceDescriptor {
         guard let name = session else {
             return voiceManager.defaultAgentVoice
         }
@@ -291,7 +291,7 @@ public actor SessionRegistry {
             Self.logger.info("Hook session-start: updated session ID for TTY \(tty)")
         } else {
             let pitch = voiceManager.nextAgentPitchMultiplier()
-            let voice = voiceManager.defaultAgentVoice
+            let voice = voiceManager.nextAgentVoice()
             let state = SessionState(
                 name: sessionId,
                 tty: tty,

@@ -55,17 +55,17 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     ///
     /// - Parameters:
     ///   - text: The message content to speak.
-    ///   - voice: The AVSpeechSynthesisVoice to use for this utterance.
+    ///   - voice: The VoiceDescriptor identifying the voice for this utterance.
     ///   - prefix: The session name prefix (e.g., "Sudo", "Operator").
     ///   - pitchMultiplier: Pitch variation for per-agent differentiation. Defaults to 1.0.
-    public func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String, pitchMultiplier: Float = 1.0) {
+    public func speak(_ text: String, voice: VoiceDescriptor, prefix: String, pitchMultiplier: Float = 1.0) {
         let fullText = "\(prefix): \(text)"
         currentText = fullText
         currentSession = prefix
         lastSpokenCharIndex = 0
 
         let utterance = AVSpeechUtterance(string: fullText)
-        utterance.voice = voice
+        utterance.voice = voice.appleVoice
         utterance.rate = 0.55
         utterance.pitchMultiplier = pitchMultiplier
 

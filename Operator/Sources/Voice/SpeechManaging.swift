@@ -11,7 +11,7 @@ public protocol SpeechManaging: AnyObject, Sendable {
     /// An asynchronous stream that yields a value each time an utterance finishes playing.
     var finishedSpeaking: AsyncStream<Void> { get }
 
-    func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String, pitchMultiplier: Float)
+    func speak(_ text: String, voice: VoiceDescriptor, prefix: String, pitchMultiplier: Float)
     func interrupt() -> InterruptInfo
     func stop()
 }
@@ -38,7 +38,7 @@ public struct InterruptInfo: Sendable {
 /// Default implementation providing a convenience method without pitchMultiplier.
 extension SpeechManaging {
     /// Speak with default pitch multiplier of 1.0.
-    public func speak(_ text: String, voice: AVSpeechSynthesisVoice, prefix: String) {
+    public func speak(_ text: String, voice: VoiceDescriptor, prefix: String) {
         speak(text, voice: voice, prefix: prefix, pitchMultiplier: 1.0)
     }
 }

@@ -44,7 +44,7 @@ public actor AudioQueue {
         /// The priority level of this message.
         public let priority: Priority
         /// The voice to use for speech synthesis.
-        public let voice: AVSpeechSynthesisVoice
+        public let voice: VoiceDescriptor
         /// The pitch multiplier for per-agent differentiation.
         public let pitchMultiplier: Float
 
@@ -53,7 +53,7 @@ public actor AudioQueue {
             sessionName: String,
             text: String,
             priority: Priority,
-            voice: AVSpeechSynthesisVoice,
+            voice: VoiceDescriptor,
             pitchMultiplier: Float = 1.0
         ) {
             self.sessionName = sessionName
