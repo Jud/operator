@@ -201,6 +201,11 @@ extension FNKeyTrigger {
 // MARK: - FN Key Handling
 
 extension FNKeyTrigger {
+    /// Whether toggle mode is enabled via user preferences.
+    private var isToggleModeEnabled: Bool {
+        UserDefaults.standard.bool(forKey: "toggleModeEnabled")
+    }
+
     /// Handle kCGEventFlagsChanged for FN/Globe key detection.
     private func handleFlagsChanged(event: CGEvent) {
         let flags = event.flags
@@ -253,7 +258,7 @@ extension FNKeyTrigger {
 
         if isToggleListening {
             Self.logger.debug("FN key released (toggle stop press — ignored)")
-        } else if pressDuration < toggleThreshold {
+        } else if isToggleModeEnabled && pressDuration < toggleThreshold {
             Self.logger.debug("FN key released (quick tap — toggle mode)")
             isToggleListening = true
         } else {
@@ -346,7 +351,7 @@ extension FNKeyTrigger {
                 Self.logger.debug(
                     "Secondary hotkey released (toggle stop press — ignored): keyCode=\(keyCode)"
                 )
-            } else if pressDuration < toggleThreshold {
+            } else if isToggleModeEnabled && pressDuration < toggleThreshold {
                 Self.logger.debug("Secondary hotkey released (quick tap — toggle mode): keyCode=\(keyCode)")
                 isSecondaryToggleListening = true
             } else {

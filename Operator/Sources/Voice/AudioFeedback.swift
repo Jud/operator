@@ -60,6 +60,9 @@ public final class AudioFeedback: AudioFeedbackProviding {
     ///
     /// Resets playback position to allow rapid re-triggering.
     public func play(_ cue: AudioCue) {
+        guard UserDefaults.standard.bool(forKey: "feedbackSoundsEnabled") else {
+            return
+        }
         guard let player = players[cue] else {
             Self.logger.warning("No player available for cue: \(cue.rawValue)")
             return

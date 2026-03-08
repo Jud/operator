@@ -96,6 +96,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private func bootstrap() async {
         Self.logger.info("Operator launching")
 
+        registerDefaults()
         setupAuthToken()
 
         let vm = VoiceManager()
@@ -278,6 +279,14 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 "Speech recognition permission not granted: \(String(describing: speechStatus))"
             )
         }
+    }
+
+    private func registerDefaults() {
+        UserDefaults.standard.register(defaults: [
+            "toggleModeEnabled": true,
+            "feedbackSoundsEnabled": true,
+            "triggerKeyCode": 63
+        ])
     }
 
     private func registerLoginItem() {
