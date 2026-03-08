@@ -16,35 +16,39 @@ private actor RoutingFallbackCapture {
     func append(_ message: String) { messages.append(message) }
 }
 
+private enum StubRoutingError: Error {
+    case localFailed
+    case fallbackFailed
+}
+
+private struct StubRoutingEngine: RoutingEngine {
+    let handler: @Sendable (String, TimeInterval) async throws -> [String: Any]
+
+    func run(prompt: String, timeout: TimeInterval) async throws -> [String: Any] {
+        try await handler(prompt, timeout)
+    }
+}
+
 // MARK: - Engine Switching
 
 @Suite("AdaptiveRoutingEngine - Engine Switching")
 internal struct AdaptiveRoutingSwitchingTests {
     private func makeEngine(
-        preferLocal: Bool = true
-    ) async -> (
-        AdaptiveRoutingEngine, ModelManager
-    ) {
-        let cacheDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("are-test-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-
-        let modelManager = ModelManager(cacheDirectory: cacheDir)
-        let localEngine = MLXRoutingEngine(modelManager: modelManager)
-        let fallbackEngine = ClaudePipeRoutingEngine()
-
+        preferLocal: Bool = true,
+        localEngine: StubRoutingEngine = StubRoutingEngine { _, _ in ["session": "local"] },
+        fallbackEngine: StubRoutingEngine = StubRoutingEngine { _, _ in ["session": "fallback"] }
+    ) -> AdaptiveRoutingEngine {
         let adaptive = AdaptiveRoutingEngine(
             localEngine: localEngine,
-            modelManager: modelManager,
             fallbackEngine: fallbackEngine,
             preferLocal: preferLocal
         )
-        return (adaptive, modelManager)
+        return adaptive
     }
 
     @Test("isUsingLocal reflects preference when no fallback has occurred")
     func isUsingLocalReflectsPreference() async {
-        let (engine, _) = await makeEngine(preferLocal: true)
+        let engine = makeEngine(preferLocal: true)
         #expect(engine.isUsingLocal == true)
 
         engine.setUseLocal(false)
@@ -53,7 +57,7 @@ internal struct AdaptiveRoutingSwitchingTests {
 
     @Test("setUseLocal toggles engine preference")
     func setUseLocalToggles() async {
-        let (engine, _) = await makeEngine(preferLocal: false)
+        let engine = makeEngine(preferLocal: false)
         #expect(engine.isUsingLocal == false)
 
         engine.setUseLocal(true)
@@ -65,7 +69,7 @@ internal struct AdaptiveRoutingSwitchingTests {
 
     @Test("preferLocal false starts with Claude CLI active")
     func preferLocalFalseStartsWithClaude() async {
-        let (engine, _) = await makeEngine(preferLocal: false)
+        let engine = makeEngine(preferLocal: false)
         #expect(engine.isUsingLocal == false)
     }
 }
@@ -75,30 +79,21 @@ internal struct AdaptiveRoutingSwitchingTests {
 @Suite("AdaptiveRoutingEngine - Fallback Behavior")
 internal struct AdaptiveRoutingFallbackTests {
     private func makeEngine(
-        preferLocal: Bool = true
-    ) async -> (
-        AdaptiveRoutingEngine, ModelManager
-    ) {
-        let cacheDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("are-test-\(UUID().uuidString)", isDirectory: true)
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-
-        let modelManager = ModelManager(cacheDirectory: cacheDir)
-        let localEngine = MLXRoutingEngine(modelManager: modelManager)
-        let fallbackEngine = ClaudePipeRoutingEngine()
-
+        preferLocal: Bool = true,
+        localEngine: StubRoutingEngine = StubRoutingEngine { _, _ in ["session": "local"] },
+        fallbackEngine: StubRoutingEngine = StubRoutingEngine { _, _ in ["session": "fallback"] }
+    ) -> AdaptiveRoutingEngine {
         let adaptive = AdaptiveRoutingEngine(
             localEngine: localEngine,
-            modelManager: modelManager,
             fallbackEngine: fallbackEngine,
             preferLocal: preferLocal
         )
-        return (adaptive, modelManager)
+        return adaptive
     }
 
     @Test("triggerFallback sets didFallBack and invokes onFallback callback")
     func triggerFallbackSetsState() async {
-        let (engine, _) = await makeEngine(preferLocal: true)
+        let engine = makeEngine(preferLocal: true)
 
         let capture = RoutingFallbackCapture()
         engine.onFallback = { message in
@@ -115,7 +110,7 @@ internal struct AdaptiveRoutingFallbackTests {
 
     @Test("triggerFallback is idempotent")
     func triggerFallbackIdempotent() async {
-        let (engine, _) = await makeEngine(preferLocal: true)
+        let engine = makeEngine(preferLocal: true)
 
         let capture = RoutingFallbackCapture()
         engine.onFallback = { message in
@@ -132,7 +127,7 @@ internal struct AdaptiveRoutingFallbackTests {
 
     @Test("sticky fallback stays on Claude CLI until setUseLocal(true)")
     func stickyFallback() async {
-        let (engine, _) = await makeEngine(preferLocal: true)
+        let engine = makeEngine(preferLocal: true)
 
         let capture = RoutingFallbackCapture()
         engine.onFallback = { message in
@@ -148,7 +143,7 @@ internal struct AdaptiveRoutingFallbackTests {
 
     @Test("setUseLocal(true) resets fallback state after triggerFallback")
     func setUseLocalResetsFallback() async {
-        let (engine, _) = await makeEngine(preferLocal: true)
+        let engine = makeEngine(preferLocal: true)
 
         let capture = RoutingFallbackCapture()
         engine.onFallback = { message in
@@ -164,7 +159,7 @@ internal struct AdaptiveRoutingFallbackTests {
 
     @Test("onFallback callback receives descriptive message about Claude CLI")
     func fallbackMessageContent() async {
-        let (engine, _) = await makeEngine(preferLocal: true)
+        let engine = makeEngine(preferLocal: true)
 
         let capture = RoutingFallbackCapture()
         engine.onFallback = { message in
@@ -184,15 +179,19 @@ internal struct AdaptiveRoutingFallbackTests {
         .timeLimit(.minutes(2))
     )
     func runFallsBackOnLocalFailure() async throws {
-        let (engine, _) = await makeEngine(preferLocal: true)
+        let engine = makeEngine(
+            preferLocal: true,
+            localEngine: StubRoutingEngine { _, _ in throw StubRoutingError.localFailed },
+            fallbackEngine: StubRoutingEngine { _, _ in throw StubRoutingError.fallbackFailed }
+        )
 
         let capture = RoutingFallbackCapture()
         engine.onFallback = { message in
             Task { await capture.append(message) }
         }
 
-        // The local MLXRoutingEngine will fail (model not downloaded).
-        // The fallback ClaudePipeRoutingEngine will also fail (no claude CLI).
+        // The local engine fails immediately.
+        // The fallback engine also fails.
         // The key assertion is that the fallback was triggered.
         do {
             _ = try await engine.run(prompt: "test prompt", timeout: 2.0)
@@ -210,19 +209,23 @@ internal struct AdaptiveRoutingFallbackTests {
         .timeLimit(.minutes(2))
     )
     func runUsesFallbackDirectly() async {
-        let (engine, _) = await makeEngine(preferLocal: false)
+        let engine = makeEngine(
+            preferLocal: false,
+            localEngine: StubRoutingEngine { _, _ in throw StubRoutingError.localFailed },
+            fallbackEngine: StubRoutingEngine { _, _ in throw StubRoutingError.fallbackFailed }
+        )
 
         let capture = RoutingFallbackCapture()
         engine.onFallback = { message in
             Task { await capture.append(message) }
         }
 
-        // When useLocal is false, goes directly to ClaudePipeRoutingEngine.
+        // When useLocal is false, goes directly to the fallback engine.
         // The onFallback callback should NOT be invoked.
         do {
             _ = try await engine.run(prompt: "test", timeout: 2.0)
         } catch {
-            // Expected: claude CLI not available
+            // Expected: fallback engine failure
         }
         try? await Task.sleep(for: .milliseconds(50))
 

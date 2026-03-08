@@ -249,7 +249,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let mlxRouting = MLXRoutingEngine(modelManager: mm)
         let adaptiveRouting = AdaptiveRoutingEngine(
             localEngine: mlxRouting,
-            modelManager: mm,
             preferLocal: routingPref == "local"
         )
         adaptiveRoutingEngine = adaptiveRouting

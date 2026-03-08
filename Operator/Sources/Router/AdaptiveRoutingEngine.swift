@@ -17,9 +17,8 @@ public final class AdaptiveRoutingEngine: RoutingEngine, @unchecked Sendable {
 
     // MARK: - Properties
 
-    private let localEngine: MLXRoutingEngine
-    private let fallbackEngine: ClaudePipeRoutingEngine
-    private let modelManager: ModelManager
+    private let localEngine: any RoutingEngine
+    private let fallbackEngine: any RoutingEngine
     private var useLocal: Bool
     private var didFallBack = false
 
@@ -41,19 +40,16 @@ public final class AdaptiveRoutingEngine: RoutingEngine, @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - localEngine: The MLX routing engine for local inference.
-    ///   - modelManager: The shared model manager for checking model availability.
     ///   - fallbackEngine: The Claude CLI routing engine as fallback.
     ///   - preferLocal: Initial preference for local engine. When `true`, uses
     ///     MLX routing. When `false`, uses Claude CLI.
     public init(
-        localEngine: MLXRoutingEngine,
-        modelManager: ModelManager,
-        fallbackEngine: ClaudePipeRoutingEngine = ClaudePipeRoutingEngine(),
+        localEngine: any RoutingEngine,
+        fallbackEngine: any RoutingEngine = ClaudePipeRoutingEngine(),
         preferLocal: Bool = true
     ) {
         self.localEngine = localEngine
         self.fallbackEngine = fallbackEngine
-        self.modelManager = modelManager
         self.useLocal = preferLocal
 
         Self.logger.info(

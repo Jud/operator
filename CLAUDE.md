@@ -7,16 +7,43 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for full system design and [README.md](RE
 ## Build & Test
 
 ```bash
-# Daemon (Swift, macOS 15+)
+# Build Operator.app (Swift daemon + MCP server)
+make app
+
+# Create distributable zip
+make zip
+
+# Swift only
 cd Operator && swift build
 cd Operator && swift test
 
-# MCP server (TypeScript)
+# MCP server only
 cd mcp-server && npm ci && npm run build
 cd mcp-server && npm test
 
 # E2E (requires real iTerm)
 cd Operator && swift run E2ETests
+
+# Benchmarks
+# Does not require `make app` or a `.app` bundle.
+./scripts/run-benchmarks.sh list
+./scripts/run-benchmarks.sh routing
+./scripts/run-benchmarks.sh routing-latency
+./scripts/run-benchmarks.sh --no-build routing-latency
+./scripts/run-benchmarks.sh --release tts
+./scripts/run-benchmarks.sh stt-long
+make bench-routing
+make bench BENCH_ARGS="--no-build routing-latency"
+```
+
+## Install
+
+```bash
+# Via Homebrew Cask
+brew tap jud/operator https://github.com/Jud/homebrew-operator.git
+brew install --cask operator
+
+# Launch Operator — it auto-registers the Claude Code plugin on startup
 ```
 
 ## Key Design Decisions

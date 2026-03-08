@@ -42,24 +42,15 @@ public final class VoiceManager: Sendable {
 
     /// Creates a new voice manager with premium voice fallback selection.
     public init() {
-        let candidates = AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix("en") }
-
-        let selectedOperatorVoice =
-            candidates.first { $0.quality == .premium }
-            ?? candidates.first { $0.quality == .enhanced }
-            ?? AVSpeechSynthesisVoice(language: "en-US")
-            ?? AVSpeechSynthesisVoice()
-
+        // Avoid eager AVSpeechSynthesisVoice discovery during initialization.
+        // On macOS this can block on system speech/accessibility lookups, and
+        // Operator uses Qwen speaker IDs as the primary voice identity anyway.
+        let selectedOperatorVoice = AVSpeechSynthesisVoice()
         self.operatorVoice = VoiceDescriptor(
             appleVoice: selectedOperatorVoice,
             qwenSpeakerID: Self.qwenSpeakers[0]
         )
-
-        let selectedAgentVoice =
-            candidates.first { $0.quality == .premium && $0.identifier != selectedOperatorVoice.identifier }
-            ?? candidates.first { $0.quality == .enhanced && $0.identifier != selectedOperatorVoice.identifier }
-            ?? selectedOperatorVoice
+        let selectedAgentVoice = selectedOperatorVoice
 
         self.defaultAgentVoice = VoiceDescriptor(
             appleVoice: selectedAgentVoice,
@@ -67,15 +58,12 @@ public final class VoiceManager: Sendable {
         )
 
         Self.logger.info(
-            "Operator voice: \(selectedOperatorVoice.identifier) (quality: \(selectedOperatorVoice.quality.rawValue))"
+            "Operator voice initialized with Qwen speaker \(Self.qwenSpeakers[0])"
         )
         Self.logger.info(
-            "Agent voice: \(selectedAgentVoice.identifier) (quality: \(selectedAgentVoice.quality.rawValue))"
+            "Agent voice initialized with Qwen speaker "
+                + "\(Self.qwenSpeakers.count > 1 ? Self.qwenSpeakers[1] : Self.qwenSpeakers[0])"
         )
-
-        if selectedOperatorVoice.identifier == selectedAgentVoice.identifier {
-            Self.logger.warning("Operator and agent voices are the same; no distinct alternative available")
-        }
     }
 
     /// Returns the next pitch multiplier for a newly registered agent.
