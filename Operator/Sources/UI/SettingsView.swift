@@ -26,16 +26,9 @@ public struct SettingsView: View {
     @AppStorage("inputDeviceUID")
     private var inputDeviceUID: String = ""
 
-    /// UID of the selected output (speaker) device.
-    ///
-    /// Empty string means system default.
-    @AppStorage("outputDeviceUID")
-    private var outputDeviceUID: String = ""
-
     // MARK: - Local State
 
     @State private var inputDevices: [AudioDevice] = []
-    @State private var outputDevices: [AudioDevice] = []
 
     /// The view body rendering the settings form.
     public var body: some View {
@@ -68,16 +61,6 @@ extension SettingsView {
                     Text(device.name).tag(device.uid)
                 }
             }
-
-            Picker("Speaker", selection: $outputDeviceUID) {
-                Text("System Default").tag("")
-                ForEach(outputDevices) { device in
-                    Text(device.name).tag(device.uid)
-                }
-            }
-            Text("Speaker setting applies to audio cues. Voice synthesis uses the system default output.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
 
             Button("Refresh Devices") {
                 refreshDevices()
@@ -150,6 +133,5 @@ extension SettingsView {
 
     private func refreshDevices() {
         inputDevices = AudioDeviceManager.inputDevices()
-        outputDevices = AudioDeviceManager.outputDevices()
     }
 }

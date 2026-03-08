@@ -286,8 +286,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             "toggleModeEnabled": true,
             "feedbackSoundsEnabled": true,
             "triggerKeyCode": 63,
-            "inputDeviceUID": "",
-            "outputDeviceUID": ""
+            "inputDeviceUID": ""
         ])
     }
 

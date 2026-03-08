@@ -21,11 +21,6 @@ public enum AudioDeviceManager {
         allDevices().filter { hasStreams(deviceID: $0.id, scope: kAudioObjectPropertyScopeInput) }
     }
 
-    /// Returns all available audio output devices.
-    public static func outputDevices() -> [AudioDevice] {
-        allDevices().filter { hasStreams(deviceID: $0.id, scope: kAudioObjectPropertyScopeOutput) }
-    }
-
     /// Look up an AudioDeviceID by its UID string.
     ///
     /// - Returns: The device ID, or nil if no device matches.
