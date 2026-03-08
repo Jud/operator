@@ -135,7 +135,7 @@ public final class AdaptiveSpeechManager: SpeechManaging {
 
     /// Mark that the local engine has failed and all subsequent calls should use Apple TTS.
     ///
-    /// Called externally (e.g., by the engine coordination layer in T7) when
+    /// Called externally (e.g., by the engine coordination layer) when
     /// a local engine failure is detected.
     public func triggerFallback() {
         guard !didFallBack else {
