@@ -51,10 +51,119 @@ public struct ClaudePipeRoutingEngine: RoutingEngine {
 /// timeout via DispatchSource timer, and extracts the first JSON object from the output
 /// (since claude -p may emit preamble text before the JSON response).
 public enum ClaudePipe {
+    // MARK: - Subtypes
+
+    /// Mutable state used during the single-pass JSON extraction scan.
+    private struct JSONScanState {
+        var braceDepth = 0
+        var startIndex: String.Index?
+        var inString = false
+        var escaped = false
+
+        /// Process a single character during the scan.
+        ///
+        /// Returns the extracted JSON string if a complete valid object is found.
+        mutating func processCharacter(
+            _ char: Character,
+            at idx: String.Index,
+            in text: String
+        ) -> String? {
+            if handleEscapeSequence(char) {
+                return nil
+            }
+            if handleQuote(char) {
+                return nil
+            }
+            if inString {
+                return nil
+            }
+            return handleBrace(char, at: idx, in: text)
+        }
+
+        /// Handle escape tracking.
+        ///
+        /// Returns true if the character was consumed.
+        private mutating func handleEscapeSequence(_ char: Character) -> Bool {
+            if escaped {
+                escaped = false
+                return true
+            }
+            if char == "\\" && inString {
+                escaped = true
+                return true
+            }
+            return false
+        }
+
+        /// Handle quote toggling.
+        ///
+        /// Returns true if the character was a quote.
+        private mutating func handleQuote(_ char: Character) -> Bool {
+            guard char == "\"" else {
+                return false
+            }
+            if braceDepth > 0 {
+                inString.toggle()
+            }
+            return true
+        }
+
+        /// Handle open/close braces.
+        ///
+        /// Returns the extracted JSON if a valid object completes.
+        private mutating func handleBrace(
+            _ char: Character,
+            at idx: String.Index,
+            in text: String
+        ) -> String? {
+            if char == "{" {
+                if braceDepth == 0 {
+                    startIndex = idx
+                    inString = false
+                    escaped = false
+                }
+                braceDepth += 1
+            } else if char == "}" {
+                guard braceDepth > 0 else {
+                    return nil
+                }
+                braceDepth -= 1
+                if let result = tryExtractObject(endingAt: idx, in: text) {
+                    return result
+                }
+            }
+            return nil
+        }
+
+        /// If brace depth reaches zero, extract and validate the candidate JSON object.
+        private mutating func tryExtractObject(
+            endingAt idx: String.Index,
+            in text: String
+        ) -> String? {
+            guard braceDepth == 0, let start = startIndex else {
+                return nil
+            }
+
+            let endIdx = text.index(after: idx)
+            let candidate = String(text[start..<endIdx])
+
+            if ClaudePipe.isValidJSONObject(candidate) {
+                return candidate
+            }
+            // Brace-matched but invalid JSON; keep searching
+            startIndex = nil
+            return nil
+        }
+    }
+
+    // MARK: - Properties
+
     private static let logger = Log.logger(for: "ClaudePipe")
 
     /// Default timeout for claude -p invocations (10 seconds per spec).
     public static let defaultTimeout: TimeInterval = 10
+
+    // MARK: - Public Methods
 
     /// Run a prompt through `claude -p` and extract the JSON response.
     ///
@@ -120,6 +229,44 @@ public enum ClaudePipe {
         )
     }
 
+    /// Extract the first JSON object from a string that may contain surrounding text.
+    ///
+    /// Uses brace-counting to find the candidate substring, then validates it with
+    /// `JSONSerialization`. The brace counter properly tracks JSON string boundaries
+    /// and escape sequences, and resets state at each top-level `{` so that stray
+    /// quotes in preamble text don't corrupt parsing.
+    ///
+    /// Performance: O(n) single pass over the input using String.Index iteration
+    /// (no `offsetBy` calls that would make it O(n²) on Swift strings).
+    public static func extractJSON(from text: String) -> String? {
+        var state = JSONScanState()
+
+        for idx in text.indices {
+            let char = text[idx]
+
+            if let result = state.processCharacter(char, at: idx, in: text) {
+                return result
+            }
+        }
+
+        return nil
+    }
+
+    // MARK: - Internal Methods
+
+    /// Validates whether a candidate substring is a JSON dictionary.
+    static func isValidJSONObject(_ candidate: String) -> Bool {
+        guard let data = candidate.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data),
+            obj is [String: Any]
+        else {
+            return false
+        }
+        return true
+    }
+
+    // MARK: - Private Methods
+
     /// Launch a Process, converting launch errors to ClaudePipeError.
     private static func launchProcess(_ process: Process) throws {
         do {
@@ -172,58 +319,5 @@ public enum ClaudePipe {
         }
 
         return jsonString
-    }
-
-    /// Extract the first JSON object from a string that may contain surrounding text.
-    ///
-    /// Uses brace-counting to handle nested objects correctly, unlike the simple regex
-    /// `\{[^}]+\}` which fails on nested braces. Falls back to the simple regex if
-    /// brace counting finds nothing (defensive).
-    public static func extractJSON(from text: String) -> String? {
-        var braceDepth = 0
-        var startIndex: String.Index?
-        var inString = false
-        var escaped = false
-
-        for (offset, char) in text.enumerated() {
-            let idx = text.index(text.startIndex, offsetBy: offset)
-
-            if escaped {
-                escaped = false
-                continue
-            }
-
-            if char == "\\" && inString {
-                escaped = true
-                continue
-            }
-
-            if char == "\"" {
-                inString.toggle()
-                continue
-            }
-
-            if inString { continue }
-
-            if char == "{" {
-                if braceDepth == 0 {
-                    startIndex = idx
-                }
-                braceDepth += 1
-            } else if char == "}" {
-                braceDepth -= 1
-                if braceDepth == 0, let start = startIndex {
-                    let endIdx = text.index(after: idx)
-                    return String(text[start..<endIdx])
-                }
-            }
-        }
-
-        // Fallback: simple regex for flat JSON objects
-        if let range = text.range(of: #"\{[^}]+\}"#, options: .regularExpression) {
-            return String(text[range])
-        }
-
-        return nil
     }
 }
