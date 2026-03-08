@@ -31,6 +31,13 @@ public final class AdaptiveSpeechManager: SpeechManaging {
         useLocal && !didFallBack
     }
 
+    /// Called when the engine falls back from local Qwen3-TTS to Apple TTS.
+    ///
+    /// The closure receives a human-readable notification message. Wired
+    /// during bootstrap to enqueue a spoken alert via AudioQueue so the
+    /// user knows the local engine is unavailable.
+    public var onFallback: (@MainActor (String) -> Void)?
+
     // MARK: - SpeechManaging
 
     /// Whether the active engine is currently speaking.
@@ -99,15 +106,21 @@ public final class AdaptiveSpeechManager: SpeechManaging {
 
     /// Speak text using the currently active engine.
     ///
-    /// If the local engine is preferred, attempts to use it. On failure (e.g.,
-    /// model not loaded, synthesis error), falls back to Apple TTS with a
-    /// warning log. The fallback is sticky until the user re-enables local
-    /// in Settings or calls ``setUseLocal(_:)``.
+    /// If the local engine is preferred, attempts to use it. Before delegating
+    /// to the local engine, checks whether a previous model load failure was
+    /// recorded. If so, triggers fallback proactively so the message is spoken
+    /// via Apple TTS instead of being silently dropped.
+    ///
+    /// The fallback is sticky until the user re-enables local in Settings or
+    /// calls ``setUseLocal(_:)``.
     public func speak(_ text: String, voice: VoiceDescriptor, prefix: String, pitchMultiplier: Float) {
         if useLocal && !didFallBack {
-            activeIsLocal = true
-            localEngine.speak(text, voice: voice, prefix: prefix, pitchMultiplier: pitchMultiplier)
-            return
+            guard localEngine.modelLoadFailed else {
+                activeIsLocal = true
+                localEngine.speak(text, voice: voice, prefix: prefix, pitchMultiplier: pitchMultiplier)
+                return
+            }
+            triggerFallback()
         }
 
         activeIsLocal = false
@@ -135,8 +148,10 @@ public final class AdaptiveSpeechManager: SpeechManaging {
 
     /// Mark that the local engine has failed and all subsequent calls should use Apple TTS.
     ///
-    /// Called externally (e.g., by the engine coordination layer) when
-    /// a local engine failure is detected.
+    /// Called externally by the engine coordination layer when a local engine
+    /// failure is detected, or internally when a prior model load failure is
+    /// detected in ``speak(_:voice:prefix:pitchMultiplier:)``. Delivers a
+    /// spoken fallback notification to the user.
     public func triggerFallback() {
         guard !didFallBack else {
             return
@@ -144,6 +159,7 @@ public final class AdaptiveSpeechManager: SpeechManaging {
         didFallBack = true
         activeIsLocal = false
         Self.logger.warning("Falling back to Apple TTS; local model unavailable")
+        onFallback?("Falling back to Apple text-to-speech. Local model unavailable.")
     }
 
     // MARK: - Stream Forwarding

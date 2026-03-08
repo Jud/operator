@@ -29,6 +29,13 @@ public final class AdaptiveTranscriptionEngine: TranscriptionEngine, @unchecked 
         useLocal && !didFallBack
     }
 
+    /// Called when the engine falls back from local Parakeet to Apple STT.
+    ///
+    /// The closure receives a human-readable notification message. Wired
+    /// during bootstrap to enqueue a spoken alert via AudioQueue so the
+    /// user knows the local engine is unavailable.
+    public var onFallback: (@Sendable (String) -> Void)?
+
     // MARK: - Initialization
 
     /// Creates an adaptive transcription engine.
@@ -88,6 +95,7 @@ public final class AdaptiveTranscriptionEngine: TranscriptionEngine, @unchecked 
                 )
                 didFallBack = true
                 activeEngine = fallbackEngine
+                onFallback?("Falling back to Apple speech recognition. Local model unavailable.")
             }
         }
         try fallbackEngine.prepare()
@@ -116,6 +124,7 @@ public final class AdaptiveTranscriptionEngine: TranscriptionEngine, @unchecked 
                 "Parakeet transcription returned nil, will fall back to Apple STT on next session"
             )
             didFallBack = true
+            onFallback?("Falling back to Apple speech recognition. Local model unavailable.")
         }
 
         return result

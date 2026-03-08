@@ -28,6 +28,13 @@ public final class AdaptiveRoutingEngine: RoutingEngine, @unchecked Sendable {
         useLocal && !didFallBack
     }
 
+    /// Called when the engine falls back from local MLX routing to Claude CLI.
+    ///
+    /// The closure receives a human-readable notification message. Wired
+    /// during bootstrap to enqueue a spoken alert via AudioQueue so the
+    /// user knows the local engine is unavailable.
+    public var onFallback: (@Sendable (String) -> Void)?
+
     // MARK: - Initialization
 
     /// Creates an adaptive routing engine.
@@ -93,6 +100,7 @@ public final class AdaptiveRoutingEngine: RoutingEngine, @unchecked Sendable {
                     "Local routing failed, falling back to Claude CLI: \(error.localizedDescription)"
                 )
                 didFallBack = true
+                onFallback?("Falling back to Claude CLI routing. Local model unavailable.")
             }
         }
 
@@ -104,12 +112,13 @@ public final class AdaptiveRoutingEngine: RoutingEngine, @unchecked Sendable {
     /// Mark that the local engine has failed and all subsequent calls should use Claude CLI.
     ///
     /// Called externally by the engine coordination layer when a local engine
-    /// failure is detected.
+    /// failure is detected. Delivers a spoken fallback notification to the user.
     public func triggerFallback() {
         guard !didFallBack else {
             return
         }
         didFallBack = true
         Self.logger.warning("Falling back to Claude CLI routing; local model unavailable")
+        onFallback?("Falling back to Claude CLI routing. Local model unavailable.")
     }
 }

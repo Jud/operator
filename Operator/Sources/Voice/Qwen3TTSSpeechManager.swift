@@ -44,6 +44,13 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
     /// Whether speech is currently being synthesized or played back.
     public var isSpeaking: Bool { speaking }
 
+    /// Whether a previous model load attempt failed.
+    ///
+    /// Set to `true`` when ``ensureModelLoaded()`` throws. Checked by
+    /// ``AdaptiveSpeechManager`` to proactively fall back to Apple TTS
+    /// before attempting to speak, preventing silent message loss.
+    public private(set) var modelLoadFailed = false
+
     /// Stream that yields each time an utterance finishes playing (not interrupted).
     public let finishedSpeaking: AsyncStream<Void>
     private let finishedContinuation: AsyncStream<Void>.Continuation
@@ -156,13 +163,17 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
             try await ensureModelLoaded()
         } catch {
             Self.logger.error("Failed to load Qwen3-TTS model: \(error.localizedDescription)")
+            modelLoadFailed = true
             speaking = false
+            finishedContinuation.yield()
             return
         }
 
         guard let model else {
             Self.logger.error("Qwen3-TTS model is nil after loading")
+            modelLoadFailed = true
             speaking = false
+            finishedContinuation.yield()
             return
         }
 
