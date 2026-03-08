@@ -7,6 +7,14 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "https://github.com/jud/speech-swift.git", branch: "operator-fork"),
+        .package(
+            url: "https://github.com/ml-explore/mlx-swift-lm.git",
+            .upToNextMinor(from: "2.30.6")
+        ),
+        .package(
+            url: "https://github.com/petrukha-ivan/mlx-swift-structured.git",
+            from: "0.0.2"
+        ),
     ],
     targets: [
         .target(
@@ -16,6 +24,9 @@ let package = Package(
                 .product(name: "AudioCommon", package: "speech-swift"),
                 .product(name: "Qwen3TTS", package: "speech-swift"),
                 .product(name: "ParakeetASR", package: "speech-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXStructured", package: "mlx-swift-structured"),
             ],
             path: "Sources",
             exclude: ["App/OperatorApp.swift"],
