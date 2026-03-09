@@ -23,7 +23,9 @@ public enum RoutingPrompt {
     public static let systemInstruction = """
         Route the user message to the best active session.
         Match using the provided session name, working directory, project context, and recent messages.
-        Base the decision on those session details, not on assumptions about common team names; if the match is weak or ambiguous, return an empty session with confident=false.
+        Base the decision on those session details, not on assumptions \
+        about common team names; if the match is weak or ambiguous, \
+        return an empty session with confident=false.
         Reply only with JSON: {"session":"<name or empty>","confident":true|false}
         """
 

@@ -177,16 +177,14 @@ internal final class E2EHarness {
         let rt = MessageRouter(registry: reg)
         router = rt
 
-        let sm = StateMachine(
+        let sm = buildStateMachine(
             transcriber: mockTranscriber,
-            audioQueue: aq,
+            aq: aq,
             router: rt,
-            feedback: fb,
-            terminalBridge: bridge,
-            registry: reg,
-            voiceManager: vm,
-            waveformPanel: nil,
-            speechManager: mockSpeechManager
+            fb: fb,
+            bridge: bridge,
+            reg: reg,
+            vm: vm
         )
         stateMachine = sm
 
@@ -200,8 +198,41 @@ internal final class E2EHarness {
         mockTrigger.onCancel = { [weak sm] in
             sm?.triggerCancel()
         }
+        mockTrigger.onDoubleTap = { [weak sm] in
+            sm?.triggerDoubleTap()
+        }
 
         print("[harness] Components booted with mock voice I/O")
+    }
+
+    /// Build the state machine with bimodal decision engine and dictation delivery.
+    private func buildStateMachine(  // swiftlint:disable:this function_parameter_count
+        transcriber: MockSpeechTranscriber,
+        aq: AudioQueue,
+        router: MessageRouter,
+        fb: AudioFeedback,
+        bridge: ITermBridge,
+        reg: SessionRegistry,
+        vm: VoiceManager
+    ) -> StateMachine {
+        let bimodalEngine = BimodalDecisionEngine(
+            accessibilityQuery: AccessibilityQueryService(),
+            router: router,
+            registry: reg
+        )
+        return StateMachine(
+            transcriber: transcriber,
+            audioQueue: aq,
+            router: router,
+            feedback: fb,
+            terminalBridge: bridge,
+            registry: reg,
+            voiceManager: vm,
+            waveformPanel: nil,
+            speechManager: mockSpeechManager,
+            bimodalEngine: bimodalEngine,
+            dictationDelivery: DictationDelivery()
+        )
     }
 
     // MARK: - HTTP Server

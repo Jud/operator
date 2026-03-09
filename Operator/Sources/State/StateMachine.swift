@@ -95,6 +95,8 @@ public final class StateMachine {
     private let commandHandler: OperatorCommandHandler
     private let interruptionHandler: InterruptionHandler
     private let deliveryCoordinator: DeliveryCoordinator
+    private let bimodalEngine: BimodalDecisionEngine
+    private let dictationDelivery: any DictationDelivering
     private let menuBarModel: MenuBarModel?
 
     // MARK: - Initialization
@@ -109,6 +111,8 @@ public final class StateMachine {
     ///   - voiceManager: Voice selection for operator and agent speech.
     ///   - waveformPanel: Floating UI panel (nil in headless/test mode).
     ///   - speechManager: AVSpeechSynthesizer wrapper for direct speech control.
+    ///   - bimodalEngine: Decision engine for dictation vs. agent routing.
+    ///   - dictationDelivery: Pasteboard-based text insertion at the cursor.
     ///   - menuBarModel: Optional model for updating menu bar state display.
     public init(
         transcriber: any SpeechTranscribing,
@@ -120,6 +124,8 @@ public final class StateMachine {
         voiceManager: VoiceManager,
         waveformPanel: WaveformPanel?,
         speechManager: any SpeechManaging,
+        bimodalEngine: BimodalDecisionEngine,
+        dictationDelivery: any DictationDelivering,
         menuBarModel: MenuBarModel? = nil
     ) {
         self.transcriber = transcriber
@@ -131,6 +137,8 @@ public final class StateMachine {
         self.voiceManager = voiceManager
         self.waveformPanel = waveformPanel
         self.speechManager = speechManager
+        self.bimodalEngine = bimodalEngine
+        self.dictationDelivery = dictationDelivery
         self.menuBarModel = menuBarModel
         self.interruptionHandler = InterruptionHandler(engine: router.engine)
         self.commandHandler = OperatorCommandHandler(
@@ -245,12 +253,68 @@ public final class StateMachine {
             await self.handleTranscriptionResult(text)
         }
     }
+
+    /// Called when the user double-taps the push-to-talk key (two taps within 300ms).
+    ///
+    /// Replays the last dictation at the current cursor position. If in LISTENING
+    /// state (first tap started listening), cancels listening without an error tone.
+    /// Ignored from states other than IDLE or LISTENING.
+    public func triggerDoubleTap() {
+        guard currentState == .idle || currentState == .listening else {
+            Self.logger.warning(
+                "Double-tap ignored: not in IDLE or LISTENING state (current: \(self.currentState))"
+            )
+            return
+        }
+
+        Self.logger.info("Trigger DOUBLE-TAP from state: \(self.currentState)")
+
+        if currentState == .listening {
+            cancelInFlightWork()
+            waveformPanel?.fadeOut()
+        }
+
+        currentTask = Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+
+            let result = await self.dictationDelivery.replayLast()
+
+            guard !Task.isCancelled else {
+                return
+            }
+
+            switch result {
+            case .success:
+                self.feedback.play(.dictation)
+
+            case .noLastDictation:
+                Self.logger.info("No lastDictation for double-tap replay")
+                self.feedback.play(.error)
+
+            case .pasteFailed(let reason):
+                Self.logger.error("Double-tap replay paste failed: \(reason)")
+                self.speakOperator("Couldn't insert text at the cursor.")
+                self.feedback.play(.error)
+
+            case .noTextField:
+                self.speakOperator("No text field detected.")
+                self.feedback.play(.error)
+            }
+
+            self.enterIdle()
+        }
+    }
 }
 
 // MARK: - Transcription Processing
 
 extension StateMachine {
     /// Process the result of transcription on @MainActor.
+    ///
+    /// Runs the bimodal decision engine to choose between dictation (default)
+    /// and agent routing (exception) before entering either pipeline.
     private func handleTranscriptionResult(_ text: String?) async {
         guard !Task.isCancelled else {
             return
@@ -262,14 +326,76 @@ extension StateMachine {
 
         cancelTimeout()
 
-        if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Self.logger.info("Transcription result: \"\(text.prefix(80))\"")
-            await processTranscription(text)
-        } else {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             Self.logger.info("Empty transcription; returning to IDLE")
             speakOperator("I didn't catch that. Try again?")
             enterIdle()
+            return
         }
+
+        Self.logger.info("Transcription result: \"\(text.prefix(80))\"")
+
+        let decision = await bimodalEngine.decide(text: text, routingState: routingState)
+
+        guard !Task.isCancelled else {
+            return
+        }
+        guard currentState == .transcribing else {
+            Self.logger.debug("State changed during bimodal decision; discarding")
+            return
+        }
+
+        switch decision {
+        case .routeToAgent:
+            await processTranscription(text)
+
+        case .dictate(let dictText):
+            let trimmed = dictText.trimmingCharacters(in: .whitespacesAndNewlines)
+            await performDictation(trimmed)
+
+        case .noTextField:
+            speakOperator("No text field detected. Move your cursor to a text input.")
+            feedback.play(.error)
+            enterIdle()
+
+        case .permissionRequired:
+            speakOperator(
+                "Operator needs Accessibility permission for dictation. Check System Settings."
+            )
+            enterIdle()
+        }
+    }
+
+    /// Deliver transcribed text at the cursor via pasteboard insertion.
+    ///
+    /// Called when the bimodal engine decides to dictate rather than route.
+    /// No new state machine state is introduced; dictation completes in <200ms
+    /// and transitions directly to IDLE.
+    private func performDictation(_ text: String) async {
+        let result = await dictationDelivery.deliver(text)
+
+        guard !Task.isCancelled else {
+            return
+        }
+
+        switch result {
+        case .success:
+            feedback.play(.dictation)
+
+        case .pasteFailed(let reason):
+            Self.logger.error("Dictation paste failed: \(reason)")
+            speakOperator("Couldn't insert text at the cursor.")
+            feedback.play(.error)
+
+        case .noTextField:
+            speakOperator("No text field detected.")
+            feedback.play(.error)
+
+        case .noLastDictation:
+            feedback.play(.error)
+        }
+
+        enterIdle()
     }
 
     /// Process a successful transcription by routing through the message router.
@@ -324,6 +450,10 @@ extension StateMachine {
         case .cliNotFound:
             speakOperator("Claude CLI not found. I need it for smart routing.")
             feedback.play(.error)
+            enterIdle()
+
+        case .notConfident:
+            Self.logger.warning("Received .notConfident from full routing path; entering idle")
             enterIdle()
         }
     }

@@ -17,4 +17,7 @@ public protocol TriggerSource: AnyObject {
 
     /// Called when the user presses Escape to cancel the current recording.
     var onCancel: (@Sendable @MainActor () -> Void)? { get set }
+
+    /// Called when the user double-taps the push-to-talk key within 300ms to replay last dictation.
+    var onDoubleTap: (@Sendable @MainActor () -> Void)? { get set }
 }

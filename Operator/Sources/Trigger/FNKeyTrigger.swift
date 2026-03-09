@@ -3,21 +3,10 @@ import CoreGraphics
 
 /// Push-to-talk trigger using the FN/Globe key via CGEventTap.
 ///
-/// Supports two trigger modes based on press duration:
-/// - **Toggle mode** (quick tap, <300ms): First tap starts listening, second tap stops.
-/// - **Push-to-talk mode** (long press, >=300ms): Hold to listen, release to stop.
-///
-/// Pressing Escape while listening cancels the recording without processing.
-///
-/// FN is a modifier key on macOS -- it generates kCGEventFlagsChanged events,
-/// not kCGEventKeyDown/kCGEventKeyUp. Detection uses the maskSecondaryFn flag.
-/// The event tap requires Accessibility permission; if AXIsProcessTrusted()
-/// returns false, the user is prompted with a spoken error and System Settings
-/// opens to the Accessibility pane.
-///
-/// A configurable secondary hotkey is also supported for external keyboards
-/// that may not have a usable FN key. The secondary hotkey is specified as a
-/// CGKeyCode and optional modifier flags, and uses kCGEventKeyDown/kCGEventKeyUp.
+/// Supports toggle mode (quick tap, <300ms), push-to-talk mode (long press, >=300ms),
+/// double-tap (second tap within 300ms of toggle-mode entry), and Escape to cancel.
+/// FN generates kCGEventFlagsChanged events; detection uses the maskSecondaryFn flag.
+/// A configurable secondary hotkey supports external keyboards without a usable FN key.
 public final class FNKeyTrigger: TriggerSource {
     private static let logger = Log.logger(for: "FNKeyTrigger")
 
@@ -30,6 +19,8 @@ public final class FNKeyTrigger: TriggerSource {
     public var onStop: (@Sendable @MainActor () -> Void)?
     /// Callback invoked when Escape is pressed to cancel recording.
     public var onCancel: (@Sendable @MainActor () -> Void)?
+    /// Callback invoked when the user double-taps the push-to-talk key within 300ms.
+    public var onDoubleTap: (@Sendable @MainActor () -> Void)?
 
     /// Duration threshold distinguishing toggle mode from push-to-talk mode.
     private let toggleThreshold: TimeInterval
@@ -43,22 +34,19 @@ public final class FNKeyTrigger: TriggerSource {
     /// Whether we are in toggle-listening mode (first quick tap started listening).
     private var isToggleListening = false
 
-    /// Secondary hotkey key code (e.g., CGKeyCode for right Option).
-    ///
-    /// Nil disables secondary hotkey.
+    /// Secondary hotkey key code (nil disables secondary hotkey).
     private var secondaryKeyCode: CGKeyCode?
-
-    /// Required modifier flags for the secondary hotkey (e.g., [.maskControl, .maskShift]).
+    /// Required modifier flags for the secondary hotkey.
     private var secondaryModifiers: CGEventFlags
-
     /// Tracks whether the secondary hotkey is currently held down.
     private var secondaryDown = false
-
-    /// Timestamp of the most recent secondary key-down event for duration measurement.
+    /// Timestamp of the most recent secondary key-down event.
     private var secondaryKeyDownTime: Date?
-
     /// Whether we are in toggle-listening mode via the secondary hotkey.
     private var isSecondaryToggleListening = false
+
+    /// Timer for the 300ms double-tap detection window after toggle-mode entry.
+    private var doubleTapTimer: Timer?
 
     /// Retained references to prevent the tap and run loop source from being deallocated.
     private var eventTap: CFMachPort?
@@ -151,7 +139,13 @@ public final class FNKeyTrigger: TriggerSource {
         }
     }
 
+    /// Dispatch a trigger callback on the main queue.
+    private func dispatch(_ callback: (@Sendable @MainActor () -> Void)?) {
+        DispatchQueue.main.async { callback?() }
+    }
+
     deinit {
+        doubleTapTimer?.invalidate()
         tapWatchdogTimer?.invalidate()
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
@@ -201,16 +195,13 @@ extension FNKeyTrigger {
 
         Self.logger.debug("Escape pressed while listening — cancelling")
 
+        doubleTapTimer?.invalidate()
+        doubleTapTimer = nil
         isToggleListening = false
         isSecondaryToggleListening = false
         fnKeyDownTime = nil
         secondaryKeyDownTime = nil
-
-        let callback = onCancel
-
-        DispatchQueue.main.async {
-            callback?()
-        }
+        dispatch(onCancel)
     }
 }
 
@@ -234,29 +225,26 @@ extension FNKeyTrigger {
         }
     }
 
-    /// Process the FN key-down edge: toggle off or start listening.
+    /// Process the FN key-down edge: toggle off, double-tap, or start listening.
     private func handleFnKeyDown() {
         fnDown = true
 
-        if isToggleListening {
+        if isToggleListening, doubleTapTimer != nil {
+            Self.logger.debug("FN key pressed (double-tap detected)")
+            doubleTapTimer?.invalidate()
+            doubleTapTimer = nil
+            isToggleListening = false
+            fnKeyDownTime = nil
+            dispatch(onDoubleTap)
+        } else if isToggleListening {
             Self.logger.debug("FN key pressed (toggle off)")
             isToggleListening = false
             fnKeyDownTime = nil
-
-            let callback = onStop
-
-            DispatchQueue.main.async {
-                callback?()
-            }
+            dispatch(onStop)
         } else {
             Self.logger.debug("FN key pressed")
             fnKeyDownTime = Date()
-
-            let callback = onStart
-
-            DispatchQueue.main.async {
-                callback?()
-            }
+            dispatch(onStart)
         }
     }
 
@@ -277,14 +265,21 @@ extension FNKeyTrigger {
         } else if isToggleModeEnabled && pressDuration < toggleThreshold {
             Self.logger.debug("FN key released (quick tap — toggle mode)")
             isToggleListening = true
+            startDoubleTapTimer()
         } else {
             Self.logger.debug("FN key released (push-to-talk)")
+            dispatch(onStop)
+        }
+    }
 
-            let callback = onStop
-
-            DispatchQueue.main.async {
-                callback?()
-            }
+    /// Start the 300ms double-tap detection window after entering toggle-listening mode.
+    private func startDoubleTapTimer() {
+        doubleTapTimer?.invalidate()
+        doubleTapTimer = Timer.scheduledTimer(
+            withTimeInterval: toggleThreshold,
+            repeats: false
+        ) { [weak self] _ in
+            self?.doubleTapTimer = nil
         }
     }
 }
@@ -321,23 +316,13 @@ extension FNKeyTrigger {
                 Self.logger.debug("Secondary hotkey pressed (toggle off): keyCode=\(keyCode)")
                 isSecondaryToggleListening = false
                 secondaryKeyDownTime = nil
-
-                let callback = onStop
-
-                DispatchQueue.main.async {
-                    callback?()
-                }
+                dispatch(onStop)
             }
         } else if !secondaryDown {
             secondaryDown = true
             Self.logger.debug("Secondary hotkey pressed: keyCode=\(keyCode)")
             secondaryKeyDownTime = Date()
-
-            let callback = onStart
-
-            DispatchQueue.main.async {
-                callback?()
-            }
+            dispatch(onStart)
         }
     }
 
@@ -372,12 +357,7 @@ extension FNKeyTrigger {
                 isSecondaryToggleListening = true
             } else {
                 Self.logger.debug("Secondary hotkey released (push-to-talk): keyCode=\(keyCode)")
-
-                let callback = onStop
-
-                DispatchQueue.main.async {
-                    callback?()
-                }
+                dispatch(onStop)
             }
         }
     }

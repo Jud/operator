@@ -310,6 +310,14 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let mbm = MenuBarModel.shared
         mbm.attach(registry: reg)
 
+        let accessibilityQuery = AccessibilityQueryService()
+        let dictDelivery = DictationDelivery()
+        let bimodalEngine = BimodalDecisionEngine(
+            accessibilityQuery: accessibilityQuery,
+            router: router,
+            registry: reg
+        )
+
         stateMachine = StateMachine(
             transcriber: transcriber,
             audioQueue: aq,
@@ -320,6 +328,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             voiceManager: vm,
             waveformPanel: wp,
             speechManager: engines.adaptiveTTS,
+            bimodalEngine: bimodalEngine,
+            dictationDelivery: dictDelivery,
             menuBarModel: mbm
         )
     }
@@ -335,6 +345,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
         fnTrigger.onCancel = { [weak self] in
             self?.stateMachine?.triggerCancel()
+        }
+        fnTrigger.onDoubleTap = { [weak self] in
+            self?.stateMachine?.triggerDoubleTap()
         }
         fnTrigger.setupEventTap()
     }

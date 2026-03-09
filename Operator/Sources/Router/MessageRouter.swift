@@ -25,6 +25,10 @@ public enum RoutingResult: Sendable {
 
     /// The `claude` CLI binary was not found. Smart routing is unavailable.
     case cliNotFound
+
+    /// Heuristic routing was not confident enough to select a target.
+    /// The original transcribed text is included for downstream dictation.
+    case notConfident(String)
 }
 
 /// Recognized operator voice commands handled directly by the daemon.
@@ -111,35 +115,6 @@ public final class MessageRouter: Sendable {
 // MARK: - Primary Routing
 
 extension MessageRouter {
-    private struct HeuristicCandidate {
-        let session: String
-        let score: Int
-        let directHits: Int
-    }
-
-    private static let heuristicStopWords: Set<String> = [
-        "a", "an", "and", "the", "to", "for", "of", "on", "in", "at", "with", "from", "new",
-        "fix", "add", "update", "make", "check", "look", "into", "that", "this", "it", "my",
-        "your", "their", "our", "please", "need", "still", "just", "agent", "session"
-    ]
-
-    private static let heuristicConceptGroups: [[String]] = [
-        ["react", "tsx", "typescript", "frontend", "client", "ui", "css", "layout", "dashboard", "shell", "button", "spacing", "skeleton", "spinner", "loading", "component"],
-        ["api", "backend", "server", "endpoint", "rest", "route", "service", "python", "py", "sql", "postgres", "database", "db", "query", "middleware", "auth", "billing", "refund", "profile", "sync", "requirements"],
-        ["infra", "terraform", "tf", "deploy", "deployment", "staging", "prod", "production", "cluster", "eks", "vpc", "subnet", "network", "iam", "policy", "s3", "logging", "rollout"]
-    ]
-
-    private static let heuristicConceptMap: [String: Set<String>] = {
-        var map: [String: Set<String>] = [:]
-        for group in heuristicConceptGroups {
-            let expanded = Set(group)
-            for token in group {
-                map[token] = expanded
-            }
-        }
-        return map
-    }()
-
     /// Route a transcribed user message through the full priority chain.
     ///
     /// - Parameters:
@@ -229,7 +204,7 @@ extension MessageRouter {
     ]
 
     /// Match the user's lowercased utterance against known operator command patterns.
-    private func matchOperatorCommand(_ lowered: String) -> OperatorCommand? {
+    func matchOperatorCommand(_ lowered: String) -> OperatorCommand? {
         let range = NSRange(lowered.startIndex..., in: lowered)
         if let pattern = Self.whatDidSayPattern,
             let match = pattern.firstMatch(in: lowered, range: range),
@@ -252,7 +227,7 @@ extension MessageRouter {
 
 extension MessageRouter {
     /// Extract an explicit agent name and message from the user's utterance.
-    private func extractKeyword(
+    func extractKeyword(
         from text: String,
         sessionNames: [String]
     ) -> (session: String, message: String)? {
@@ -266,125 +241,6 @@ extension MessageRouter {
 // MARK: - claude -p Smart Routing
 
 extension MessageRouter {
-    private func heuristicRoute(
-        text: String,
-        sessions: [SessionState]
-    ) -> String? {
-        let messageTokens = Self.heuristicMessageTokens(from: text)
-        guard !messageTokens.isEmpty else {
-            return nil
-        }
-
-        let ranked = sessions
-            .map { session in
-                Self.scoreHeuristicRoute(messageTokens: messageTokens, session: session)
-            }
-            .filter { $0.score > 0 }
-            .sorted {
-                if $0.score == $1.score {
-                    return $0.directHits > $1.directHits
-                }
-                return $0.score > $1.score
-            }
-
-        guard let best = ranked.first else {
-            return nil
-        }
-
-        let runnerUpScore = ranked.dropFirst().first?.score ?? 0
-        let strongDirectMatch = best.directHits >= 2 && best.score >= 10
-        let strongMargin = best.score >= 12 && best.score >= runnerUpScore + 4
-        guard strongDirectMatch || strongMargin else {
-            return nil
-        }
-
-        return best.session
-    }
-
-    private static func scoreHeuristicRoute(
-        messageTokens: Set<String>,
-        session: SessionState
-    ) -> HeuristicCandidate {
-        let nameTokens = heuristicExpandedTokens(
-            from: session.name,
-            dropStopWords: false
-        )
-        let cwdTokens = heuristicExpandedTokens(from: session.cwd)
-        let contextTokens = heuristicExpandedTokens(from: session.context)
-        let recentTokens = heuristicExpandedTokens(
-            from: session.recentMessages.map(\.text).joined(separator: " ")
-        )
-
-        let tokenWeights = [
-            (nameTokens, 8),
-            (cwdTokens, 6),
-            (contextTokens, 4),
-            (recentTokens, 3)
-        ]
-
-        var score = 0
-        var directHits = 0
-
-        for token in messageTokens {
-            var matched = false
-            for (sourceTokens, weight) in tokenWeights where sourceTokens.contains(token) {
-                score += weight
-                matched = true
-            }
-
-            if matched {
-                directHits += 1
-            }
-        }
-
-        return HeuristicCandidate(session: session.name, score: score, directHits: directHits)
-    }
-
-    private static func heuristicMessageTokens(from text: String) -> Set<String> {
-        heuristicExpandedTokens(from: text)
-    }
-
-    private static func heuristicExpandedTokens(
-        from text: String,
-        dropStopWords: Bool = true
-    ) -> Set<String> {
-        let baseTokens = heuristicBaseTokens(from: text)
-        var expanded: Set<String> = []
-
-        for token in baseTokens {
-            if dropStopWords && heuristicStopWords.contains(token) {
-                continue
-            }
-            expanded.insert(token)
-            if let conceptTokens = heuristicConceptMap[token] {
-                expanded.formUnion(conceptTokens)
-            }
-        }
-
-        return expanded
-    }
-
-    private static func heuristicBaseTokens(from text: String) -> Set<String> {
-        let separators = CharacterSet.alphanumerics.inverted
-        let lowered = text
-            .replacingOccurrences(
-                of: "([a-z0-9])([A-Z])",
-                with: "$1 $2",
-                options: .regularExpression
-            )
-            .lowercased()
-
-        let rawTokens = lowered
-            .components(separatedBy: separators)
-            .filter { !$0.isEmpty }
-
-        var tokens = Set(rawTokens)
-        for token in rawTokens where token.count > 3 && token.hasSuffix("s") {
-            tokens.insert(String(token.dropLast()))
-        }
-        return tokens
-    }
-
     /// Invoke claude -p for smart routing with session context and routing history.
     private func claudePipeRoute(
         text: String,
@@ -425,22 +281,27 @@ extension MessageRouter {
                 ?? "Was that for \(sessionNames.joined(separator: " or "))?"
 
             return .clarify(candidates: candidates, question: question, originalText: text)
-        } catch let error as ClaudePipeError {
-            if case .cliNotFound = error {
+        } catch {
+            return handleRoutingError(error, sessionNames: sessionNames, text: text)
+        }
+    }
+
+    private func handleRoutingError(
+        _ error: any Error,
+        sessionNames: [String],
+        text: String
+    ) -> RoutingResult {
+        if let pipeError = error as? ClaudePipeError {
+            if case .cliNotFound = pipeError {
                 Self.logger.error("claude CLI not found; smart routing unavailable")
                 return .cliNotFound
             }
-            Self.logger.error("claude -p routing failed: \(error.description)")
-
-            let question =
-                "I couldn't determine routing. Which agent is this for? "
-                + "\(sessionNames.joined(separator: " or "))?"
-
-            return .clarify(candidates: sessionNames, question: question, originalText: text)
-        } catch {
+            Self.logger.error("claude -p routing failed: \(pipeError.description)")
+        } else {
             Self.logger.error("Unexpected error in claude -p routing: \(error)")
-            let question = "Which agent is this for? \(sessionNames.joined(separator: " or "))?"
-            return .clarify(candidates: sessionNames, question: question, originalText: text)
         }
+
+        let question = "Which agent is this for? \(sessionNames.joined(separator: " or "))?"
+        return .clarify(candidates: sessionNames, question: question, originalText: text)
     }
 }

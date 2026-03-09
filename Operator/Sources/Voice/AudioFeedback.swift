@@ -7,6 +7,7 @@ public enum AudioCue: String, CaseIterable, Sendable {
     case delivered
     case error
     case pending
+    case dictation
 }
 
 /// Protocol for playing non-verbal audio feedback tones.
@@ -20,12 +21,13 @@ public protocol AudioFeedbackProviding: Sendable {
 
 /// Plays non-verbal audio feedback tones at state transitions.
 ///
-/// Five bundled .caf files provide immediate audible feedback without speech:
+/// Six bundled .caf files provide immediate audible feedback without speech:
 /// - listening: soft rising tone when push-to-talk activates
 /// - processing: brief double-tick when push-to-talk releases
 /// - delivered: low pleasant chime on successful message delivery
 /// - error: descending two-tone on any error
 /// - pending: subtle notification when returning to IDLE with queued messages
+/// - dictation: short, subtle high-pitched chime confirming text insertion at cursor
 ///
 /// Each tone is pre-loaded via AVAudioPlayer.prepareToPlay() for zero-latency playback.
 /// The play method resets currentTime to 0 before playing, allowing rapid re-trigger

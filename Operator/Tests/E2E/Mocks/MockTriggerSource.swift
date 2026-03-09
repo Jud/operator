@@ -10,6 +10,7 @@ internal final class MockTriggerSource: TriggerSource {
     var onStart: (@Sendable @MainActor () -> Void)?
     var onStop: (@Sendable @MainActor () -> Void)?
     var onCancel: (@Sendable @MainActor () -> Void)?
+    var onDoubleTap: (@Sendable @MainActor () -> Void)?
 
     /// Simulate the user pressing the push-to-talk key.
     @MainActor
@@ -27,5 +28,11 @@ internal final class MockTriggerSource: TriggerSource {
     @MainActor
     func simulateTriggerCancel() {
         onCancel?()
+    }
+
+    /// Simulate the user double-tapping the push-to-talk key.
+    @MainActor
+    func simulateDoubleTap() {
+        onDoubleTap?()
     }
 }
