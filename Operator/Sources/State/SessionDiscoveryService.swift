@@ -47,6 +47,15 @@ public final class SessionDiscoveryService: Sendable {
     // MARK: - Reconciliation
 
     /// Reconcile registered sessions against live terminal sessions.
+    ///
+    /// Uses per-type reconciliation: only removes stale sessions whose
+    /// terminal type was successfully polled. This prevents Ghostty
+    /// sessions from being removed when Ghostty is not running (and
+    /// vice versa for iTerm2).
+    ///
+    /// When the bridge is a `MultiTerminalBridge`, `polledTerminalTypes`
+    /// distinguishes "zero sessions" from "bridge failed". For other
+    /// bridge types, a successful discovery is treated as polling all types.
     private static func reconcileSessions(
         using bridge: any TerminalBridge,
         registry: SessionRegistry,
@@ -60,17 +69,54 @@ public final class SessionDiscoveryService: Sendable {
             return
         }
 
-        let liveTTYs = Set(liveSessions.map { $0.tty })
-        let registeredTTYs = await registry.allSessions().map { $0.tty }
+        let polledTypes: Set<TerminalType>
+        if let composite = bridge as? MultiTerminalBridge {
+            polledTypes = composite.polledTerminalTypes
+        } else {
+            polledTypes = [.iterm, .ghostty]
+        }
 
-        for tty in registeredTTYs where !liveTTYs.contains(tty) {
-            if let removedName = await registry.deregister(tty: tty) {
-                logger.info(
-                    "Stale session removed: '\(removedName)' (TTY \(tty) no longer active)"
-                )
-                onSessionRemoved(removedName)
+        var liveIdentifiers = Set<TerminalIdentifier>()
+        for session in liveSessions {
+            switch session.terminalType {
+            case .iterm:
+                liveIdentifiers.insert(.tty(session.tty))
+
+            case .ghostty:
+                liveIdentifiers.insert(.ghosttyTerminal(session.id))
+
+            case .unknown:
+                break
             }
         }
+
+        let registeredSessions = await registry.allSessions()
+
+        for session in registeredSessions {
+            let sessionType = session.identifier.terminalType
+            guard polledTypes.contains(sessionType) else { continue }
+
+            if !liveIdentifiers.contains(session.identifier) {
+                if let removedName = await registry.deregister(identifier: session.identifier) {
+                    logger.info(
+                        "Stale session removed: '\(removedName)' (\(session.identifier) no longer active)"
+                    )
+                    onSessionRemoved(removedName)
+                }
+            }
+        }
+    }
+
+    /// Trigger a single reconciliation cycle for testing.
+    ///
+    /// Exposes the reconciliation logic without requiring polling to be started.
+    /// Intended for unit tests via `@testable import`.
+    func reconcileOnce() async {
+        await Self.reconcileSessions(
+            using: terminalBridge,
+            registry: registry,
+            onSessionRemoved: onSessionRemoved
+        )
     }
 
     // MARK: - Polling
