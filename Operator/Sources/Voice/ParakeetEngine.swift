@@ -13,6 +13,12 @@ private struct ParakeetQueuedSegment {
 public struct ParakeetStreamingMetrics: Sendable {
     /// Number of segments handed off to the background transcriber.
     public let queuedSegmentCount: Int
+    /// Number of queued segments fully transcribed when finalize began.
+    public let completedSegmentCountAtFinalize: Int
+    /// Segment backlog still waiting to finish when finalize began.
+    public let pendingSegmentBacklogAtFinalize: Int
+    /// Largest observed queued-minus-completed backlog during capture.
+    public let maxPendingSegmentBacklog: Int
     /// Number of segments cut early due to the max streaming segment cap.
     public let forcedSegmentCount: Int
     /// Untranscribed tail size present when finalize began, in 16kHz samples.
@@ -23,11 +29,17 @@ public struct ParakeetStreamingMetrics: Sendable {
     /// Create a metrics snapshot.
     public init(
         queuedSegmentCount: Int = 0,
+        completedSegmentCountAtFinalize: Int = 0,
+        pendingSegmentBacklogAtFinalize: Int = 0,
+        maxPendingSegmentBacklog: Int = 0,
         forcedSegmentCount: Int = 0,
         tailSamplesAtFinalize: Int = 0,
         retainedSamplesAfterFinalize: Int = 0
     ) {
         self.queuedSegmentCount = queuedSegmentCount
+        self.completedSegmentCountAtFinalize = completedSegmentCountAtFinalize
+        self.pendingSegmentBacklogAtFinalize = pendingSegmentBacklogAtFinalize
+        self.maxPendingSegmentBacklog = maxPendingSegmentBacklog
         self.forcedSegmentCount = forcedSegmentCount
         self.tailSamplesAtFinalize = tailSamplesAtFinalize
         self.retainedSamplesAfterFinalize = retainedSamplesAfterFinalize
@@ -52,6 +64,8 @@ private struct ParakeetSessionState: @unchecked Sendable {
     var activeSpeechStartSample: Int?
     var nextSegmentID = 0
     var queuedSegmentCount = 0
+    var completedSegmentCount = 0
+    var maxPendingSegmentBacklog = 0
     var forcedSegmentCount = 0
 }
 
@@ -115,6 +129,8 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
             state.activeSpeechStartSample = nil
             state.nextSegmentID = 0
             state.queuedSegmentCount = 0
+            state.completedSegmentCount = 0
+            state.maxPendingSegmentBacklog = 0
             state.forcedSegmentCount = 0
             if let vadModel = state.vadModel {
                 vadModel.resetState()
@@ -151,30 +167,7 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Signal end of audio and return the transcribed text.
     public func finishAndTranscribe() async -> String? {
-        let finalizePayload = sessionState.withLock { state -> ParakeetFinalizePayload in
-            let flushEvents = state.vadProcessor?.flush() ?? []
-            let absoluteBufferedSamples = state.sampleBufferStartIndex + state.normalizedSamples.count
-            let tailSamplesAtFinalize =
-                state.activeSpeechStartSample.map {
-                    max(0, absoluteBufferedSamples - $0)
-                } ?? 0
-            let fallbackSamples =
-                state.nextSegmentID == 0 && !state.normalizedSamples.isEmpty
-                ? state.normalizedSamples
-                : nil
-            let flushedSegments = Self.makeSegments(from: flushEvents, state: &state)
-            return ParakeetFinalizePayload(
-                sessionID: state.sessionID,
-                segments: flushedSegments,
-                fallback: fallbackSamples,
-                metrics: ParakeetStreamingMetrics(
-                    queuedSegmentCount: state.queuedSegmentCount,
-                    forcedSegmentCount: state.forcedSegmentCount,
-                    tailSamplesAtFinalize: tailSamplesAtFinalize,
-                    retainedSamplesAfterFinalize: state.normalizedSamples.count
-                )
-            )
-        }
+        let finalizePayload = buildFinalizePayload()
 
         for segment in finalizePayload.segments {
             await transcriber.enqueueSegment(
@@ -207,6 +200,40 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
         return text
     }
 
+    private func buildFinalizePayload() -> ParakeetFinalizePayload {
+        sessionState.withLock { state -> ParakeetFinalizePayload in
+            let flushEvents = state.vadProcessor?.flush() ?? []
+            let absoluteBufferedSamples = state.sampleBufferStartIndex + state.normalizedSamples.count
+            let tailSamplesAtFinalize =
+                state.activeSpeechStartSample.map {
+                    max(0, absoluteBufferedSamples - $0)
+                } ?? 0
+            let fallbackSamples =
+                state.nextSegmentID == 0 && !state.normalizedSamples.isEmpty
+                ? state.normalizedSamples
+                : nil
+            let flushedSegments = Self.makeSegments(from: flushEvents, state: &state)
+            let pendingSegmentBacklogAtFinalize = max(
+                0,
+                state.queuedSegmentCount - state.completedSegmentCount
+            )
+            return ParakeetFinalizePayload(
+                sessionID: state.sessionID,
+                segments: flushedSegments,
+                fallback: fallbackSamples,
+                metrics: ParakeetStreamingMetrics(
+                    queuedSegmentCount: state.queuedSegmentCount,
+                    completedSegmentCountAtFinalize: state.completedSegmentCount,
+                    pendingSegmentBacklogAtFinalize: pendingSegmentBacklogAtFinalize,
+                    maxPendingSegmentBacklog: state.maxPendingSegmentBacklog,
+                    forcedSegmentCount: state.forcedSegmentCount,
+                    tailSamplesAtFinalize: tailSamplesAtFinalize,
+                    retainedSamplesAfterFinalize: state.normalizedSamples.count
+                )
+            )
+        }
+    }
+
     /// Cancel any in-progress transcription and release per-session state.
     public func cancel() {
         let sessionID = sessionState.withLock { state in
@@ -218,6 +245,8 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
             state.activeSpeechStartSample = nil
             state.nextSegmentID = 0
             state.queuedSegmentCount = 0
+            state.completedSegmentCount = 0
+            state.maxPendingSegmentBacklog = 0
             state.forcedSegmentCount = 0
             if let vadModel = state.vadModel {
                 vadModel.resetState()
@@ -330,6 +359,12 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
                         id: segment.id,
                         samples: segment.samples
                     )
+                    self.sessionState.withLock { state in
+                        guard state.sessionID == sessionID else {
+                            return
+                        }
+                        state.completedSegmentCount += 1
+                    }
                 }
             }
         }
@@ -473,6 +508,8 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
         )
         state.nextSegmentID += 1
         state.queuedSegmentCount += 1
+        let pendingBacklog = state.queuedSegmentCount - state.completedSegmentCount
+        state.maxPendingSegmentBacklog = max(state.maxPendingSegmentBacklog, pendingBacklog)
         return queuedSegment
     }
 

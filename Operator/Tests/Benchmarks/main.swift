@@ -1029,6 +1029,9 @@ func benchmarkSTT(
         print("Paced capture:    \(String(format: "%.0f", feedMs))ms")
         print("Finalize:         \(String(format: "%.0f", finalizeMs))ms")
         print("Segments queued:  \(metrics.queuedSegmentCount)")
+        print("Segments done:    \(metrics.completedSegmentCountAtFinalize)")
+        print("Pending backlog:  \(metrics.pendingSegmentBacklogAtFinalize)")
+        print("Peak backlog:     \(metrics.maxPendingSegmentBacklog)")
         print("Forced segments:  \(metrics.forcedSegmentCount)")
         print("Tail at finalize: \(String(format: "%.0f", tailDurationMs))ms")
         print("Transcript chars: \(result?.count ?? 0)")
@@ -1112,11 +1115,16 @@ func benchmarkSTT(
         let metrics = engine.lastStreamingMetrics
         let tailDurationMs = Double(metrics.tailSamplesAtFinalize) / 16_000 * 1000
 
+        print("Soak target:      \(String(format: "%.1f", targetDurationSeconds))s")
         print("Soak capture:     \(String(format: "%.0f", captureMs))ms")
-        print("Fixture duration: \(String(format: "%.1f", fixtureDurationSeconds))s x \(repetitionsCompleted)")
+        print("Fixture source:   \(String(format: "%.1f", fixtureDurationSeconds))s sample")
+        print("Fixture passes:   \(repetitionsCompleted) (last pass may be trimmed)")
         print("Chunks fed:       \(totalChunksFed)")
         print("Finalize:         \(String(format: "%.0f", finalizeMs))ms")
         print("Segments queued:  \(metrics.queuedSegmentCount)")
+        print("Segments done:    \(metrics.completedSegmentCountAtFinalize)")
+        print("Pending backlog:  \(metrics.pendingSegmentBacklogAtFinalize)")
+        print("Peak backlog:     \(metrics.maxPendingSegmentBacklog)")
         print("Forced segments:  \(metrics.forcedSegmentCount)")
         print("Tail at finalize: \(String(format: "%.0f", tailDurationMs))ms")
         print(
@@ -1233,7 +1241,7 @@ private func prefixBuffers(
     _ buffers: [AVAudioPCMBuffer],
     maxDurationSeconds: Double
 ) -> [AVAudioPCMBuffer] {
-    guard maxDurationSeconds > 0 else {
+    guard maxDurationSeconds > 0, !buffers.isEmpty else {
         return []
     }
 
@@ -1245,11 +1253,71 @@ private func prefixBuffers(
         guard accumulatedSeconds < maxDurationSeconds else {
             break
         }
-        selected.append(buffer)
-        accumulatedSeconds += durationSeconds
+
+        let remainingSeconds = maxDurationSeconds - accumulatedSeconds
+        if durationSeconds <= remainingSeconds {
+            selected.append(buffer)
+            accumulatedSeconds += durationSeconds
+            continue
+        }
+
+        guard let trimmedBuffer = trimBuffer(buffer: buffer, maxDurationSeconds: remainingSeconds) else {
+            break
+        }
+        selected.append(trimmedBuffer)
+        accumulatedSeconds += remainingSeconds
+        break
     }
 
-    return selected.isEmpty ? [buffers[0]] : selected
+    if selected.isEmpty {
+        if let trimmedFirstBuffer = trimBuffer(
+            buffer: buffers[0],
+            maxDurationSeconds: maxDurationSeconds
+        ) {
+            return [trimmedFirstBuffer]
+        }
+    }
+
+    return selected
+}
+
+private func trimBuffer(
+    buffer: AVAudioPCMBuffer,
+    maxDurationSeconds: Double
+) -> AVAudioPCMBuffer? {
+    guard maxDurationSeconds > 0 else {
+        return nil
+    }
+    let sampleRate = buffer.format.sampleRate
+    guard sampleRate > 0 else {
+        return nil
+    }
+
+    let maxFrames = min(
+        Int(buffer.frameLength),
+        max(1, Int((maxDurationSeconds * sampleRate).rounded(.down)))
+    )
+    guard maxFrames > 0 else {
+        return nil
+    }
+    guard maxFrames < Int(buffer.frameLength) else {
+        return buffer
+    }
+
+    guard
+        let trimmedBuffer = AVAudioPCMBuffer(
+            pcmFormat: buffer.format,
+            frameCapacity: AVAudioFrameCount(maxFrames)
+        ),
+        let source = buffer.floatChannelData?[0],
+        let destination = trimmedBuffer.floatChannelData?[0]
+    else {
+        return nil
+    }
+
+    trimmedBuffer.frameLength = AVAudioFrameCount(maxFrames)
+    destination.update(from: source, count: maxFrames)
+    return trimmedBuffer
 }
 
 @MainActor
