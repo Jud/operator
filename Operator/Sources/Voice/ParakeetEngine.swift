@@ -1,162 +1,269 @@
 @preconcurrency import AVFoundation
 import AudioCommon
 import ParakeetASR
+@preconcurrency import SpeechVAD
 import os
 
+private struct ParakeetQueuedSegment {
+    let id: Int
+    let samples: [Float]
+}
+
+private struct ParakeetFinalizePayload {
+    let sessionID: Int
+    let segments: [ParakeetQueuedSegment]
+    let fallback: [Float]?
+}
+
+private struct ParakeetSessionState: @unchecked Sendable {
+    var sessionID = 0
+    var normalizedSamples: [Float] = []
+    var inputSampleRate: Int?
+    var vadModel: SileroVADModel?
+    var vadProcessor: StreamingVADProcessor?
+    var vadProcessedSampleCount = 0
+    var nextSegmentID = 0
+}
+
+// swiftlint:disable type_contents_order type_body_length
 /// Parakeet CoreML speech-to-text engine conforming to ``TranscriptionEngine``.
 ///
-/// Uses speech-swift's `ParakeetASRModel` (Parakeet TDT 0.6B v3) for on-device
-/// transcription via the Apple Neural Engine. Audio samples are accumulated during
-/// push-to-talk and processed in a single batch on `finishAndTranscribe()`.
-///
-/// Memory management: the CoreML model (~400MB) is loaded on first use and
-/// unloaded after each transcription cycle completes, keeping peak memory low when
-/// TTS and routing models are resident.
-///
-/// Thread safety: `append(_:)` is called from the audio tap thread. Sample
-/// accumulation uses `OSAllocatedUnfairLock`. All other methods are called from
-/// `@MainActor` via `SpeechTranscriber`.
+/// Audio is normalized to 16kHz mono as it arrives, segmented with Silero VAD,
+/// and transcribed in the background segment-by-segment while the user is still
+/// talking. `finishAndTranscribe()` only needs to flush the tail segment and join
+/// already-produced transcript chunks, which keeps end-of-utterance latency low.
 public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     private static let logger = Log.logger(for: "ParakeetEngine")
+    private static let targetSampleRate = 16_000
+    private static let vadEngine: SileroVADEngine = .coreml
 
     private let modelManager: ModelManager
-
-    /// Accumulated Float32 PCM samples, extracted from audio buffers on the tap thread.
-    private let audioSamples = OSAllocatedUnfairLock<[Float]>(initialState: [])
-
-    /// Sample rate captured from the first audio buffer in each session.
-    private let inputSampleRate = OSAllocatedUnfairLock<Int?>(initialState: nil)
-
-    /// The loaded CoreML model, non-nil only during the transcription window.
-    private var model: ParakeetASRModel?
-
-    // MARK: - Initialization
+    private let sessionState = OSAllocatedUnfairLock<ParakeetSessionState>(initialState: .init())
+    private let pendingSegmentTasks = OSAllocatedUnfairLock<[Task<Void, Never>]>(initialState: [])
+    private let transcriber: ParakeetSegmentTranscriber
 
     /// Creates a Parakeet engine with the given model manager for lifecycle tracking.
-    ///
-    /// Registers a download handler with ModelManager so the Settings UI can trigger
-    /// model downloads. No model loading occurs at construction time.
-    ///
-    /// - Parameter modelManager: The shared model manager for state tracking.
     public init(modelManager: ModelManager) {
         self.modelManager = modelManager
+        self.transcriber = ParakeetSegmentTranscriber(modelManager: modelManager)
         registerDownloadHandler()
     }
 
-    // MARK: - TranscriptionEngine
-
-    /// Prepare for a new transcription session by clearing the sample accumulator.
-    ///
-    /// Cancels any previous in-flight session and resets accumulated audio data.
-    /// Model loading is deferred to `finishAndTranscribe()` to avoid Sendable
-    /// constraints with the non-Sendable `ParakeetASRModel` type.
+    /// Prepare for a new transcription session by resetting streaming state.
     public func prepare() throws {
-        cancel()
+        let pendingTasks = pendingSegmentTasks.withLock { tasks in
+            let copy = tasks
+            tasks.removeAll(keepingCapacity: false)
+            return copy
+        }
+        for task in pendingTasks {
+            task.cancel()
+        }
+
+        let sessionID = sessionState.withLock { state in
+            state.sessionID += 1
+            state.normalizedSamples.removeAll(keepingCapacity: true)
+            state.inputSampleRate = nil
+            state.vadProcessedSampleCount = 0
+            state.nextSegmentID = 0
+            if let vadModel = state.vadModel {
+                vadModel.resetState()
+                state.vadProcessor = StreamingVADProcessor(model: vadModel)
+            } else {
+                state.vadProcessor = nil
+            }
+            return state.sessionID
+        }
+
+        Task {
+            await self.transcriber.resetSession(sessionID)
+        }
+        startBackgroundWarmup(for: sessionID)
     }
 
     /// Append an audio buffer captured from the microphone.
-    ///
-    /// Extracts Float32 PCM samples from the buffer and appends them to the
-    /// accumulator. Multi-channel audio is mixed down to mono. Called on the
-    /// audio tap thread; thread-safe via `OSAllocatedUnfairLock`.
     public func append(_ buffer: AVAudioPCMBuffer) {
-        guard let channelData = buffer.floatChannelData else {
+        let inputSampleRate = Int(buffer.format.sampleRate)
+        let normalizedSamples = Self.normalize(buffer, sourceSampleRate: inputSampleRate)
+        guard !normalizedSamples.isEmpty else {
             return
         }
-        let frameCount = Int(buffer.frameLength)
-        let channelCount = Int(buffer.format.channelCount)
 
-        inputSampleRate.withLock { value in
-            if value == nil {
-                value = Int(buffer.format.sampleRate)
+        let segments = sessionState.withLock { state in
+            if state.inputSampleRate == nil {
+                state.inputSampleRate = inputSampleRate
             }
+            state.normalizedSamples.append(contentsOf: normalizedSamples)
+            return Self.processSamplesIfPossible(normalizedSamples, state: &state)
         }
-
-        if channelCount == 1 {
-            let samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
-            audioSamples.withLock { $0.append(contentsOf: samples) }
-        } else {
-            var mixed: [Float] = []
-            mixed.reserveCapacity(frameCount)
-            for frame in 0..<frameCount {
-                var sum: Float = 0
-                for ch in 0..<channelCount {
-                    sum += channelData[ch][frame]
-                }
-                mixed.append(sum / Float(channelCount))
-            }
-            let monoSamples = mixed
-            audioSamples.withLock { $0.append(contentsOf: monoSamples) }
-        }
+        submitSegments(segments)
     }
 
     /// Signal end of audio and return the transcribed text.
-    ///
-    /// Loads the model if not already in memory, runs CoreML inference on the
-    /// accumulated audio samples. The model stays resident after transcription
-    /// to avoid the ~2s warmup penalty on each call; use ``unloadModel()``
-    /// explicitly when memory pressure requires it.
     public func finishAndTranscribe() async -> String? {
-        let samples = audioSamples.withLock { buf in
-            let copy = buf
-            buf.removeAll()
+        let finalizePayload = sessionState.withLock { state -> ParakeetFinalizePayload in
+            let flushEvents = state.vadProcessor?.flush() ?? []
+            let flushedSegments = Self.makeSegments(from: flushEvents, state: &state)
+            let fallback = state.normalizedSamples.isEmpty ? nil : state.normalizedSamples
+            return ParakeetFinalizePayload(
+                sessionID: state.sessionID,
+                segments: flushedSegments,
+                fallback: fallback
+            )
+        }
+
+        for segment in finalizePayload.segments {
+            await transcriber.enqueueSegment(
+                sessionID: finalizePayload.sessionID,
+                id: segment.id,
+                samples: segment.samples
+            )
+        }
+
+        let pendingTasks = pendingSegmentTasks.withLock { tasks in
+            let copy = tasks
+            tasks.removeAll(keepingCapacity: false)
             return copy
         }
-
-        guard !samples.isEmpty else {
-            Self.logger.warning("No audio samples to transcribe")
-            return nil
+        for task in pendingTasks {
+            await task.value
         }
 
-        do {
-            try await ensureModelLoaded()
-        } catch {
-            Self.logger.error("Failed to load Parakeet model: \(error.localizedDescription)")
-            await modelManager.markError(.stt, message: error.localizedDescription)
-            return nil
-        }
-
-        guard let currentModel = model else {
-            Self.logger.error("Parakeet model is nil after loading")
-            return nil
-        }
-
-        let sampleRate = inputSampleRate.withLock { $0 ?? 16_000 }
-
-        let text: String
-        do {
-            text = try currentModel.transcribeAudio(samples, sampleRate: sampleRate)
+        let text = await transcriber.finishSession(
+            sessionID: finalizePayload.sessionID,
+            fallbackSamples: finalizePayload.fallback
+        )
+        if let text {
             Self.logger.info("Parakeet transcription complete (\(text.count) chars)")
-        } catch {
-            Self.logger.error("Parakeet transcription failed: \(error.localizedDescription)")
-            unloadModel()
-            return nil
+        } else {
+            Self.logger.warning("Parakeet transcription produced no text")
+        }
+        return text
+    }
+
+    /// Cancel any in-progress transcription and release per-session state.
+    public func cancel() {
+        let sessionID = sessionState.withLock { state in
+            state.sessionID += 1
+            state.normalizedSamples.removeAll(keepingCapacity: false)
+            state.inputSampleRate = nil
+            state.vadProcessedSampleCount = 0
+            state.nextSegmentID = 0
+            if let vadModel = state.vadModel {
+                vadModel.resetState()
+            }
+            state.vadProcessor = nil
+            return state.sessionID
         }
 
-        return text.isEmpty ? nil : text
+        let pendingTasks = pendingSegmentTasks.withLock { tasks in
+            let copy = tasks
+            tasks.removeAll(keepingCapacity: false)
+            return copy
+        }
+        for task in pendingTasks {
+            task.cancel()
+        }
+
+        Task {
+            await self.transcriber.resetSession(sessionID)
+        }
     }
 
-    /// Cancel any in-progress transcription and release resources.
-    public func cancel() {
-        audioSamples.withLock { $0.removeAll() }
-        inputSampleRate.withLock { $0 = nil }
+    /// Unload STT models to free memory.
+    public func unloadModel() {
+        sessionState.withLock { state in
+            state.vadModel?.unload()
+            state.vadModel = nil
+            state.vadProcessor = nil
+            state.vadProcessedSampleCount = 0
+        }
+        Task {
+            await self.transcriber.unloadModel()
+        }
     }
 
-    // MARK: - Private
+    private func startBackgroundWarmup(for sessionID: Int) {
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await self.transcriber.prewarm()
+        }
 
-    /// Register the download handler with ModelManager for Settings UI downloads.
+        Task { [weak self] in
+            guard let self else {
+                return
+            }
+            await self.ensureVADReady(for: sessionID)
+        }
+    }
+
+    private func ensureVADReady(for sessionID: Int) async {
+        if let cachedVAD = sessionState.withLock({ $0.vadModel }) {
+            installVADModel(cachedVAD, for: sessionID)
+            return
+        }
+
+        do {
+            let model = try await SileroVADModel.fromPretrained(engine: Self.vadEngine)
+            installVADModel(model, for: sessionID)
+        } catch {
+            Self.logger.error("Silero VAD load failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func installVADModel(_ vadModel: SileroVADModel, for sessionID: Int) {
+        let backlog = sessionState.withLock { state -> [Float]? in
+            state.vadModel = vadModel
+            guard state.sessionID == sessionID else {
+                return nil
+            }
+            vadModel.resetState()
+            state.vadProcessor = StreamingVADProcessor(model: vadModel)
+            return Array(state.normalizedSamples.dropFirst(state.vadProcessedSampleCount))
+        }
+
+        guard let backlog, !backlog.isEmpty else {
+            return
+        }
+
+        let segments = sessionState.withLock { state in
+            Self.processSamplesIfPossible(backlog, state: &state)
+        }
+        submitSegments(segments)
+    }
+
+    private func submitSegments(_ segments: [ParakeetQueuedSegment]) {
+        guard !segments.isEmpty else {
+            return
+        }
+        for segment in segments {
+            let sessionID = sessionState.withLock { $0.sessionID }
+            let task = Task {
+                await self.transcriber.enqueueSegment(
+                    sessionID: sessionID,
+                    id: segment.id,
+                    samples: segment.samples
+                )
+            }
+            pendingSegmentTasks.withLock { $0.append(task) }
+        }
+    }
+
     private func registerDownloadHandler() {
         let manager = modelManager
         // swiftlint:disable:next unhandled_throwing_task
         Task {
             await manager.registerDownloadHandler(for: .stt) { _, progressCallback in
                 await progressCallback(0.0)
-                let cacheDir = try HuggingFaceDownloader.getCacheDirectory(
+
+                let parakeetCacheDir = try HuggingFaceDownloader.getCacheDirectory(
                     for: ParakeetASRModel.defaultModelId
                 )
                 try await HuggingFaceDownloader.downloadWeights(
                     modelId: ParakeetASRModel.defaultModelId,
-                    to: cacheDir,
+                    to: parakeetCacheDir,
                     additionalFiles: [
                         "encoder.mlmodelc/**",
                         "decoder.mlmodelc/**",
@@ -165,44 +272,103 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
                         "config.json"
                     ]
                 )
+                await progressCallback(0.85)
+
+                let vadCacheDir = try HuggingFaceDownloader.getCacheDirectory(
+                    for: SileroVADModel.defaultCoreMLModelId
+                )
+                try await HuggingFaceDownloader.downloadWeights(
+                    modelId: SileroVADModel.defaultCoreMLModelId,
+                    to: vadCacheDir,
+                    additionalFiles: ["silero_vad.mlmodelc/**", "config.json"]
+                )
                 await progressCallback(1.0)
-                return cacheDir
+
+                return parakeetCacheDir
             }
         }
     }
 
-    /// Load the Parakeet model if not already in memory.
-    ///
-    /// Uses `ParakeetASRModel.fromPretrained()` which handles downloading from
-    /// HuggingFace Hub (if not cached) and loading CoreML models. The first
-    /// transcription triggers CoreML graph compilation (~2s one-time cost);
-    /// subsequent transcriptions complete in ~30ms.
-    private func ensureModelLoaded() async throws {
-        guard model == nil else {
-            return
+    private static func processSamplesIfPossible(
+        _ samples: [Float],
+        state: inout ParakeetSessionState
+    ) -> [ParakeetQueuedSegment] {
+        guard let vadProcessor = state.vadProcessor else {
+            return []
         }
-
-        await modelManager.markLoading(.stt)
-        Self.logger.info("Loading Parakeet model...")
-
-        let loaded = try await ParakeetASRModel.fromPretrained()
-        model = loaded
-
-        await modelManager.markLoaded(.stt)
-        Self.logger.info("Parakeet model loaded")
+        state.vadProcessedSampleCount += samples.count
+        let events = vadProcessor.process(samples: samples)
+        return makeSegments(from: events, state: &state)
     }
 
-    /// Unload the CoreML model to free memory and update ModelManager state.
-    ///
-    /// Call this when memory pressure is high and the STT model is not actively
-    /// needed. The model will be reloaded on the next transcription.
-    public func unloadModel() {
-        model?.unload()
-        model = nil
-        let manager = modelManager
-        Task {
-            await manager.markUnloaded(.stt)
+    private static func makeSegments(
+        from events: [VADEvent],
+        state: inout ParakeetSessionState
+    ) -> [ParakeetQueuedSegment] {
+        var segments: [ParakeetQueuedSegment] = []
+
+        for event in events {
+            guard case .speechEnded(let segment) = event else {
+                continue
+            }
+            let startIndex = max(0, Int(segment.startTime * Float(Self.targetSampleRate)))
+            let endIndex = min(
+                state.normalizedSamples.count,
+                Int(segment.endTime * Float(Self.targetSampleRate))
+            )
+            guard endIndex > startIndex else {
+                continue
+            }
+
+            let segmentSamples = Array(state.normalizedSamples[startIndex..<endIndex])
+            segments.append(
+                ParakeetQueuedSegment(
+                    id: state.nextSegmentID,
+                    samples: segmentSamples
+                )
+            )
+            state.nextSegmentID += 1
         }
-        Self.logger.info("Parakeet model unloaded")
+
+        return segments
+    }
+
+    private static func normalize(
+        _ buffer: AVAudioPCMBuffer,
+        sourceSampleRate: Int
+    ) -> [Float] {
+        guard let channelData = buffer.floatChannelData else {
+            return []
+        }
+
+        let frameCount = Int(buffer.frameLength)
+        let channelCount = Int(buffer.format.channelCount)
+        guard frameCount > 0, channelCount > 0 else {
+            return []
+        }
+
+        let monoSamples: [Float]
+        if channelCount == 1 {
+            monoSamples = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
+        } else {
+            monoSamples = (0..<frameCount).map { frame in
+                var sum: Float = 0
+                for channel in 0..<channelCount {
+                    sum += channelData[channel][frame]
+                }
+                return sum / Float(channelCount)
+            }
+        }
+
+        if sourceSampleRate == Self.targetSampleRate {
+            return monoSamples
+        }
+        return AudioFileLoader.resample(
+            monoSamples,
+            from: sourceSampleRate,
+            to: Self.targetSampleRate
+        )
     }
 }
+
+// swiftlint:enable type_contents_order type_body_length

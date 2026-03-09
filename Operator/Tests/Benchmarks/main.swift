@@ -13,6 +13,7 @@ private enum BenchmarkTarget: String, CaseIterable {
     case stt
     case sttLatency = "stt-latency"
     case sttLong = "stt-long"
+    case sttStreaming = "stt-streaming"
     case memory
 }
 
@@ -33,6 +34,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  stt               Run STT latency and long-utterance benchmarks")
     print("  stt-latency       Run only STT 5s transcription benchmark")
     print("  stt-long          Run only STT long-utterance benchmark")
+    print("  stt-streaming     Run STT streaming/finalize benchmark with synthesized speech")
     print("  memory            Run routing-model memory benchmark")
     if listOnly {
         return
@@ -43,6 +45,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  ./scripts/run-benchmarks.sh routing-single")
     print("  ./scripts/run-benchmarks.sh --no-build routing-latency")
     print("  ./scripts/run-benchmarks.sh stt-long")
+    print("  ./scripts/run-benchmarks.sh stt-streaming")
     print("  ./scripts/run-benchmarks.sh --release memory")
 }
 
@@ -126,10 +129,19 @@ private func makeRoutingBenchmarkSessions(voice: VoiceDescriptor) -> [SessionSta
             name: "ui-shell",
             tty: "/dev/benchmark1",
             cwd: "/Users/jud/work/operator-ui",
-            context: "Branch feat/settings-loading. Editing web/src/routes/settings.tsx, web/src/components/LoadingCard.tsx, and web/src/styles/dashboard.css for React loading states, layout polish, and responsive CSS.",
+            context:
+                "Branch feat/settings-loading. Editing web/src/routes/settings.tsx, web/src/components/LoadingCard.tsx, and web/src/styles/dashboard.css for React loading states, layout polish, and responsive CSS.",
             recentMessages: [
-                SessionMessage(role: "user", text: "Fix the janky loading state on the settings dashboard and make the cards stop shifting on mobile."),
-                SessionMessage(role: "assistant", text: "I updated LoadingCard.tsx, SettingsRoute.tsx, and dashboard.css; next I am wiring the pending query state and skeleton layout.")
+                SessionMessage(
+                    role: "user",
+                    text:
+                        "Fix the janky loading state on the settings dashboard and make the cards stop shifting on mobile."
+                ),
+                SessionMessage(
+                    role: "assistant",
+                    text:
+                        "I updated LoadingCard.tsx, SettingsRoute.tsx, and dashboard.css; next I am wiring the pending query state and skeleton layout."
+                )
             ],
             status: .idle,
             lastActivity: Date(),
@@ -140,10 +152,19 @@ private func makeRoutingBenchmarkSessions(voice: VoiceDescriptor) -> [SessionSta
             name: "profile-api",
             tty: "/dev/benchmark2",
             cwd: "/Users/jud/work/operator-api",
-            context: "Branch feat/profile-endpoints. Editing api/routes/profile.py, services/user_profile.py, and db/queries/profile.sql for REST endpoints, auth middleware, and Postgres query performance.",
+            context:
+                "Branch feat/profile-endpoints. Editing api/routes/profile.py, services/user_profile.py, and db/queries/profile.sql for REST endpoints, auth middleware, and Postgres query performance.",
             recentMessages: [
-                SessionMessage(role: "user", text: "The user profile endpoint is timing out under load and we still need a new REST route for profile preferences."),
-                SessionMessage(role: "assistant", text: "I traced the slowdown to profile.sql and the connection pool, and I am adding the preferences endpoint in profile.py.")
+                SessionMessage(
+                    role: "user",
+                    text:
+                        "The user profile endpoint is timing out under load and we still need a new REST route for profile preferences."
+                ),
+                SessionMessage(
+                    role: "assistant",
+                    text:
+                        "I traced the slowdown to profile.sql and the connection pool, and I am adding the preferences endpoint in profile.py."
+                )
             ],
             status: .idle,
             lastActivity: Date(),
@@ -154,10 +175,19 @@ private func makeRoutingBenchmarkSessions(voice: VoiceDescriptor) -> [SessionSta
             name: "staging-infra",
             tty: "/dev/benchmark3",
             cwd: "/Users/jud/work/operator-infra",
-            context: "Branch chore/staging-network. Editing infra/envs/staging/main.tf, modules/vpc, and modules/iam_policy for Terraform apply failures, private subnet layout, IAM policies, and S3 logging.",
+            context:
+                "Branch chore/staging-network. Editing infra/envs/staging/main.tf, modules/vpc, and modules/iam_policy for Terraform apply failures, private subnet layout, IAM policies, and S3 logging.",
             recentMessages: [
-                SessionMessage(role: "user", text: "The staging VPC rollout failed after the Terraform change and logging still needs the new S3 bucket policy."),
-                SessionMessage(role: "assistant", text: "I am updating the private subnet module, the IAM policy document, and the S3 logging resources in staging Terraform.")
+                SessionMessage(
+                    role: "user",
+                    text:
+                        "The staging VPC rollout failed after the Terraform change and logging still needs the new S3 bucket policy."
+                ),
+                SessionMessage(
+                    role: "assistant",
+                    text:
+                        "I am updating the private subnet module, the IAM policy document, and the S3 logging resources in staging Terraform."
+                )
             ],
             status: .idle,
             lastActivity: Date(),
@@ -254,10 +284,11 @@ func runBenchmarks() async {
     if includes(.tts) || includes(.ttsTTFA) {
         await benchmarkTTS()
     }
-    if includes(.stt) || includes(.sttLatency) || includes(.sttLong) {
+    if includes(.stt) || includes(.sttLatency) || includes(.sttLong) || includes(.sttStreaming) {
         await benchmarkSTT(
             runLatency: includes(.stt) || includes(.sttLatency),
-            runLong: includes(.stt) || includes(.sttLong)
+            runLong: includes(.stt) || includes(.sttLong),
+            runStreaming: includes(.stt) || includes(.sttStreaming)
         )
     }
     if includes(.memory) {
@@ -360,8 +391,12 @@ func benchmarkRoutingSingle() async {
         print("  prefix cache:    \(warmMetrics.usedPromptPrefixCache ? "yes" : "no")")
         print("  prefix cache hit:\(warmMetrics.promptPrefixCacheHit ? "yes" : "no")")
         print("  model preloaded: \(warmMetrics.modelWasLoadedBeforeRun ? "yes" : "no")")
-        print("  cached context:  \(warmMetrics.cachedContextCharacters) chars, \(warmMetrics.cachedContextWords) words")
-        print("  runtime prompt:  \(warmMetrics.runtimePromptCharacters) chars, \(warmMetrics.runtimePromptWords) words")
+        print(
+            "  cached context:  \(warmMetrics.cachedContextCharacters) chars, \(warmMetrics.cachedContextWords) words"
+        )
+        print(
+            "  runtime prompt:  \(warmMetrics.runtimePromptCharacters) chars, \(warmMetrics.runtimePromptWords) words"
+        )
     } catch {
         routingProgress.cancel()
         print("FAIL: \(error)")
@@ -477,28 +512,55 @@ func benchmarkRouting(runLatency: Bool, runAccuracy: Bool) async {
                     SessionCase(
                         name: "ui-shell",
                         cwd: "/Users/jud/work/operator-ui",
-                        context: "Branch feat/settings-loading. Editing web/src/routes/settings.tsx, web/src/components/LoadingCard.tsx, and web/src/styles/dashboard.css for React loading states, responsive layout bugs, and dashboard polish.",
+                        context:
+                            "Branch feat/settings-loading. Editing web/src/routes/settings.tsx, web/src/components/LoadingCard.tsx, and web/src/styles/dashboard.css for React loading states, responsive layout bugs, and dashboard polish.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "Fix the janky loading state on the settings dashboard and make the cards stop shifting on mobile."),
-                            SessionMessage(role: "assistant", text: "I updated LoadingCard.tsx, SettingsRoute.tsx, and dashboard.css; next I am wiring the pending query state and skeleton layout.")
+                            SessionMessage(
+                                role: "user",
+                                text:
+                                    "Fix the janky loading state on the settings dashboard and make the cards stop shifting on mobile."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I updated LoadingCard.tsx, SettingsRoute.tsx, and dashboard.css; next I am wiring the pending query state and skeleton layout."
+                            )
                         ]
                     ),
                     SessionCase(
                         name: "profile-api",
                         cwd: "/Users/jud/work/operator-api",
-                        context: "Branch feat/profile-endpoints. Editing api/routes/profile.py, services/user_profile.py, and db/queries/profile.sql for REST endpoints, auth middleware, and Postgres performance.",
+                        context:
+                            "Branch feat/profile-endpoints. Editing api/routes/profile.py, services/user_profile.py, and db/queries/profile.sql for REST endpoints, auth middleware, and Postgres performance.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "The user profile endpoint is timing out under load and we still need a new REST route for profile preferences."),
-                            SessionMessage(role: "assistant", text: "I traced the slowdown to profile.sql and the connection pool, and I am adding the preferences endpoint in profile.py.")
+                            SessionMessage(
+                                role: "user",
+                                text:
+                                    "The user profile endpoint is timing out under load and we still need a new REST route for profile preferences."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I traced the slowdown to profile.sql and the connection pool, and I am adding the preferences endpoint in profile.py."
+                            )
                         ]
                     ),
                     SessionCase(
                         name: "staging-infra",
                         cwd: "/Users/jud/work/operator-infra",
-                        context: "Branch chore/staging-network. Editing infra/envs/staging/main.tf, modules/vpc, and modules/iam_policy for Terraform apply failures, private subnet layout, IAM policy changes, and S3 logging.",
+                        context:
+                            "Branch chore/staging-network. Editing infra/envs/staging/main.tf, modules/vpc, and modules/iam_policy for Terraform apply failures, private subnet layout, IAM policy changes, and S3 logging.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "The staging VPC rollout failed after the Terraform change and logging still needs the new S3 bucket policy."),
-                            SessionMessage(role: "assistant", text: "I am updating the private subnet module, the IAM policy document, and the S3 logging resources in staging Terraform.")
+                            SessionMessage(
+                                role: "user",
+                                text:
+                                    "The staging VPC rollout failed after the Terraform change and logging still needs the new S3 bucket policy."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I am updating the private subnet module, the IAM policy document, and the S3 logging resources in staging Terraform."
+                            )
                         ]
                     )
                 ],
@@ -521,28 +583,54 @@ func benchmarkRouting(runLatency: Bool, runAccuracy: Bool) async {
                     SessionCase(
                         name: "jules",
                         cwd: "/Users/jud/sessions/jules",
-                        context: "Branch feat/onboarding-shell. Editing app/routes/onboarding.tsx, app/components/StepCard.tsx, and app/styles/forms.css for React onboarding UI, form spacing, and loading transitions.",
+                        context:
+                            "Branch feat/onboarding-shell. Editing app/routes/onboarding.tsx, app/components/StepCard.tsx, and app/styles/forms.css for React onboarding UI, form spacing, and loading transitions.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "The onboarding cards are misaligned on smaller screens and the loading placeholders flash."),
-                            SessionMessage(role: "assistant", text: "I refined StepCard.tsx, onboarding.tsx, and forms.css to stabilize the skeletons and spacing.")
+                            SessionMessage(
+                                role: "user",
+                                text:
+                                    "The onboarding cards are misaligned on smaller screens and the loading placeholders flash."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I refined StepCard.tsx, onboarding.tsx, and forms.css to stabilize the skeletons and spacing."
+                            )
                         ]
                     ),
                     SessionCase(
                         name: "marco",
                         cwd: "/Users/jud/sessions/marco",
-                        context: "Branch feat/billing-api. Editing api/routes/billing.py, services/refunds.py, and db/queries/invoices.sql for Python endpoints, refund status APIs, and invoice query tuning.",
+                        context:
+                            "Branch feat/billing-api. Editing api/routes/billing.py, services/refunds.py, and db/queries/invoices.sql for Python endpoints, refund status APIs, and invoice query tuning.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "Refund status still needs an endpoint and invoice totals are off in Postgres."),
-                            SessionMessage(role: "assistant", text: "I am updating billing.py, refunds.py, and invoices.sql to fix the endpoint and invoice aggregation.")
+                            SessionMessage(
+                                role: "user",
+                                text: "Refund status still needs an endpoint and invoice totals are off in Postgres."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I am updating billing.py, refunds.py, and invoices.sql to fix the endpoint and invoice aggregation."
+                            )
                         ]
                     ),
                     SessionCase(
                         name: "tess",
                         cwd: "/Users/jud/sessions/tess",
-                        context: "Branch chore/cluster-rollout. Editing infra/prod/cluster.tf, modules/network, and modules/iam_role for EKS rollout issues, private subnets, IAM roles, and S3 access policies.",
+                        context:
+                            "Branch chore/cluster-rollout. Editing infra/prod/cluster.tf, modules/network, and modules/iam_role for EKS rollout issues, private subnets, IAM roles, and S3 access policies.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "The cluster rollout still needs subnet changes and the IAM role is blocking S3 access."),
-                            SessionMessage(role: "assistant", text: "I am editing cluster.tf, the network module, and the IAM role policy to finish the rollout.")
+                            SessionMessage(
+                                role: "user",
+                                text:
+                                    "The cluster rollout still needs subnet changes and the IAM role is blocking S3 access."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I am editing cluster.tf, the network module, and the IAM role policy to finish the rollout."
+                            )
                         ]
                     )
                 ],
@@ -561,28 +649,55 @@ func benchmarkRouting(runLatency: Bool, runAccuracy: Bool) async {
                     SessionCase(
                         name: "mercury",
                         cwd: "/Users/jud/projects/mercury",
-                        context: "Branch feat/workspace-shell. Editing client/src/shell/AppFrame.tsx, client/src/settings/PreferencesPanel.tsx, and client/src/styles/shell.css for workspace UI, keyboard shortcuts, and TypeScript component polish.",
+                        context:
+                            "Branch feat/workspace-shell. Editing client/src/shell/AppFrame.tsx, client/src/settings/PreferencesPanel.tsx, and client/src/styles/shell.css for workspace UI, keyboard shortcuts, and TypeScript component polish.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "The preferences screen needs skeleton states, tighter spacing, and better keyboard shortcut hints."),
-                            SessionMessage(role: "assistant", text: "I am polishing AppFrame.tsx, PreferencesPanel.tsx, and shell.css to fix the UI shell and settings flow.")
+                            SessionMessage(
+                                role: "user",
+                                text:
+                                    "The preferences screen needs skeleton states, tighter spacing, and better keyboard shortcut hints."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I am polishing AppFrame.tsx, PreferencesPanel.tsx, and shell.css to fix the UI shell and settings flow."
+                            )
                         ]
                     ),
                     SessionCase(
                         name: "saturn",
                         cwd: "/Users/jud/projects/saturn",
-                        context: "Branch feat/identity-sync. Editing server/routes/users.py, server/services/sync.py, and sql/user_sync.sql for user APIs, background sync jobs, and Postgres query correctness.",
+                        context:
+                            "Branch feat/identity-sync. Editing server/routes/users.py, server/services/sync.py, and sql/user_sync.sql for user APIs, background sync jobs, and Postgres query correctness.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "User sync still needs a status endpoint and the Postgres query for profiles is too slow."),
-                            SessionMessage(role: "assistant", text: "I am adding the sync status endpoint in users.py and tightening the user_sync.sql query plan.")
+                            SessionMessage(
+                                role: "user",
+                                text:
+                                    "User sync still needs a status endpoint and the Postgres query for profiles is too slow."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I am adding the sync status endpoint in users.py and tightening the user_sync.sql query plan."
+                            )
                         ]
                     ),
                     SessionCase(
                         name: "neptune",
                         cwd: "/Users/jud/projects/neptune",
-                        context: "Branch chore/deploy-networking. Editing deploy/envs/prod/main.tf, deploy/modules/vpc, and deploy/modules/iam for production networking, IAM hardening, and rollout automation.",
+                        context:
+                            "Branch chore/deploy-networking. Editing deploy/envs/prod/main.tf, deploy/modules/vpc, and deploy/modules/iam for production networking, IAM hardening, and rollout automation.",
                         recentMessages: [
-                            SessionMessage(role: "user", text: "The production rollout still needs IAM hardening, subnet changes, and the logging bucket policy update."),
-                            SessionMessage(role: "assistant", text: "I am updating main.tf, the VPC module, and the IAM module to unblock the production deploy.")
+                            SessionMessage(
+                                role: "user",
+                                text:
+                                    "The production rollout still needs IAM hardening, subnet changes, and the logging bucket policy update."
+                            ),
+                            SessionMessage(
+                                role: "assistant",
+                                text:
+                                    "I am updating main.tf, the VPC module, and the IAM module to unblock the production deploy."
+                            )
                         ]
                     )
                 ],
@@ -737,8 +852,8 @@ func benchmarkTTS() async {
 // MARK: - STT Benchmarks (AC-001.3, AC-001.4)
 
 @MainActor
-func benchmarkSTT(runLatency: Bool, runLong: Bool) async {
-    guard runLatency || runLong else {
+func benchmarkSTT(runLatency: Bool, runLong: Bool, runStreaming: Bool) async {
+    guard runLatency || runLong || runStreaming else {
         return
     }
 
@@ -844,6 +959,198 @@ func benchmarkSTT(runLatency: Bool, runLong: Bool) async {
         print("Long utterance (20s audio): \(String(format: "%.0f", longMs))ms, result: \(longResult ?? "nil")")
         print("AC-001.4 (20s no crash):  PASS (completed in \(String(format: "%.0f", longMs))ms)")
     }
+
+    if runStreaming {
+        print("\nStreaming finalize test (paced normal speech)...")
+
+        let warmupText = "Operator warmup. The agent is preparing the streaming transcription benchmark."
+        print("Rendering warmup speech fixture...")
+        guard let warmupAudio = await synthesizeSpeechAudio(text: warmupText) else {
+            print("FAIL: Could not synthesize warmup audio")
+            return
+        }
+        let warmupBuffers = makePCMChunks(
+            samples: warmupAudio.samples,
+            sampleRate: warmupAudio.sampleRate,
+            chunkSeconds: 0.5
+        )
+        do { try engine.prepare() } catch {
+            print("FAIL: prepare() failed for streaming warmup: \(error)")
+            return
+        }
+        await feedBuffersRealTime(warmupBuffers, into: engine)
+        _ = await engine.finishAndTranscribe()
+
+        let speechText =
+            """
+            I reviewed the agent session, checked the changed Swift files, reran the focused benchmarks, and found that the routing path is warm and stable. Next I am streaming transcription in chunks so the final route only waits on the tail of the utterance instead of the full conversation. After that I will route the request immediately and send it to the right session.
+            """
+        print("Rendering benchmark speech fixture...")
+        guard let speechAudio = await synthesizeSpeechAudio(text: speechText) else {
+            print("FAIL: Could not synthesize streaming benchmark audio")
+            return
+        }
+        let speechBuffers = makePCMChunks(
+            samples: speechAudio.samples,
+            sampleRate: speechAudio.sampleRate,
+            chunkSeconds: 0.35
+        )
+
+        do { try engine.prepare() } catch {
+            print("FAIL: prepare() failed for streaming benchmark: \(error)")
+            return
+        }
+
+        let feedStart = CFAbsoluteTimeGetCurrent()
+        await feedBuffersRealTime(speechBuffers, into: engine)
+        let feedMs = (CFAbsoluteTimeGetCurrent() - feedStart) * 1000
+
+        let finalizeStart = CFAbsoluteTimeGetCurrent()
+        let result = await engine.finishAndTranscribe()
+        let finalizeMs = (CFAbsoluteTimeGetCurrent() - finalizeStart) * 1000
+
+        let durationSeconds = Double(speechAudio.samples.count) / speechAudio.sampleRate
+        print(
+            "Streaming audio: \(String(format: "%.1f", durationSeconds))s"
+                + " in \(speechBuffers.count) chunks"
+        )
+        print("Paced capture:    \(String(format: "%.0f", feedMs))ms")
+        print("Finalize:         \(String(format: "%.0f", finalizeMs))ms")
+        print("Transcript chars: \(result?.count ?? 0)")
+    }
+}
+
+@MainActor
+private func synthesizeSpeechAudio(
+    text: String
+) async -> (samples: [Float], sampleRate: Double)? {
+    let outputURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("operator-benchmark-\(UUID().uuidString)")
+        .appendingPathExtension("aiff")
+
+    defer {
+        try? FileManager.default.removeItem(at: outputURL)
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+    process.arguments = ["-o", outputURL.path, text]
+
+    do {
+        try process.run()
+        process.waitUntilExit()
+    } catch {
+        print("FAIL: could not launch say: \(error)")
+        return nil
+    }
+
+    guard process.terminationStatus == 0 else {
+        print("FAIL: say exited with status \(process.terminationStatus)")
+        return nil
+    }
+
+    do {
+        let audioFile = try AVAudioFile(forReading: outputURL)
+        let format = audioFile.processingFormat
+        let frameCount = AVAudioFrameCount(audioFile.length)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            return nil
+        }
+        try audioFile.read(into: buffer)
+        return (samples: monoSamples(from: buffer), sampleRate: format.sampleRate)
+    } catch {
+        print("FAIL: could not load synthesized speech: \(error)")
+        return nil
+    }
+}
+
+private func monoSamples(from buffer: AVAudioPCMBuffer) -> [Float] {
+    let frameCount = Int(buffer.frameLength)
+    let channelCount = Int(buffer.format.channelCount)
+
+    if let channelData = buffer.floatChannelData {
+        if channelCount == 1 {
+            return Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
+        }
+
+        return (0..<frameCount).map { frame in
+            var sum: Float = 0
+            for channel in 0..<channelCount {
+                sum += channelData[channel][frame]
+            }
+            return sum / Float(channelCount)
+        }
+    }
+
+    return []
+}
+
+private func makePCMChunks(
+    samples: [Float],
+    sampleRate: Double,
+    chunkSeconds: Double
+) -> [AVAudioPCMBuffer] {
+    guard
+        let format = AVAudioFormat(
+            standardFormatWithSampleRate: sampleRate,
+            channels: 1
+        )
+    else {
+        return []
+    }
+
+    let chunkSize = max(1, Int(sampleRate * chunkSeconds))
+    var chunks: [AVAudioPCMBuffer] = []
+    var offset = 0
+
+    while offset < samples.count {
+        let end = min(samples.count, offset + chunkSize)
+        let slice = samples[offset..<end]
+        let frameCount = AVAudioFrameCount(slice.count)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+            break
+        }
+        buffer.frameLength = frameCount
+        if let channelData = buffer.floatChannelData?[0] {
+            for (index, value) in slice.enumerated() {
+                channelData[index] = value
+            }
+        }
+        chunks.append(buffer)
+        offset = end
+    }
+
+    return chunks
+}
+
+@MainActor
+private func feedBuffersRealTime(
+    _ buffers: [AVAudioPCMBuffer],
+    into engine: ParakeetEngine,
+    driftToleranceMs: Double = 8
+) async {
+    let start = CFAbsoluteTimeGetCurrent()
+    var scheduledElapsedMs = 0.0
+
+    for buffer in buffers {
+        engine.append(buffer)
+        scheduledElapsedMs += bufferDurationMs(buffer)
+
+        let actualElapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+        let remainingMs = scheduledElapsedMs - actualElapsedMs
+        if remainingMs > driftToleranceMs {
+            try? await Task.sleep(nanoseconds: UInt64(remainingMs * 1_000_000))
+        } else {
+            await Task.yield()
+        }
+    }
+}
+
+private func bufferDurationMs(_ buffer: AVAudioPCMBuffer) -> Double {
+    guard buffer.format.sampleRate > 0 else {
+        return 0
+    }
+    return (Double(buffer.frameLength) / buffer.format.sampleRate) * 1000
 }
 
 // MARK: - Memory Benchmark (AC-011.5)

@@ -20,9 +20,10 @@ Targets:
   routing-accuracy  Run only routing accuracy benchmark
   tts               Run TTS time-to-first-audio benchmark
   tts-ttfa          Run only TTS time-to-first-audio benchmark
-  stt               Run STT latency and long-utterance benchmarks
+  stt               Run STT latency, long-utterance, and streaming benchmarks
   stt-latency       Run only STT 5s transcription benchmark
   stt-long          Run only STT long-utterance benchmark
+  stt-streaming     Run only STT streaming/finalize benchmark
   memory            Run routing-model memory benchmark
   list              Show this target list
 

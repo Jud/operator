@@ -24,6 +24,7 @@ let package = Package(
                 .product(name: "AudioCommon", package: "speech-swift"),
                 .product(name: "Qwen3TTS", package: "speech-swift"),
                 .product(name: "ParakeetASR", package: "speech-swift"),
+                .product(name: "SpeechVAD", package: "speech-swift"),
                 .product(name: "MLXLLM", package: "mlx-swift-lm"),
                 .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
                 .product(name: "MLXStructured", package: "mlx-swift-structured"),
