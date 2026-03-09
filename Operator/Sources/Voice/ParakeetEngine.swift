@@ -22,10 +22,11 @@ private struct ParakeetSessionState: @unchecked Sendable {
     var vadModel: SileroVADModel?
     var vadProcessor: StreamingVADProcessor?
     var vadProcessedSampleCount = 0
+    var activeSpeechStartSample: Int?
     var nextSegmentID = 0
 }
 
-// swiftlint:disable type_contents_order type_body_length
+// swiftlint:disable file_length type_contents_order type_body_length
 /// Parakeet CoreML speech-to-text engine conforming to ``TranscriptionEngine``.
 ///
 /// Audio is normalized to 16kHz mono as it arrives, segmented with Silero VAD,
@@ -35,6 +36,7 @@ private struct ParakeetSessionState: @unchecked Sendable {
 public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     private static let logger = Log.logger(for: "ParakeetEngine")
     private static let targetSampleRate = 16_000
+    private static let maxStreamingSegmentSeconds = 2.0
     private static let vadEngine: SileroVADEngine = .coreml
 
     private let modelManager: ModelManager
@@ -65,6 +67,7 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
             state.normalizedSamples.removeAll(keepingCapacity: true)
             state.inputSampleRate = nil
             state.vadProcessedSampleCount = 0
+            state.activeSpeechStartSample = nil
             state.nextSegmentID = 0
             if let vadModel = state.vadModel {
                 vadModel.resetState()
@@ -148,6 +151,7 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
             state.normalizedSamples.removeAll(keepingCapacity: false)
             state.inputSampleRate = nil
             state.vadProcessedSampleCount = 0
+            state.activeSpeechStartSample = nil
             state.nextSegmentID = 0
             if let vadModel = state.vadModel {
                 vadModel.resetState()
@@ -177,6 +181,7 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
             state.vadModel = nil
             state.vadProcessor = nil
             state.vadProcessedSampleCount = 0
+            state.activeSpeechStartSample = nil
         }
         Task {
             await self.transcriber.unloadModel()
@@ -298,7 +303,9 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
         }
         state.vadProcessedSampleCount += samples.count
         let events = vadProcessor.process(samples: samples)
-        return makeSegments(from: events, state: &state)
+        var segments = makeSegments(from: events, state: &state)
+        segments.append(contentsOf: makeForcedSegmentsIfNeeded(state: &state))
+        return segments
     }
 
     private static func makeSegments(
@@ -308,29 +315,83 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
         var segments: [ParakeetQueuedSegment] = []
 
         for event in events {
-            guard case .speechEnded(let segment) = event else {
-                continue
-            }
-            let startIndex = max(0, Int(segment.startTime * Float(Self.targetSampleRate)))
-            let endIndex = min(
-                state.normalizedSamples.count,
-                Int(segment.endTime * Float(Self.targetSampleRate))
-            )
-            guard endIndex > startIndex else {
-                continue
-            }
+            switch event {
+            case .speechStarted(let time):
+                state.activeSpeechStartSample =
+                    state.activeSpeechStartSample
+                    ?? sampleIndex(forSeconds: time)
 
-            let segmentSamples = Array(state.normalizedSamples[startIndex..<endIndex])
-            segments.append(
-                ParakeetQueuedSegment(
-                    id: state.nextSegmentID,
-                    samples: segmentSamples
+            case .speechEnded(let segment):
+                let startIndex =
+                    state.activeSpeechStartSample
+                    ?? sampleIndex(forSeconds: segment.startTime)
+                let endIndex = min(
+                    state.normalizedSamples.count,
+                    sampleIndex(forSeconds: segment.endTime)
                 )
-            )
-            state.nextSegmentID += 1
+                if let queuedSegment = makeQueuedSegment(
+                    startIndex: startIndex,
+                    endIndex: endIndex,
+                    state: &state
+                ) {
+                    segments.append(queuedSegment)
+                }
+                state.activeSpeechStartSample = nil
+            }
         }
 
         return segments
+    }
+
+    private static func makeForcedSegmentsIfNeeded(
+        state: inout ParakeetSessionState
+    ) -> [ParakeetQueuedSegment] {
+        guard let startIndex = state.activeSpeechStartSample else {
+            return []
+        }
+
+        let maxSegmentSamples = Int(Double(Self.targetSampleRate) * Self.maxStreamingSegmentSeconds)
+        let currentEndIndex = state.normalizedSamples.count
+        guard currentEndIndex - startIndex >= maxSegmentSamples else {
+            return []
+        }
+
+        guard
+            let queuedSegment = makeQueuedSegment(
+                startIndex: startIndex,
+                endIndex: currentEndIndex,
+                state: &state
+            )
+        else {
+            return []
+        }
+
+        state.activeSpeechStartSample = currentEndIndex
+        return [queuedSegment]
+    }
+
+    private static func makeQueuedSegment(
+        startIndex: Int,
+        endIndex: Int,
+        state: inout ParakeetSessionState
+    ) -> ParakeetQueuedSegment? {
+        let boundedStartIndex = max(0, startIndex)
+        let boundedEndIndex = min(state.normalizedSamples.count, endIndex)
+        guard boundedEndIndex > boundedStartIndex else {
+            return nil
+        }
+
+        let segmentSamples = Array(state.normalizedSamples[boundedStartIndex..<boundedEndIndex])
+        let queuedSegment = ParakeetQueuedSegment(
+            id: state.nextSegmentID,
+            samples: segmentSamples
+        )
+        state.nextSegmentID += 1
+        return queuedSegment
+    }
+
+    private static func sampleIndex(forSeconds time: Float) -> Int {
+        max(0, Int(time * Float(Self.targetSampleRate)))
     }
 
     private static func normalize(
@@ -371,4 +432,4 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     }
 }
 
-// swiftlint:enable type_contents_order type_body_length
+// swiftlint:enable file_length type_contents_order type_body_length
