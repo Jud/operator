@@ -253,6 +253,24 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         )
         adaptiveRoutingEngine = adaptiveRouting
 
+        if sttPref == "parakeet" {
+            Task {
+                guard await mm.isCached(.stt) else {
+                    return
+                }
+                await parakeet.prewarm()
+            }
+        }
+
+        if ttsPref == "qwen3" {
+            Task {
+                guard await mm.isCached(.tts) else {
+                    return
+                }
+                await qwenTTS.prewarm()
+            }
+        }
+
         return AdaptiveEngines(
             adaptiveSTT: adaptiveSTT,
             adaptiveTTS: adaptiveTTS,

@@ -7,6 +7,7 @@ import Qwen3TTS
 /// concurrent MLX CompilerCache access (causes EXC_BAD_ACCESS).
 private actor TTSModelSerializer {
     private let model: Qwen3TTSModel
+    private var didWarmUp = false
 
     init(model: sending Qwen3TTSModel) {
         self.model = model
@@ -22,6 +23,14 @@ private actor TTSModelSerializer {
             speaker: speaker,
             streaming: streaming
         )
+    }
+
+    func warmUpIfNeeded() {
+        guard !didWarmUp else {
+            return
+        }
+        model.warmUp()
+        didWarmUp = true
     }
 }
 
@@ -102,7 +111,23 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
         self.outputFormat = format
 
         setupAudioEngine()
+        audioEngine.prepare()
         registerDownloadHandler()
+    }
+
+    /// Preload and warm the TTS model without speaking an utterance.
+    public func prewarm() async {
+        do {
+            try await ensureModelLoaded()
+            guard let serializer else {
+                return
+            }
+            await serializer.warmUpIfNeeded()
+            Self.logger.info("Qwen3-TTS warmup complete")
+        } catch {
+            Self.logger.error("Qwen3-TTS warmup failed: \(error.localizedDescription)")
+            modelLoadFailed = true
+        }
     }
 
     // MARK: - SpeechManaging Methods

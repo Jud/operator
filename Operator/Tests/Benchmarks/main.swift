@@ -1010,12 +1010,17 @@ func benchmarkSTT(runLatency: Bool, runLong: Bool, runStreaming: Bool) async {
         let finalizeMs = (CFAbsoluteTimeGetCurrent() - finalizeStart) * 1000
 
         let durationSeconds = Double(speechAudio.samples.count) / speechAudio.sampleRate
+        let metrics = engine.lastStreamingMetrics
+        let tailDurationMs = Double(metrics.tailSamplesAtFinalize) / 16_000 * 1000
         print(
             "Streaming audio: \(String(format: "%.1f", durationSeconds))s"
                 + " in \(speechBuffers.count) chunks"
         )
         print("Paced capture:    \(String(format: "%.0f", feedMs))ms")
         print("Finalize:         \(String(format: "%.0f", finalizeMs))ms")
+        print("Segments queued:  \(metrics.queuedSegmentCount)")
+        print("Forced segments:  \(metrics.forcedSegmentCount)")
+        print("Tail at finalize: \(String(format: "%.0f", tailDurationMs))ms")
         print("Transcript chars: \(result?.count ?? 0)")
     }
 }
