@@ -1,139 +1,11 @@
-import AVFoundation
 import Foundation
-
-/// Status of a registered Claude Code session.
-///
-/// Tracks the session's current operational state for routing context
-/// and status reporting via the HTTP /state endpoint.
-public enum SessionStatus: String, Codable, Sendable {
-    case idle
-    case thinking
-    case toolCalling = "toolCalling"  // swiftlint:disable:this redundant_string_enum_value
-}
-
-/// A single message exchanged in a session, used for routing context.
-///
-/// Stored as part of SessionState.recentMessages to provide claude -p
-/// with recent conversation history for routing decisions. Uses a struct
-/// instead of a tuple so it can be Codable for the HTTP /state response.
-public struct SessionMessage: Codable, Sendable {
-    /// The role of the message sender (e.g., "user" or "assistant").
-    public let role: String
-    /// The text content of the message.
-    public let text: String
-
-    /// Creates a new session message.
-    public init(role: String, text: String) {
-        self.role = role
-        self.text = text
-    }
-}
-
-/// Full state of a registered Claude Code session.
-///
-/// Created at registration time with voice assignment from VoiceManager.
-/// Updated via updateContext() when the MCP server pushes context changes.
-/// Checked during discovery polling for stale removal.
-///
-/// Reference: technical-spec.md, Session State Model
-public struct SessionState: Sendable {
-    /// The human-readable session name.
-    public let name: String
-    /// The TTY device path identifying this session.
-    public let tty: String
-    /// The working directory of the session.
-    public let cwd: String
-    /// A summary of what the session is working on.
-    public var context: String
-    /// Recent conversation messages for routing context.
-    public var recentMessages: [SessionMessage]
-    /// The current operational status of the session.
-    public var status: SessionStatus
-    /// When the session last had activity.
-    public var lastActivity: Date
-    /// The assigned speech synthesis voice descriptor (Apple + Qwen3-TTS).
-    public let voice: VoiceDescriptor
-    /// The pitch multiplier for auditory differentiation.
-    public let pitchMultiplier: Float
-    /// The Claude Code session identifier, set via hook integration.
-    public var sessionId: String?
-
-    /// Creates a new session state.
-    public init(
-        name: String,
-        tty: String,
-        cwd: String,
-        context: String,
-        recentMessages: [SessionMessage],
-        status: SessionStatus,
-        lastActivity: Date,
-        voice: VoiceDescriptor,
-        pitchMultiplier: Float,
-        sessionId: String? = nil
-    ) {
-        self.name = name
-        self.tty = tty
-        self.cwd = cwd
-        self.context = context
-        self.recentMessages = recentMessages
-        self.status = status
-        self.lastActivity = lastActivity
-        self.voice = voice
-        self.pitchMultiplier = pitchMultiplier
-        self.sessionId = sessionId
-    }
-}
-
-/// Codable snapshot of a session for the HTTP /state endpoint.
-///
-/// Excludes VoiceDescriptor (not Codable) and includes only
-/// the fields needed by external consumers querying GET /state.
-public struct SessionSnapshot: Codable, Sendable {
-    /// The human-readable session name.
-    public let name: String
-    /// The TTY device path identifying this session.
-    public let tty: String
-    /// The working directory of the session.
-    public let cwd: String
-    /// A summary of what the session is working on.
-    public let context: String
-    /// Recent conversation messages for routing context.
-    public let recentMessages: [SessionMessage]
-    /// The current operational status of the session.
-    public let status: SessionStatus
-    /// When the session last had activity.
-    public let lastActivity: Date
-    /// The pitch multiplier for auditory differentiation.
-    public let pitchMultiplier: Float
-    /// The Claude Code session identifier, if set via hook integration.
-    public let sessionId: String?
-}
-
-/// Full registry state returned by GET /state endpoint.
-///
-/// Contains all registered sessions as snapshots.
-public struct RegistrySnapshot: Codable, Sendable {
-    /// All registered sessions as snapshots.
-    public let sessions: [SessionSnapshot]
-    /// The number of registered sessions.
-    public let sessionCount: Int
-
-    /// Serialize to JSON string.
-    public func toJSON() -> String {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        guard let data = try? encoder.encode(self) else {
-            return "{}"
-        }
-        return String(data: data, encoding: .utf8) ?? "{}"
-    }
-}
 
 /// Thread-safe registry of active Claude Code sessions.
 ///
 /// Manages session lifecycle: registration, context updates, voice assignment,
-/// and state queries for the HTTP API. Terminal-agnostic -- discovery polling
-/// is handled by `SessionDiscoveryService`.
+/// and state queries for the HTTP API. Sessions are keyed by TerminalIdentifier
+/// (TTY path for iTerm2, terminal ID for Ghostty). Terminal-agnostic --
+/// discovery polling is handled by `SessionDiscoveryService`.
 ///
 /// Concurrency: Swift actor ensures all state mutations are serialized without
 /// manual locks, per technical-spec.md Key Design Decision #10.
@@ -146,8 +18,11 @@ public actor SessionRegistry {
 
     // MARK: - Instance Properties
 
-    /// Registered sessions keyed by TTY path (globally unique, stable identifier).
-    private var sessions: [String: SessionState] = [:]
+    /// Registered sessions keyed by TerminalIdentifier.
+    private var sessions: [TerminalIdentifier: SessionState] = [:]
+
+    /// Cache of TTY-to-Ghostty terminal ID mappings for terminal ID resolution.
+    private var ttyToGhosttyId: [String: String] = [:]
 
     /// Voice manager for assigning distinct voices to each agent.
     private let voiceManager: VoiceManager
@@ -175,12 +50,12 @@ public actor SessionRegistry {
     ///
     /// - Parameters:
     ///   - name: Human-readable session name (e.g., "sudo", "frontend").
-    ///   - tty: TTY device path (e.g., "/dev/ttys004"). Globally unique identifier.
+    ///   - identifier: The typed terminal identifier for this session.
     ///   - cwd: Working directory of the session.
     ///   - context: Initial context summary describing what the session is working on.
     /// - Returns: `true` if registration succeeded, `false` if the name is reserved.
     @discardableResult
-    public func register(name: String, tty: String, cwd: String, context: String?) -> Bool {
+    public func register(name: String, identifier: TerminalIdentifier, cwd: String, context: String?) -> Bool {
         if name.lowercased() == "operator" {
             Self.logger.warning("Rejected registration: name 'operator' is reserved")
             return false
@@ -191,7 +66,7 @@ public actor SessionRegistry {
 
         let state = SessionState(
             name: name,
-            tty: tty,
+            identifier: identifier,
             cwd: cwd,
             context: context ?? "",
             recentMessages: [],
@@ -201,49 +76,65 @@ public actor SessionRegistry {
             pitchMultiplier: pitch
         )
 
-        let isReregistration = sessions[tty] != nil
-        sessions[tty] = state
+        let isReregistration = sessions[identifier] != nil
+        sessions[identifier] = state
 
         if isReregistration {
-            Self.logger.info("Re-registered session '\(name)' at TTY: \(tty)")
+            Self.logger.info("Re-registered session '\(name)' at \(identifier)")
         } else {
-            Self.logger.info("Registered session '\(name)' at TTY: \(tty) (pitch: \(pitch))")
+            Self.logger.info("Registered session '\(name)' at \(identifier) (pitch: \(pitch))")
         }
 
         return true
     }
 
-    /// Remove a session by TTY path.
+    /// Convenience: register an iTerm2 session by TTY path.
+    @discardableResult
+    public func register(name: String, tty: String, cwd: String, context: String?) -> Bool {
+        register(name: name, identifier: .tty(tty), cwd: cwd, context: context)
+    }
+
+    /// Remove a session by terminal identifier.
     ///
-    /// - Parameter tty: The TTY path of the session to remove.
+    /// - Parameter identifier: The terminal identifier of the session to remove.
     /// - Returns: The name of the removed session, or nil if not found.
     @discardableResult
-    public func deregister(tty: String) -> String? {
-        guard let state = sessions.removeValue(forKey: tty) else {
-            Self.logger.debug("Deregister called for unknown TTY: \(tty)")
+    public func deregister(identifier: TerminalIdentifier) -> String? {
+        guard let state = sessions.removeValue(forKey: identifier) else {
+            Self.logger.debug("Deregister called for unknown identifier: \(identifier)")
             return nil
         }
-        Self.logger.info("Deregistered session '\(state.name)' from TTY: \(tty)")
+        Self.logger.info("Deregistered session '\(state.name)' from \(identifier)")
         return state.name
+    }
+
+    /// Convenience: remove an iTerm2 session by TTY path.
+    @discardableResult
+    public func deregister(tty: String) -> String? {
+        deregister(identifier: .tty(tty))
     }
 
     // MARK: - Context Updates
 
     /// Update the routing context for a session identified by TTY.
     ///
+    /// Resolves the TTY to its current terminal identifier (accounting for
+    /// Ghostty sessions that have been re-keyed after terminal ID resolution).
+    ///
     /// - Parameters:
     ///   - tty: TTY path identifying the session to update.
     ///   - summary: Updated context summary.
     ///   - recentMessages: Recent conversation messages for routing context.
     public func updateContext(tty: String, summary: String, recentMessages: [SessionMessage]) {
-        guard sessions[tty] != nil else {
+        let id = resolveIdentifier(forTTY: tty)
+        guard sessions[id] != nil else {
             Self.logger.warning("updateContext called for unregistered TTY: \(tty)")
             return
         }
-        sessions[tty]?.context = summary
-        sessions[tty]?.recentMessages = recentMessages
-        sessions[tty]?.lastActivity = Date()
-        Self.logger.debug("Updated context for TTY: \(tty)")
+        sessions[id]?.context = summary
+        sessions[id]?.recentMessages = recentMessages
+        sessions[id]?.lastActivity = Date()
+        Self.logger.debug("Updated context for \(id)")
     }
 
     // MARK: - Voice Lookup
@@ -278,23 +169,35 @@ public actor SessionRegistry {
     ///
     /// Registers or re-registers a session using the hook payload's session ID and TTY.
     /// If a session with the same TTY already exists, it is updated with the new session ID.
+    /// For Ghostty sessions, returns `needsTerminalId: true` when no TTY-to-terminal-ID
+    /// mapping exists yet, signaling the MCP server to perform the title-marker handshake.
     ///
     /// - Parameters:
     ///   - sessionId: The Claude Code session identifier.
     ///   - tty: The TTY device path for the session.
     ///   - cwd: The working directory of the session.
-    public func handleSessionStart(sessionId: String, tty: String, cwd: String) {
-        if var existing = sessions[tty] {
+    ///   - terminalType: The terminal emulator type. Defaults to `.iterm`.
+    /// - Returns: Tuple indicating success and whether terminal ID resolution is needed.
+    @discardableResult
+    public func handleSessionStart(
+        sessionId: String,
+        tty: String,
+        cwd: String,
+        terminalType: TerminalType = .iterm
+    ) -> (ok: Bool, needsTerminalId: Bool) {
+        let id = resolveIdentifier(forTTY: tty)
+
+        if var existing = sessions[id] {
             existing.sessionId = sessionId
             existing.lastActivity = Date()
-            sessions[tty] = existing
-            Self.logger.info("Hook session-start: updated session ID for TTY \(tty)")
+            sessions[id] = existing
+            Self.logger.info("Hook session-start: updated session ID for \(id)")
         } else {
             let pitch = voiceManager.nextAgentPitchMultiplier()
             let voice = voiceManager.nextAgentVoice()
             let state = SessionState(
                 name: sessionId,
-                tty: tty,
+                identifier: id,
                 cwd: cwd,
                 context: "",
                 recentMessages: [],
@@ -304,35 +207,41 @@ public actor SessionRegistry {
                 pitchMultiplier: pitch,
                 sessionId: sessionId
             )
-            sessions[tty] = state
-            Self.logger.info("Hook session-start: registered new session \(sessionId) at TTY \(tty)")
+            sessions[id] = state
+            Self.logger.info("Hook session-start: registered new session \(sessionId) at \(id)")
         }
+
+        let needsTerminalId = terminalType == .ghostty && ttyToGhosttyId[tty] == nil
+        return (ok: true, needsTerminalId: needsTerminalId)
     }
 
     /// Handle a Claude Code stop hook.
     ///
     /// Updates the session's last assistant message as context and marks it active.
+    /// Resolves the TTY to the current terminal identifier for re-keyed Ghostty sessions.
     ///
     /// - Parameters:
     ///   - sessionId: The Claude Code session identifier.
     ///   - tty: The TTY device path for the session.
     ///   - lastAssistantMessage: The last message from the assistant, if any.
     public func handleStop(sessionId: String, tty: String, lastAssistantMessage: String?) {
-        guard sessions[tty] != nil else {
+        let id = resolveIdentifier(forTTY: tty)
+        guard sessions[id] != nil else {
             Self.logger.warning("Hook stop: no session found for TTY \(tty)")
             return
         }
-        sessions[tty]?.sessionId = sessionId
-        sessions[tty]?.lastActivity = Date()
+        sessions[id]?.sessionId = sessionId
+        sessions[id]?.lastActivity = Date()
         if let message = lastAssistantMessage, !message.isEmpty {
-            sessions[tty]?.context = message
+            sessions[id]?.context = message
         }
-        Self.logger.info("Hook stop: updated session at TTY \(tty)")
+        Self.logger.info("Hook stop: updated session at \(id)")
     }
 
     /// Handle a Claude Code session-end hook.
     ///
-    /// Removes the session identified by TTY from the registry.
+    /// Removes the session identified by TTY from the registry. Resolves the TTY
+    /// to the current terminal identifier for re-keyed Ghostty sessions.
     ///
     /// - Parameters:
     ///   - sessionId: The Claude Code session identifier.
@@ -340,12 +249,55 @@ public actor SessionRegistry {
     /// - Returns: The name of the removed session, or nil if not found.
     @discardableResult
     public func handleSessionEnd(sessionId: String, tty: String) -> String? {
-        guard let state = sessions.removeValue(forKey: tty) else {
+        let id = resolveIdentifier(forTTY: tty)
+        guard let state = sessions.removeValue(forKey: id) else {
             Self.logger.debug("Hook session-end: no session found for TTY \(tty)")
             return nil
         }
-        Self.logger.info("Hook session-end: removed session '\(state.name)' from TTY \(tty)")
+        Self.logger.info("Hook session-end: removed session '\(state.name)' from \(id)")
         return state.name
+    }
+
+    // MARK: - Terminal ID Resolution
+
+    /// Re-key a Ghostty session from its temporary TTY key to its resolved terminal ID.
+    ///
+    /// Called when the MCP server completes the title-marker handshake and reports
+    /// the Ghostty terminal ID corresponding to a TTY path. The session is removed
+    /// from the `.tty(path)` key and re-inserted under `.ghosttyTerminal(id)`.
+    ///
+    /// - Parameters:
+    ///   - tty: The TTY path originally used to register the session.
+    ///   - ghosttyId: The resolved Ghostty terminal ID.
+    /// - Returns: `true` if the re-keying succeeded, `false` if no session found for the TTY.
+    @discardableResult
+    public func handleTerminalIdResolution(tty: String, ghosttyId: String) -> Bool {
+        let ttyKey = TerminalIdentifier.tty(tty)
+        guard var state = sessions.removeValue(forKey: ttyKey) else {
+            Self.logger.warning("Terminal ID resolution: no session found for TTY \(tty)")
+            return false
+        }
+
+        let ghosttyKey = TerminalIdentifier.ghosttyTerminal(ghosttyId)
+        state = SessionState(
+            name: state.name,
+            identifier: ghosttyKey,
+            cwd: state.cwd,
+            context: state.context,
+            recentMessages: state.recentMessages,
+            status: state.status,
+            lastActivity: state.lastActivity,
+            voice: state.voice,
+            pitchMultiplier: state.pitchMultiplier,
+            sessionId: state.sessionId
+        )
+        sessions[ghosttyKey] = state
+        ttyToGhosttyId[tty] = ghosttyId
+
+        Self.logger.info(
+            "Terminal ID resolved: TTY \(tty) -> Ghostty terminal \(ghosttyId)"
+        )
+        return true
     }
 
     // MARK: - State Queries
@@ -355,7 +307,7 @@ public actor SessionRegistry {
         let snapshots = sessions.values.map { state in
             SessionSnapshot(
                 name: state.name,
-                tty: state.tty,
+                identifier: state.identifier,
                 cwd: state.cwd,
                 context: state.context,
                 recentMessages: state.recentMessages,
@@ -381,11 +333,36 @@ public actor SessionRegistry {
         sessions.values.first { $0.name == name }
     }
 
-    /// Look up a session state by TTY.
+    /// Look up a session state by terminal identifier.
+    ///
+    /// - Parameter identifier: The terminal identifier to look up.
+    /// - Returns: The SessionState if found.
+    public func session(byIdentifier identifier: TerminalIdentifier) -> SessionState? {
+        sessions[identifier]
+    }
+
+    /// Look up a session state by TTY path.
+    ///
+    /// Checks the TTY-to-Ghostty-ID mapping first, so re-keyed Ghostty sessions
+    /// can still be found by their original TTY path.
     ///
     /// - Parameter tty: The TTY path to look up.
     /// - Returns: The SessionState if found.
     public func session(byTTY tty: String) -> SessionState? {
-        sessions[tty]
+        sessions[resolveIdentifier(forTTY: tty)]
+    }
+
+    // MARK: - Internal Helpers
+
+    /// Resolve a TTY path to the appropriate terminal identifier.
+    ///
+    /// If the TTY has a known Ghostty terminal ID mapping (from a completed
+    /// terminal ID resolution handshake), returns `.ghosttyTerminal(id)`.
+    /// Otherwise returns `.tty(path)`.
+    private func resolveIdentifier(forTTY tty: String) -> TerminalIdentifier {
+        if let ghosttyId = ttyToGhosttyId[tty] {
+            return .ghosttyTerminal(ghosttyId)
+        }
+        return .tty(tty)
     }
 }
