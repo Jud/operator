@@ -69,7 +69,8 @@ public struct DeliveryCoordinator {
 
         do {
             let success = try await terminalBridge.writeToSession(
-                identifier: sessionState.identifier, text: message
+                identifier: sessionState.identifier,
+                text: message
             )
             guard success else {
                 Self.logger.error("writeToSession returned false for \(session)")

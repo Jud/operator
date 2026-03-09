@@ -53,8 +53,7 @@ private func makeGhosttySession(id: String = "ghostty-1") -> DiscoveredSession {
 // MARK: - Tests
 
 @Suite("MultiTerminalBridge")
-struct MultiTerminalBridgeTests {
-
+internal struct MultiTerminalBridgeTests {
     // MARK: - Discovery Aggregation
 
     @Test("discovery aggregates sessions from both bridges")

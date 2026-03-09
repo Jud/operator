@@ -89,6 +89,7 @@ public final class MultiTerminalBridge: @unchecked Sendable, TerminalBridge {
         switch identifier {
         case .tty:
             return try await itermBridge.writeToSession(identifier: identifier, text: text)
+
         case .ghosttyTerminal:
             return try await ghosttyBridge.writeToSession(identifier: identifier, text: text)
         }
