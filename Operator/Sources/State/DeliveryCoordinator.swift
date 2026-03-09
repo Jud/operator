@@ -67,10 +67,10 @@ public struct DeliveryCoordinator {
             return .sessionNotFound(session: session)
         }
 
-        let tty = sessionState.tty
+        let identifier = TerminalIdentifier.tty(sessionState.tty)
 
         do {
-            let success = try await terminalBridge.writeToSession(tty: tty, text: message)
+            let success = try await terminalBridge.writeToSession(identifier: identifier, text: message)
             guard success else {
                 Self.logger.error("writeToSession returned false for \(session)")
                 return .writeFailed(session: session)
@@ -103,7 +103,10 @@ public struct DeliveryCoordinator {
             return false
         }
         do {
-            _ = try await terminalBridge.writeToSession(tty: sessionState.tty, text: message)
+            _ = try await terminalBridge.writeToSession(
+                identifier: TerminalIdentifier.tty(sessionState.tty),
+                text: message
+            )
             Self.logger.info("Direct delivery to \(session) succeeded")
             return true
         } catch {

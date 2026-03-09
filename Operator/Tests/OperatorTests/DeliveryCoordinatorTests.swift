@@ -9,11 +9,11 @@ import Testing
 internal final class MockTerminalBridge: TerminalBridge, @unchecked Sendable {
     var writeResult: Bool = true
     var writeError: Error?
-    var lastWrittenTTY: String?
+    var lastWrittenIdentifier: TerminalIdentifier?
     var lastWrittenText: String?
 
-    func writeToSession(tty: String, text: String) async throws -> Bool {
-        lastWrittenTTY = tty
+    func writeToSession(identifier: TerminalIdentifier, text: String) async throws -> Bool {
+        lastWrittenIdentifier = identifier
         lastWrittenText = text
         if let error = writeError { throw error }
         return writeResult

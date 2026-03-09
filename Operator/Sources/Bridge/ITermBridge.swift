@@ -64,18 +64,21 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
     /// Creates a new iTerm bridge instance.
     public init() {}
 
-    /// Deliver text to a specific iTerm2 session identified by TTY path.
+    /// Deliver text to a specific iTerm2 session identified by a terminal identifier.
     ///
     /// Uses file-based delivery per technical-spec.md Key Design Decision #3:
     /// text is written to a temp file and read by JXA via ObjC.import('Foundation'),
     /// avoiding all string escaping issues (nested shell + JXA quoting).
     ///
     /// - Parameters:
-    ///   - tty: The TTY device path (e.g., "/dev/ttys004") identifying the target session.
+    ///   - identifier: Must be `.tty(path)`. Throws `sessionNotFound` for `.ghosttyTerminal`.
     ///   - text: The message text to deliver.
     /// - Returns: `true` if the session was found and text was delivered.
     /// - Throws: `ITermBridgeError` on JXA failure or temp file write failure.
-    public func writeToSession(tty: String, text: String) async throws -> Bool {
+    public func writeToSession(identifier: TerminalIdentifier, text: String) async throws -> Bool {
+        guard case .tty(let tty) = identifier else {
+            throw ITermBridgeError.sessionNotFound(tty: identifier.description)
+        }
         Self.logger.info("Delivering text to session at TTY: \(tty) (\(text.count) chars)")
 
         let tempFile = FileManager.default.temporaryDirectory
