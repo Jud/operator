@@ -24,6 +24,7 @@ Targets:
   stt-latency       Run only STT 5s transcription benchmark
   stt-long          Run only STT long-utterance benchmark
   stt-streaming     Run only STT streaming/finalize benchmark
+  stt-soak          Run a long paced STT soak benchmark (use OPERATOR_STT_SOAK_MINUTES)
   memory            Run routing-model memory benchmark
   list              Show this target list
 

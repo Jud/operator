@@ -34,6 +34,7 @@ cd Operator && swift run E2ETests
 ./scripts/run-benchmarks.sh --no-build routing-latency
 ./scripts/run-benchmarks.sh --release tts
 ./scripts/run-benchmarks.sh stt-long
+OPERATOR_STT_SOAK_MINUTES=5 ./scripts/run-benchmarks.sh stt-soak
 make bench-routing
 make bench BENCH_ARGS="--no-build routing-latency"
 ```

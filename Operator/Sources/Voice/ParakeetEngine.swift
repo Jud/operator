@@ -65,7 +65,7 @@ private struct ParakeetSessionState: @unchecked Sendable {
 public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     private static let logger = Log.logger(for: "ParakeetEngine")
     private static let targetSampleRate = 16_000
-    private static let maxStreamingSegmentSeconds = 2.0
+    private static let maxStreamingSegmentSeconds = 1.75
     private static let vadEngine: SileroVADEngine = .coreml
 
     private let modelManager: ModelManager
@@ -158,12 +158,15 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
                 state.activeSpeechStartSample.map {
                     max(0, absoluteBufferedSamples - $0)
                 } ?? 0
+            let fallbackSamples =
+                state.nextSegmentID == 0 && !state.normalizedSamples.isEmpty
+                ? state.normalizedSamples
+                : nil
             let flushedSegments = Self.makeSegments(from: flushEvents, state: &state)
-            let fallback = state.nextSegmentID == 0 && !state.normalizedSamples.isEmpty ? state.normalizedSamples : nil
             return ParakeetFinalizePayload(
                 sessionID: state.sessionID,
                 segments: flushedSegments,
-                fallback: fallback,
+                fallback: fallbackSamples,
                 metrics: ParakeetStreamingMetrics(
                     queuedSegmentCount: state.queuedSegmentCount,
                     forcedSegmentCount: state.forcedSegmentCount,
@@ -474,6 +477,10 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     private static func compactBufferedSamples(state: inout ParakeetSessionState) {
+        guard state.nextSegmentID > 0 || state.activeSpeechStartSample != nil else {
+            return
+        }
+
         let retainFromAbsolute =
             state.activeSpeechStartSample
             ?? (state.sampleBufferStartIndex + state.normalizedSamples.count)

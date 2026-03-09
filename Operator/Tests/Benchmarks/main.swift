@@ -14,6 +14,7 @@ private enum BenchmarkTarget: String, CaseIterable {
     case sttLatency = "stt-latency"
     case sttLong = "stt-long"
     case sttStreaming = "stt-streaming"
+    case sttSoak = "stt-soak"
     case memory
 }
 
@@ -35,6 +36,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  stt-latency       Run only STT 5s transcription benchmark")
     print("  stt-long          Run only STT long-utterance benchmark")
     print("  stt-streaming     Run STT streaming/finalize benchmark with synthesized speech")
+    print("  stt-soak          Run a long paced STT soak benchmark (set OPERATOR_STT_SOAK_MINUTES)")
     print("  memory            Run routing-model memory benchmark")
     if listOnly {
         return
@@ -46,6 +48,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  ./scripts/run-benchmarks.sh --no-build routing-latency")
     print("  ./scripts/run-benchmarks.sh stt-long")
     print("  ./scripts/run-benchmarks.sh stt-streaming")
+    print("  OPERATOR_STT_SOAK_MINUTES=5 ./scripts/run-benchmarks.sh stt-soak")
     print("  ./scripts/run-benchmarks.sh --release memory")
 }
 
@@ -284,11 +287,12 @@ func runBenchmarks() async {
     if includes(.tts) || includes(.ttsTTFA) {
         await benchmarkTTS()
     }
-    if includes(.stt) || includes(.sttLatency) || includes(.sttLong) || includes(.sttStreaming) {
+    if includes(.stt) || includes(.sttLatency) || includes(.sttLong) || includes(.sttStreaming) || includes(.sttSoak) {
         await benchmarkSTT(
             runLatency: includes(.stt) || includes(.sttLatency),
             runLong: includes(.stt) || includes(.sttLong),
-            runStreaming: includes(.stt) || includes(.sttStreaming)
+            runStreaming: includes(.stt) || includes(.sttStreaming),
+            runSoak: includes(.sttSoak)
         )
     }
     if includes(.memory) {
@@ -852,8 +856,13 @@ func benchmarkTTS() async {
 // MARK: - STT Benchmarks (AC-001.3, AC-001.4)
 
 @MainActor
-func benchmarkSTT(runLatency: Bool, runLong: Bool, runStreaming: Bool) async {
-    guard runLatency || runLong || runStreaming else {
+func benchmarkSTT(
+    runLatency: Bool,
+    runLong: Bool,
+    runStreaming: Bool,
+    runSoak: Bool
+) async {
+    guard runLatency || runLong || runStreaming || runSoak else {
         return
     }
 
@@ -962,6 +971,7 @@ func benchmarkSTT(runLatency: Bool, runLong: Bool, runStreaming: Bool) async {
 
     if runStreaming {
         print("\nStreaming finalize test (paced normal speech)...")
+        await engine.prewarm()
 
         let warmupText = "Operator warmup. The agent is preparing the streaming transcription benchmark."
         print("Rendering warmup speech fixture...")
@@ -1021,6 +1031,97 @@ func benchmarkSTT(runLatency: Bool, runLong: Bool, runStreaming: Bool) async {
         print("Segments queued:  \(metrics.queuedSegmentCount)")
         print("Forced segments:  \(metrics.forcedSegmentCount)")
         print("Tail at finalize: \(String(format: "%.0f", tailDurationMs))ms")
+        print("Transcript chars: \(result?.count ?? 0)")
+    }
+
+    if runSoak {
+        let soakMinutes =
+            ProcessInfo.processInfo.environment["OPERATOR_STT_SOAK_MINUTES"]
+            .flatMap(Double.init)
+            .map { max(0.25, $0) }
+            ?? 5.0
+        let soakProgressInterval = 30.0
+        print("\nStreaming soak test (\(String(format: "%.1f", soakMinutes)) min paced speech)...")
+        await engine.prewarm()
+
+        let soakText =
+            """
+            I am continuing the operator session, inspecting changed files, routing work across frontend, backend, and infrastructure tasks, and keeping the transcript current while I speak. The benchmark is simulating a long agent interaction so we can verify memory stays bounded, segments keep flushing during speech, and the final route does not wait on a large leftover tail.
+            """
+        print("Rendering soak speech fixture...")
+        guard let soakAudio = await synthesizeSpeechAudio(text: soakText) else {
+            print("FAIL: Could not synthesize soak benchmark audio")
+            return
+        }
+        let soakBuffers = makePCMChunks(
+            samples: soakAudio.samples,
+            sampleRate: soakAudio.sampleRate,
+            chunkSeconds: 0.35
+        )
+        let fixtureDurationSeconds = Double(soakAudio.samples.count) / soakAudio.sampleRate
+        guard fixtureDurationSeconds > 0 else {
+            print("FAIL: Soak fixture had zero duration")
+            return
+        }
+
+        let targetDurationSeconds = soakMinutes * 60
+        let baselineFootprintMB = physFootprintMB()
+        var peakFootprintMB = baselineFootprintMB
+        var progressCheckpoint = soakProgressInterval
+        var totalChunksFed = 0
+        var repetitionsCompleted = 0
+
+        do { try engine.prepare() } catch {
+            print("FAIL: prepare() failed for streaming soak: \(error)")
+            return
+        }
+
+        let soakStart = CFAbsoluteTimeGetCurrent()
+        while true {
+            let elapsedSeconds = CFAbsoluteTimeGetCurrent() - soakStart
+            let remainingSeconds = targetDurationSeconds - elapsedSeconds
+            guard remainingSeconds > 0 else {
+                break
+            }
+
+            let buffersToFeed = prefixBuffers(soakBuffers, maxDurationSeconds: remainingSeconds)
+            await feedBuffersRealTime(buffersToFeed, into: engine)
+            totalChunksFed += buffersToFeed.count
+            repetitionsCompleted += 1
+
+            let currentElapsedSeconds = min(
+                targetDurationSeconds,
+                CFAbsoluteTimeGetCurrent() - soakStart
+            )
+            let footprintMB = physFootprintMB()
+            peakFootprintMB = max(peakFootprintMB, footprintMB)
+
+            if currentElapsedSeconds >= progressCheckpoint || currentElapsedSeconds >= targetDurationSeconds {
+                print(
+                    "  Soak progress: \(String(format: "%.0f", currentElapsedSeconds))s"
+                        + " | peak RSS +\(String(format: "%.0f", peakFootprintMB - baselineFootprintMB))MB"
+                )
+                progressCheckpoint += soakProgressInterval
+            }
+        }
+
+        let captureMs = (CFAbsoluteTimeGetCurrent() - soakStart) * 1000
+        let finalizeStart = CFAbsoluteTimeGetCurrent()
+        let result = await engine.finishAndTranscribe()
+        let finalizeMs = (CFAbsoluteTimeGetCurrent() - finalizeStart) * 1000
+        let metrics = engine.lastStreamingMetrics
+        let tailDurationMs = Double(metrics.tailSamplesAtFinalize) / 16_000 * 1000
+
+        print("Soak capture:     \(String(format: "%.0f", captureMs))ms")
+        print("Fixture duration: \(String(format: "%.1f", fixtureDurationSeconds))s x \(repetitionsCompleted)")
+        print("Chunks fed:       \(totalChunksFed)")
+        print("Finalize:         \(String(format: "%.0f", finalizeMs))ms")
+        print("Segments queued:  \(metrics.queuedSegmentCount)")
+        print("Forced segments:  \(metrics.forcedSegmentCount)")
+        print("Tail at finalize: \(String(format: "%.0f", tailDurationMs))ms")
+        print(
+            "Peak RSS delta:   +\(String(format: "%.0f", peakFootprintMB - baselineFootprintMB))MB"
+        )
         print("Transcript chars: \(result?.count ?? 0)")
     }
 }
@@ -1128,6 +1229,29 @@ private func makePCMChunks(
     return chunks
 }
 
+private func prefixBuffers(
+    _ buffers: [AVAudioPCMBuffer],
+    maxDurationSeconds: Double
+) -> [AVAudioPCMBuffer] {
+    guard maxDurationSeconds > 0 else {
+        return []
+    }
+
+    var selected: [AVAudioPCMBuffer] = []
+    var accumulatedSeconds = 0.0
+
+    for buffer in buffers {
+        let durationSeconds = bufferDurationMs(buffer) / 1000
+        guard accumulatedSeconds < maxDurationSeconds else {
+            break
+        }
+        selected.append(buffer)
+        accumulatedSeconds += durationSeconds
+    }
+
+    return selected.isEmpty ? [buffers[0]] : selected
+}
+
 @MainActor
 private func feedBuffersRealTime(
     _ buffers: [AVAudioPCMBuffer],
@@ -1158,22 +1282,24 @@ private func bufferDurationMs(_ buffer: AVAudioPCMBuffer) -> Double {
     return (Double(buffer.frameLength) / buffer.format.sampleRate) * 1000
 }
 
+private func physFootprintMB() -> Double {
+    var rusage = rusage_info_v4()
+    let result = withUnsafeMutablePointer(to: &rusage) {
+        $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+            proc_pid_rusage(getpid(), RUSAGE_INFO_V4, $0)
+        }
+    }
+    guard result == 0 else {
+        return 0
+    }
+    return Double(rusage.ri_phys_footprint) / 1_048_576
+}
+
 // MARK: - Memory Benchmark (AC-011.5)
 
 @MainActor
 func benchmarkMemory() async {
     print("\n=== MEMORY BENCHMARK ===\n")
-
-    func physFootprintMB() -> Double {
-        var rusage = rusage_info_v4()
-        let result = withUnsafeMutablePointer(to: &rusage) {
-            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
-                proc_pid_rusage(getpid(), RUSAGE_INFO_V4, $0)
-            }
-        }
-        guard result == 0 else { return 0 }
-        return Double(rusage.ri_phys_footprint) / 1_048_576
-    }
 
     let baseline = physFootprintMB()
     print("Baseline: \(String(format: "%.0f", baseline))MB")
