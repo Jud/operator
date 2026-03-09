@@ -22,7 +22,7 @@ public struct OnboardingView: View {
                 .padding(.horizontal, 24)
                 .padding(.vertical, 16)
         }
-        .frame(width: 500, height: 400)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     public init(model: OnboardingViewModel) {
@@ -196,17 +196,9 @@ extension OnboardingView {
 
     @ViewBuilder private var accessibilityStatusRow: some View {
         HStack(spacing: 10) {
-            if model.accessibilityGranted {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("Accessibility granted")
-                    .foregroundStyle(.green)
-            } else {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-                Text("Not yet granted")
-                    .foregroundStyle(.secondary)
-            }
+            permissionStatusIcon(granted: model.accessibilityGranted, requested: true)
+            Text(model.accessibilityGranted ? "Accessibility granted" : "Not yet granted")
+                .foregroundStyle(model.accessibilityGranted ? .green : .secondary)
         }
         .font(.body)
     }
@@ -314,8 +306,7 @@ extension OnboardingView {
     @ViewBuilder
     private func permissionSummaryRow(label: String, granted: Bool) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: granted ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(granted ? .green : .orange)
+            permissionStatusIcon(granted: granted, requested: true)
                 .frame(width: 18)
 
             Text(label)

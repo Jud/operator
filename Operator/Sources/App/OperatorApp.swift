@@ -464,11 +464,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// ``OnboardingViewModel/completeOnboarding()`` fires (either from the
     /// "Get Started" button or from the window close button).
     private func showOnboardingAndWait() async {
-        let window = OnboardingWindow()
-        let windowDelegate = OnboardingWindowDelegate()
-        window.delegate = windowDelegate
-        onboardingWindow = window
-        onboardingWindowDelegate = windowDelegate
+        let window = ensureOnboardingWindow()
 
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             OnboardingViewModel.shared.prepare {
@@ -493,16 +489,19 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         vm.refreshPermissionStates()
         vm.currentStep = .welcome
 
-        if onboardingWindow == nil {
-            let window = OnboardingWindow()
-            let windowDelegate = OnboardingWindowDelegate()
-            window.delegate = windowDelegate
-            onboardingWindow = window
-            onboardingWindowDelegate = windowDelegate
-        }
-
-        onboardingWindow?.show()
+        ensureOnboardingWindow().show()
         Self.logger.info("Setup Guide opened from menu bar")
+    }
+
+    @discardableResult
+    private func ensureOnboardingWindow() -> OnboardingWindow {
+        if let existing = onboardingWindow { return existing }
+        let window = OnboardingWindow()
+        let delegate = OnboardingWindowDelegate()
+        window.delegate = delegate
+        onboardingWindow = window
+        onboardingWindowDelegate = delegate
+        return window
     }
 
     /// Wire fallback notification callbacks on each adaptive engine.
