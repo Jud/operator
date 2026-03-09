@@ -84,9 +84,6 @@ public final class SessionDiscoveryService: Sendable {
 
             case .ghostty:
                 liveIdentifiers.insert(.ghosttyTerminal(session.id))
-
-            case .unknown:
-                break
             }
         }
 

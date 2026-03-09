@@ -1,9 +1,6 @@
 import AVFoundation
 import Foundation
 
-/// Namespace for session-related data model types used by SessionRegistry.
-public enum SessionTypes {}
-
 /// Status of a registered Claude Code session.
 ///
 /// Tracks the session's current operational state for routing context
@@ -62,12 +59,7 @@ public struct SessionState: Sendable {
     public var sessionId: String?
 
     /// Backward-compatible accessor for the TTY path or terminal description.
-    public var tty: String {
-        switch identifier {
-        case .tty(let path): return path
-        case .ghosttyTerminal(let id): return "ghostty:\(id)"
-        }
-    }
+    public var tty: String { identifier.legacyTTYString }
 
     /// Creates a new session state with a typed terminal identifier.
     public init(
@@ -157,12 +149,7 @@ public struct SessionSnapshot: Codable, Sendable {
     public let sessionId: String?
 
     /// Backward-compatible accessor for the TTY path or terminal description.
-    public var tty: String {
-        switch identifier {
-        case .tty(let path): return path
-        case .ghosttyTerminal(let id): return "ghostty:\(id)"
-        }
-    }
+    public var tty: String { identifier.legacyTTYString }
 
     // MARK: - Initialization
 

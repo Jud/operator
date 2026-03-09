@@ -148,7 +148,7 @@ server.registerTool(
 
 // --- Heartbeat ---
 
-// Re-register with the daemon every 30s so sessions survive Operator restarts.
+// Re-register with the daemon every 5s so sessions survive Operator restarts.
 async function heartbeat(): Promise<void> {
     try {
         const response = (await daemonPost("/hook/session-start", {

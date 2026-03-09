@@ -7,7 +7,6 @@ import Foundation
 public enum TerminalType: String, Sendable, Codable {
     case iterm
     case ghostty
-    case unknown
 }
 
 /// A typed session identifier that distinguishes between terminal emulators.
@@ -35,6 +34,17 @@ public enum TerminalIdentifier: Sendable, Hashable, CustomStringConvertible {
     public var description: String {
         switch self {
         case .tty(let path): return "tty:\(path)"
+        case .ghosttyTerminal(let id): return "ghostty:\(id)"
+        }
+    }
+
+    /// Backward-compatible string for the TTY path or terminal description.
+    ///
+    /// Returns the bare path for iTerm2 sessions (e.g., "/dev/ttys004")
+    /// or a prefixed identifier for Ghostty sessions (e.g., "ghostty:abc123").
+    public var legacyTTYString: String {
+        switch self {
+        case .tty(let path): return path
         case .ghosttyTerminal(let id): return "ghostty:\(id)"
         }
     }

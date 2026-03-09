@@ -1,9 +1,6 @@
 import Foundation
 import Hummingbird
 
-/// Namespace for HTTP server request/response data model types.
-public enum ServerTypes {}
-
 /// JSON body for POST /speak.
 ///
 /// Matches the MCP server's speak() tool output: message text, optional

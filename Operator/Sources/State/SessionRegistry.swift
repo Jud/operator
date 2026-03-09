@@ -104,6 +104,9 @@ public actor SessionRegistry {
             Self.logger.debug("Deregister called for unknown identifier: \(identifier)")
             return nil
         }
+        if case .ghosttyTerminal(let ghosttyId) = identifier {
+            ttyToGhosttyId = ttyToGhosttyId.filter { $0.value != ghosttyId }
+        }
         Self.logger.info("Deregistered session '\(state.name)' from \(identifier)")
         return state.name
     }
@@ -253,6 +256,9 @@ public actor SessionRegistry {
         guard let state = sessions.removeValue(forKey: id) else {
             Self.logger.debug("Hook session-end: no session found for TTY \(tty)")
             return nil
+        }
+        if case .ghosttyTerminal(let ghosttyId) = id {
+            ttyToGhosttyId = ttyToGhosttyId.filter { $0.value != ghosttyId }
         }
         Self.logger.info("Hook session-end: removed session '\(state.name)' from \(id)")
         return state.name
