@@ -440,8 +440,8 @@ extension StateMachine {
             feedback.play(.error)
             enterIdle()
 
-        case .itermNotRunning:
-            speakOperator("iTerm doesn't seem to be running.")
+        case .terminalNotRunning:
+            speakOperator("The terminal doesn't seem to be running.")
             feedback.play(.error)
             enterIdle()
 

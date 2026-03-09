@@ -106,7 +106,7 @@ internal struct DeliveryCoordinatorTests {
         #expect(session == "sudo")
     }
 
-    @Test("deliver when bridge throws itermNotRunning returns .itermNotRunning")
+    @Test("deliver when bridge throws itermNotRunning returns .terminalNotRunning")
     func deliverBridgeThrowsItermNotRunning() async {
         let bridge = MockTerminalBridge()
         bridge.writeError = ITermBridgeError.itermNotRunning
@@ -114,8 +114,23 @@ internal struct DeliveryCoordinatorTests {
         await ctx.registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
 
         let result = await ctx.coordinator.deliver("hello", to: "sudo")
-        guard case .itermNotRunning(let session) = result else {
-            Issue.record("Expected .itermNotRunning, got \(result)")
+        guard case .terminalNotRunning(let session) = result else {
+            Issue.record("Expected .terminalNotRunning, got \(result)")
+            return
+        }
+        #expect(session == "sudo")
+    }
+
+    @Test("deliver when bridge throws ghosttyNotRunning returns .terminalNotRunning")
+    func deliverBridgeThrowsGhosttyNotRunning() async {
+        let bridge = MockTerminalBridge()
+        bridge.writeError = GhosttyBridgeError.ghosttyNotRunning
+        let ctx = makeCoordinator(bridge: bridge)
+        await ctx.registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
+
+        let result = await ctx.coordinator.deliver("hello", to: "sudo")
+        guard case .terminalNotRunning(let session) = result else {
+            Issue.record("Expected .terminalNotRunning, got \(result)")
             return
         }
         #expect(session == "sudo")

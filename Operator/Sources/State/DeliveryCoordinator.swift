@@ -1,6 +1,6 @@
 import Foundation
 
-/// Result of attempting to deliver a message to a Claude Code session via iTerm.
+/// Result of attempting to deliver a message to a Claude Code session via terminal bridge.
 ///
 /// The StateMachine uses this to determine the appropriate state transition
 /// and user feedback after a delivery attempt.
@@ -11,17 +11,17 @@ public enum DeliveryResult: Sendable {
     /// The target session was not found in the registry.
     case sessionNotFound(session: String)
 
-    /// The iTerm bridge write call returned false (session may have closed).
+    /// The terminal bridge write call returned false (session may have closed).
     case writeFailed(session: String)
 
-    /// iTerm2 is not running.
-    case itermNotRunning(session: String)
+    /// The target terminal application is not running.
+    case terminalNotRunning(session: String)
 
     /// An unexpected error occurred during delivery.
     case deliveryError(session: String)
 }
 
-/// Coordinates message delivery to Claude Code sessions via the iTerm bridge.
+/// Coordinates message delivery to Claude Code sessions via the terminal bridge.
 ///
 /// Encapsulates the registry lookup, bridge write, and error classification
 /// that were previously inline in StateMachine. The StateMachine calls the
@@ -67,10 +67,10 @@ public struct DeliveryCoordinator {
             return .sessionNotFound(session: session)
         }
 
-        let identifier = TerminalIdentifier.tty(sessionState.tty)
-
         do {
-            let success = try await terminalBridge.writeToSession(identifier: identifier, text: message)
+            let success = try await terminalBridge.writeToSession(
+                identifier: sessionState.identifier, text: message
+            )
             guard success else {
                 Self.logger.error("writeToSession returned false for \(session)")
                 return .writeFailed(session: session)
@@ -79,8 +79,11 @@ public struct DeliveryCoordinator {
             feedback.play(.delivered)
             return .success(message: message, session: session)
         } catch ITermBridgeError.itermNotRunning {
-            Self.logger.error("iTerm not running during delivery to \(session)")
-            return .itermNotRunning(session: session)
+            Self.logger.error("Terminal not running during delivery to \(session)")
+            return .terminalNotRunning(session: session)
+        } catch GhosttyBridgeError.ghosttyNotRunning {
+            Self.logger.error("Terminal not running during delivery to \(session)")
+            return .terminalNotRunning(session: session)
         } catch {
             Self.logger.error("Delivery failed for \(session): \(error)")
             return .deliveryError(session: session)
@@ -104,7 +107,7 @@ public struct DeliveryCoordinator {
         }
         do {
             _ = try await terminalBridge.writeToSession(
-                identifier: TerminalIdentifier.tty(sessionState.tty),
+                identifier: sessionState.identifier,
                 text: message
             )
             Self.logger.info("Direct delivery to \(session) succeeded")
