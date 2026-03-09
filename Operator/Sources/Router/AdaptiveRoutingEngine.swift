@@ -17,7 +17,7 @@ public final class AdaptiveRoutingEngine: RoutingEngine, @unchecked Sendable {
 
     // MARK: - Properties
 
-    private let localEngine: any RoutingEngine
+    private let localEngine: any RoutingEngine & LocalModelResident
     private let fallbackEngine: any RoutingEngine
     private var useLocal: Bool
     private var didFallBack = false
@@ -44,7 +44,7 @@ public final class AdaptiveRoutingEngine: RoutingEngine, @unchecked Sendable {
     ///   - preferLocal: Initial preference for local engine. When `true`, uses
     ///     MLX routing. When `false`, uses Claude CLI.
     public init(
-        localEngine: any RoutingEngine,
+        localEngine: any RoutingEngine & LocalModelResident,
         fallbackEngine: any RoutingEngine = ClaudePipeRoutingEngine(),
         preferLocal: Bool = true
     ) {
@@ -71,6 +71,23 @@ public final class AdaptiveRoutingEngine: RoutingEngine, @unchecked Sendable {
         Self.logger.info(
             "Routing engine preference changed to \(enabled ? "Local MLX" : "Claude CLI")"
         )
+        guard enabled else {
+            return
+        }
+        Task { [weak self] in
+            await self?.prewarmSelectedLocalModel()
+        }
+    }
+
+    /// Keep the selected local routing model resident when it is available locally.
+    public func prewarmSelectedLocalModel() async {
+        guard useLocal && !didFallBack else {
+            return
+        }
+        guard await localEngine.isCachedLocally() else {
+            return
+        }
+        await localEngine.prewarm()
     }
 
     // MARK: - RoutingEngine

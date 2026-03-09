@@ -41,7 +41,7 @@ public enum MLXRoutingError: Error, CustomStringConvertible {
 
 /// Local routing engine using Qwen 3.5 0.8B (4-bit quantized) via mlx-swift-lm
 /// with grammar-constrained JSON decoding via mlx-swift-structured.
-public final class MLXRoutingEngine: RoutingEngine, @unchecked Sendable {
+public final class MLXRoutingEngine: RoutingEngine, LocalModelResident, @unchecked Sendable {
     static let logger = Log.logger(for: "MLXRoutingEngine")
     static let modelID = "mlx-community/Qwen3.5-0.8B-MLX-4bit"
     static let maxGenerationTokens = 32

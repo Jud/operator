@@ -17,6 +17,39 @@ private actor FallbackCapture {
     func append(_ message: String) { messages.append(message) }
 }
 
+private actor STTWarmupCapture {
+    private(set) var count = 0
+    var isEmpty: Bool { count < 1 }
+
+    func record() {
+        count += 1
+    }
+}
+
+private struct StubLocalTranscriptionEngine: TranscriptionEngine, LocalModelResident {
+    let isCachedHandler: @Sendable () async -> Bool
+    let prewarmHandler: @Sendable () async -> Void
+    let finishHandler: @Sendable () async -> String?
+
+    func isCachedLocally() async -> Bool {
+        await isCachedHandler()
+    }
+
+    func prewarm() async {
+        await prewarmHandler()
+    }
+
+    func prepare() throws {}
+
+    func append(_ buffer: AVAudioPCMBuffer) {}
+
+    func finishAndTranscribe() async -> String? {
+        await finishHandler()
+    }
+
+    func cancel() {}
+}
+
 // MARK: - Engine Switching
 
 @Suite("AdaptiveTranscriptionEngine - Engine Switching")
@@ -84,6 +117,54 @@ internal struct AdaptiveSTTSwitchingTests {
     func cancelDoesNotThrow() async {
         let (engine, _) = await makeEngine()
         engine.cancel()
+    }
+
+    @Test("prewarmSelectedLocalModel warms cached local STT engine")
+    func prewarmSelectedLocalModelWarmsCachedLocalEngine() async {
+        let capture = STTWarmupCapture()
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ate-test-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+
+        let modelManager = ModelManager(cacheDirectory: cacheDir)
+        let engine = AdaptiveTranscriptionEngine(
+            localEngine: StubLocalTranscriptionEngine(
+                isCachedHandler: { true },
+                prewarmHandler: { await capture.record() },
+                finishHandler: { nil }
+            ),
+            fallbackEngine: AppleSpeechEngine(),
+            modelManager: modelManager,
+            preferLocal: true
+        )
+
+        await engine.prewarmSelectedLocalModel()
+
+        #expect(await capture.count == 1)
+    }
+
+    @Test("prewarmSelectedLocalModel skips uncached local STT engine")
+    func prewarmSelectedLocalModelSkipsUncachedLocalEngine() async {
+        let capture = STTWarmupCapture()
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ate-test-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+
+        let modelManager = ModelManager(cacheDirectory: cacheDir)
+        let engine = AdaptiveTranscriptionEngine(
+            localEngine: StubLocalTranscriptionEngine(
+                isCachedHandler: { false },
+                prewarmHandler: { await capture.record() },
+                finishHandler: { nil }
+            ),
+            fallbackEngine: AppleSpeechEngine(),
+            modelManager: modelManager,
+            preferLocal: true
+        )
+
+        await engine.prewarmSelectedLocalModel()
+
+        #expect(await capture.isEmpty)
     }
 }
 

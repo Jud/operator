@@ -76,7 +76,7 @@ private struct ParakeetSessionState: @unchecked Sendable {
 /// and transcribed in the background segment-by-segment while the user is still
 /// talking. `finishAndTranscribe()` only needs to flush the tail segment and join
 /// already-produced transcript chunks, which keeps end-of-utterance latency low.
-public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
+public final class ParakeetEngine: TranscriptionEngine, LocalModelResident, @unchecked Sendable {
     private static let logger = Log.logger(for: "ParakeetEngine")
     private static let targetSampleRate = 16_000
     private static let maxStreamingSegmentSeconds = 1.75
@@ -105,6 +105,11 @@ public final class ParakeetEngine: TranscriptionEngine, @unchecked Sendable {
         let sessionID = sessionState.withLock { $0.sessionID }
         await ensureVADReady(for: sessionID)
         await transcriber.prewarm()
+    }
+
+    /// Report whether the Parakeet STT artifacts are already cached locally.
+    public func isCachedLocally() async -> Bool {
+        await modelManager.isCached(.stt)
     }
 
     /// Prepare for a new transcription session by resetting streaming state.

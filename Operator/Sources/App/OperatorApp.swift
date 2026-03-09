@@ -253,29 +253,44 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         )
         adaptiveRoutingEngine = adaptiveRouting
 
-        if sttPref == "parakeet" {
-            Task {
-                guard await mm.isCached(.stt) else {
-                    return
-                }
-                await parakeet.prewarm()
-            }
-        }
-
-        if ttsPref == "qwen3" {
-            Task {
-                guard await mm.isCached(.tts) else {
-                    return
-                }
-                await qwenTTS.prewarm()
-            }
-        }
+        startSelectedModelWarmups(
+            adaptiveSTT: adaptiveSTT,
+            adaptiveTTS: qwenTTS,
+            adaptiveRouting: adaptiveRouting,
+            modelManager: mm,
+            ttsPref: ttsPref
+        )
 
         return AdaptiveEngines(
             adaptiveSTT: adaptiveSTT,
             adaptiveTTS: adaptiveTTS,
             adaptiveRouting: adaptiveRouting
         )
+    }
+
+    private func startSelectedModelWarmups(
+        adaptiveSTT: AdaptiveTranscriptionEngine,
+        adaptiveTTS: Qwen3TTSSpeechManager,
+        adaptiveRouting: AdaptiveRoutingEngine,
+        modelManager: ModelManager,
+        ttsPref: String
+    ) {
+        Task {
+            await adaptiveSTT.prewarmSelectedLocalModel()
+        }
+
+        if ttsPref == "qwen3" {
+            Task {
+                guard await modelManager.isCached(.tts) else {
+                    return
+                }
+                await adaptiveTTS.prewarm()
+            }
+        }
+
+        Task {
+            await adaptiveRouting.prewarmSelectedLocalModel()
+        }
     }
 
     /// Create the state machine, waveform panel, and menu bar model.

@@ -3,6 +3,25 @@ import MLXLLM
 import MLXLMCommon
 
 extension MLXRoutingEngine {
+    /// Report whether the local routing model artifacts are already cached locally.
+    public func isCachedLocally() async -> Bool {
+        await modelManager.isCached(.routing)
+    }
+
+    /// Load and warm the routing model and grammar processor for low-latency first use.
+    public func prewarm() async {
+        do {
+            try await ensureModelLoaded()
+            guard let container = modelContainer else {
+                return
+            }
+            _ = try await loadGrammarProcessor(using: container)
+            Self.logger.info("Routing model warmup complete")
+        } catch {
+            Self.logger.error("Routing warmup failed: \(error.localizedDescription)")
+        }
+    }
+
     func ensureModelLoaded() async throws {
         guard modelContainer == nil else {
             return

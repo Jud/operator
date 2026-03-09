@@ -17,7 +17,7 @@ public final class AdaptiveTranscriptionEngine: TranscriptionEngine, @unchecked 
 
     // MARK: - Properties
 
-    private let localEngine: ParakeetEngine
+    private let localEngine: any TranscriptionEngine & LocalModelResident
     private let fallbackEngine: AppleSpeechEngine
     private let modelManager: ModelManager
     private var useLocal: Bool
@@ -47,7 +47,7 @@ public final class AdaptiveTranscriptionEngine: TranscriptionEngine, @unchecked 
     ///   - preferLocal: Initial preference for local engine. When `true`, uses
     ///     Parakeet. When `false`, uses Apple SFSpeechRecognizer.
     public init(
-        localEngine: ParakeetEngine,
+        localEngine: any TranscriptionEngine & LocalModelResident,
         fallbackEngine: AppleSpeechEngine,
         modelManager: ModelManager,
         preferLocal: Bool = true
@@ -75,6 +75,23 @@ public final class AdaptiveTranscriptionEngine: TranscriptionEngine, @unchecked 
         useLocal = enabled
         didFallBack = false
         Self.logger.info("STT engine preference changed to \(enabled ? "Parakeet" : "Apple")")
+        guard enabled else {
+            return
+        }
+        Task { [weak self] in
+            await self?.prewarmSelectedLocalModel()
+        }
+    }
+
+    /// Keep the selected local STT model resident when it is available locally.
+    public func prewarmSelectedLocalModel() async {
+        guard useLocal && !didFallBack else {
+            return
+        }
+        guard await localEngine.isCachedLocally() else {
+            return
+        }
+        await localEngine.prewarm()
     }
 
     // MARK: - TranscriptionEngine
@@ -119,7 +136,7 @@ public final class AdaptiveTranscriptionEngine: TranscriptionEngine, @unchecked 
     public func finishAndTranscribe() async -> String? {
         let result = await activeEngine.finishAndTranscribe()
 
-        if result == nil && activeEngine is ParakeetEngine && !didFallBack {
+        if result == nil && activeEngine is (any TranscriptionEngine & LocalModelResident) && !didFallBack {
             Self.logger.warning(
                 "Parakeet transcription returned nil, will fall back to Apple STT on next session"
             )

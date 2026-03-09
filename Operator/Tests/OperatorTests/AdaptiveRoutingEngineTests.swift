@@ -22,10 +22,31 @@ private enum StubRoutingError: Error {
 }
 
 private struct StubRoutingEngine: RoutingEngine {
+    let isCachedHandler: @Sendable () async -> Bool
+    let prewarmHandler: @Sendable () async -> Void
     let handler: @Sendable (String, TimeInterval) async throws -> [String: Any]
+
+    func isCachedLocally() async -> Bool {
+        await isCachedHandler()
+    }
+
+    func prewarm() async {
+        await prewarmHandler()
+    }
 
     func run(prompt: String, timeout: TimeInterval) async throws -> [String: Any] {
         try await handler(prompt, timeout)
+    }
+}
+
+extension StubRoutingEngine: LocalModelResident {}
+
+private actor RoutingWarmupCapture {
+    private(set) var count = 0
+    var isEmpty: Bool { count < 1 }
+
+    func record() {
+        count += 1
     }
 }
 
@@ -35,8 +56,16 @@ private struct StubRoutingEngine: RoutingEngine {
 internal struct AdaptiveRoutingSwitchingTests {
     private func makeEngine(
         preferLocal: Bool = true,
-        localEngine: StubRoutingEngine = StubRoutingEngine { _, _ in ["session": "local"] },
-        fallbackEngine: StubRoutingEngine = StubRoutingEngine { _, _ in ["session": "fallback"] }
+        localEngine: StubRoutingEngine = StubRoutingEngine(
+            isCachedHandler: { true },
+            prewarmHandler: {},
+            handler: { _, _ in ["session": "local"] }
+        ),
+        fallbackEngine: StubRoutingEngine = StubRoutingEngine(
+            isCachedHandler: { true },
+            prewarmHandler: {},
+            handler: { _, _ in ["session": "fallback"] }
+        )
     ) -> AdaptiveRoutingEngine {
         let adaptive = AdaptiveRoutingEngine(
             localEngine: localEngine,
@@ -72,6 +101,40 @@ internal struct AdaptiveRoutingSwitchingTests {
         let engine = makeEngine(preferLocal: false)
         #expect(engine.isUsingLocal == false)
     }
+
+    @Test("prewarmSelectedLocalModel warms cached local routing engine")
+    func prewarmSelectedLocalModelWarmsCachedLocalEngine() async {
+        let capture = RoutingWarmupCapture()
+        let engine = makeEngine(
+            preferLocal: true,
+            localEngine: StubRoutingEngine(
+                isCachedHandler: { true },
+                prewarmHandler: { await capture.record() },
+                handler: { _, _ in ["session": "local"] }
+            )
+        )
+
+        await engine.prewarmSelectedLocalModel()
+
+        #expect(await capture.count == 1)
+    }
+
+    @Test("prewarmSelectedLocalModel skips uncached local routing engine")
+    func prewarmSelectedLocalModelSkipsUncachedLocalEngine() async {
+        let capture = RoutingWarmupCapture()
+        let engine = makeEngine(
+            preferLocal: true,
+            localEngine: StubRoutingEngine(
+                isCachedHandler: { false },
+                prewarmHandler: { await capture.record() },
+                handler: { _, _ in ["session": "local"] }
+            )
+        )
+
+        await engine.prewarmSelectedLocalModel()
+
+        #expect(await capture.isEmpty)
+    }
 }
 
 // MARK: - Fallback Behavior
@@ -80,8 +143,16 @@ internal struct AdaptiveRoutingSwitchingTests {
 internal struct AdaptiveRoutingFallbackTests {
     private func makeEngine(
         preferLocal: Bool = true,
-        localEngine: StubRoutingEngine = StubRoutingEngine { _, _ in ["session": "local"] },
-        fallbackEngine: StubRoutingEngine = StubRoutingEngine { _, _ in ["session": "fallback"] }
+        localEngine: StubRoutingEngine = StubRoutingEngine(
+            isCachedHandler: { true },
+            prewarmHandler: {},
+            handler: { _, _ in ["session": "local"] }
+        ),
+        fallbackEngine: StubRoutingEngine = StubRoutingEngine(
+            isCachedHandler: { true },
+            prewarmHandler: {},
+            handler: { _, _ in ["session": "fallback"] }
+        )
     ) -> AdaptiveRoutingEngine {
         let adaptive = AdaptiveRoutingEngine(
             localEngine: localEngine,
@@ -181,8 +252,16 @@ internal struct AdaptiveRoutingFallbackTests {
     func runFallsBackOnLocalFailure() async throws {
         let engine = makeEngine(
             preferLocal: true,
-            localEngine: StubRoutingEngine { _, _ in throw StubRoutingError.localFailed },
-            fallbackEngine: StubRoutingEngine { _, _ in throw StubRoutingError.fallbackFailed }
+            localEngine: StubRoutingEngine(
+                isCachedHandler: { true },
+                prewarmHandler: {},
+                handler: { _, _ in throw StubRoutingError.localFailed }
+            ),
+            fallbackEngine: StubRoutingEngine(
+                isCachedHandler: { true },
+                prewarmHandler: {},
+                handler: { _, _ in throw StubRoutingError.fallbackFailed }
+            )
         )
 
         let capture = RoutingFallbackCapture()
@@ -211,8 +290,16 @@ internal struct AdaptiveRoutingFallbackTests {
     func runUsesFallbackDirectly() async {
         let engine = makeEngine(
             preferLocal: false,
-            localEngine: StubRoutingEngine { _, _ in throw StubRoutingError.localFailed },
-            fallbackEngine: StubRoutingEngine { _, _ in throw StubRoutingError.fallbackFailed }
+            localEngine: StubRoutingEngine(
+                isCachedHandler: { true },
+                prewarmHandler: {},
+                handler: { _, _ in throw StubRoutingError.localFailed }
+            ),
+            fallbackEngine: StubRoutingEngine(
+                isCachedHandler: { true },
+                prewarmHandler: {},
+                handler: { _, _ in throw StubRoutingError.fallbackFailed }
+            )
         )
 
         let capture = RoutingFallbackCapture()
