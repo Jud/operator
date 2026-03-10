@@ -2,7 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { readFileSync, writeFileSync } from "fs";
-import { execSync } from "child_process";
+import { execSync, execFile } from "child_process";
+import { promisify } from "util";
 import { homedir } from "os";
 import { basename } from "path";
 import { randomUUID } from "crypto";
@@ -82,7 +83,6 @@ async function resolveTerminalId(): Promise<void> {
         // Allow Ghostty to process the title change
         await delay(500);
 
-        // Query Ghostty AppleScript for the terminal whose name contains the marker
         const script = `(function() {
             var app = Application("Ghostty");
             var wins = app.windows();
@@ -100,9 +100,9 @@ async function resolveTerminalId(): Promise<void> {
             return "not_found";
         })();`;
 
-        const ghosttyId = execSync(`/usr/bin/osascript -l JavaScript -e '${script}'`, {
-            encoding: "utf-8",
-        }).trim();
+        const execFileAsync = promisify(execFile);
+        const { stdout } = await execFileAsync("/usr/bin/osascript", ["-l", "JavaScript", "-e", script]);
+        const ghosttyId = stdout.trim();
 
         if (ghosttyId !== "" && ghosttyId !== "not_found") {
             await daemonPost("/hook/terminal-id", {
