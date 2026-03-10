@@ -129,9 +129,17 @@ extension MessageRouter {
     ///
     /// Both `route()` and `routeSkipEngine()` delegate here, diverging only on
     /// the unresolved path (routing engine vs `.notConfident`).
+    ///
+    /// - Parameters:
+    ///   - text: The transcribed user message.
+    ///   - routingState: Current routing state with affinity and history data.
+    ///   - prefetchedSessions: Pre-fetched sessions to avoid a redundant registry call.
+    ///     When nil, sessions are fetched from the registry.
+    /// - Returns: A resolved routing result or an unresolved state for callers to handle.
     func deterministicChain(
         text: String,
-        routingState: RoutingState
+        routingState: RoutingState,
+        prefetchedSessions: [SessionState]? = nil
     ) async -> DeterministicResult {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowered = trimmed.lowercased()
@@ -141,8 +149,13 @@ extension MessageRouter {
             return .resolved(.operatorCommand(command))
         }
 
-        let sessions = await registry.allSessions()
-        let sessionNames = sessions.map { $0.name }
+        let sessions: [SessionState]
+        if let prefetched = prefetchedSessions {
+            sessions = prefetched
+        } else {
+            sessions = await registry.allSessions()
+        }
+        let sessionNames = sessions.map(\.name)
 
         if let match = AgentNameMatcher.match(in: trimmed, sessionNames: sessionNames) {
             Self.logger.info("Keyword match: routing to '\(match.session)'")
@@ -267,7 +280,7 @@ extension MessageRouter {
             sessions: sessions,
             routingState: routingState
         )
-        let sessionNames = sessions.map { $0.name }
+        let sessionNames = sessions.map(\.name)
 
         do {
             let json = try await engine.run(prompt: prompt)

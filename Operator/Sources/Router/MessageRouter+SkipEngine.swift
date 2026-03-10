@@ -14,11 +14,21 @@ extension MessageRouter {
     /// - Parameters:
     ///   - text: The transcribed user message.
     ///   - routingState: Current routing state with affinity and history data.
+    ///   - prefetchedSessions: Pre-fetched sessions to avoid a redundant registry call.
+    ///     When nil, sessions are fetched from the registry.
     /// - Returns: A `RoutingResult` — either a confident route or `.notConfident`.
-    public func routeSkipEngine(text: String, routingState: RoutingState) async -> RoutingResult {
+    public func routeSkipEngine(
+        text: String,
+        routingState: RoutingState,
+        prefetchedSessions: [SessionState]? = nil
+    ) async -> RoutingResult {
         Self.logger.info("Skip-engine routing: \"\(text.prefix(80))\"")
 
-        switch await deterministicChain(text: text, routingState: routingState) {
+        switch await deterministicChain(
+            text: text,
+            routingState: routingState,
+            prefetchedSessions: prefetchedSessions
+        ) {
         case .resolved(let result):
             return result
 

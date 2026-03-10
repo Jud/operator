@@ -92,12 +92,13 @@ public struct BimodalDecisionEngine: Sendable {
         }
 
         // Step 3: Terminal frontmost -- confidence-gated routing using only
-        // deterministic signals from routeSkipEngine.
+        // deterministic signals from routeSkipEngine. Pass sessions through
+        // to avoid a redundant registry fetch inside deterministicChain.
         if context.isTerminal {
             return await decideForTerminal(
                 text: text,
                 routingState: routingState,
-                sessionCount: sessions.count,
+                sessions: sessions,
                 isTextField: context.isTextField
             )
         }
@@ -121,17 +122,21 @@ public struct BimodalDecisionEngine: Sendable {
     private func decideForTerminal(
         text: String,
         routingState: RoutingState,
-        sessionCount: Int,
+        sessions: [SessionState],
         isTextField: Bool
     ) async -> BimodalDecision {
-        let result = await router.routeSkipEngine(text: text, routingState: routingState)
+        let result = await router.routeSkipEngine(
+            text: text,
+            routingState: routingState,
+            prefetchedSessions: sessions
+        )
 
         switch result {
         case .operatorCommand:
             Self.logger.info("Bimodal: terminal + operator command -> routeToAgent")
             return .routeToAgent(text)
 
-        case .route where sessionCount == 1:
+        case .route where sessions.count == 1:
             Self.logger.info("Bimodal: terminal + single session -> routeToAgent")
             return .routeToAgent(text)
 

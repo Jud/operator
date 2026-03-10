@@ -285,24 +285,7 @@ public final class StateMachine {
                 return
             }
 
-            switch result {
-            case .success:
-                self.feedback.play(.dictation)
-
-            case .noLastDictation:
-                Self.logger.info("No lastDictation for double-tap replay")
-                self.feedback.play(.error)
-
-            case .pasteFailed(let reason):
-                Self.logger.error("Double-tap replay paste failed: \(reason)")
-                self.speakOperator("Couldn't insert text at the cursor.")
-                self.feedback.play(.error)
-
-            case .noTextField:
-                self.speakOperator("No text field detected.")
-                self.feedback.play(.error)
-            }
-
+            self.handleDictationResult(result)
             self.enterIdle()
         }
     }
@@ -378,23 +361,7 @@ extension StateMachine {
             return
         }
 
-        switch result {
-        case .success:
-            feedback.play(.dictation)
-
-        case .pasteFailed(let reason):
-            Self.logger.error("Dictation paste failed: \(reason)")
-            speakOperator("Couldn't insert text at the cursor.")
-            feedback.play(.error)
-
-        case .noTextField:
-            speakOperator("No text field detected.")
-            feedback.play(.error)
-
-        case .noLastDictation:
-            feedback.play(.error)
-        }
-
+        handleDictationResult(result)
         enterIdle()
     }
 
@@ -560,23 +527,15 @@ extension StateMachine {
             }
             enterIdle()
 
-        case .sessionNotFound(let sess):
+        case .sessionNotFound(let sess),
+            .writeFailed(let sess),
+            .deliveryError(let sess):
             speakOperator("Couldn't deliver to \(sess). The session may have closed.")
             feedback.play(.error)
             enterIdle()
 
-        case .writeFailed(let sess):
-            speakOperator("Couldn't deliver to \(sess). The session may have closed.")
-            feedback.play(.error)
-            enterIdle()
-
-        case .itermNotRunning:
-            speakOperator("iTerm doesn't seem to be running.")
-            feedback.play(.error)
-            enterIdle()
-
-        case .deliveryError(let sess):
-            speakOperator("Couldn't deliver to \(sess). The session may have closed.")
+        case .itermNotRunning(let sess):
+            speakOperator("Couldn't deliver to \(sess). iTerm doesn't seem to be running.")
             feedback.play(.error)
             enterIdle()
         }
@@ -813,5 +772,29 @@ extension StateMachine {
     /// Speak a message using the Operator voice.
     private func speakOperator(_ text: String) {
         speechManager.speak(text, voice: voiceManager.operatorVoice, prefix: "Operator")
+    }
+
+    /// Handle a DictationResult by playing the appropriate feedback/speech.
+    ///
+    /// Shared by `performDictation` (new dictation) and `triggerDoubleTap` (replay).
+    /// Does NOT call `enterIdle()` — the caller is responsible for state transitions.
+    private func handleDictationResult(_ result: DictationResult) {
+        switch result {
+        case .success:
+            feedback.play(.dictation)
+
+        case .noLastDictation:
+            Self.logger.info("No lastDictation available")
+            feedback.play(.error)
+
+        case .pasteFailed(let reason):
+            Self.logger.error("Dictation paste failed: \(reason)")
+            speakOperator("Couldn't insert text at the cursor.")
+            feedback.play(.error)
+
+        case .noTextField:
+            speakOperator("No text field detected.")
+            feedback.play(.error)
+        }
     }
 }
