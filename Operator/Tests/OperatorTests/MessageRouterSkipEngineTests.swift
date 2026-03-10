@@ -139,19 +139,18 @@ internal struct MessageRouterSkipEngineTests {
         #expect(ctx.engine.callCount == 0)
     }
 
-    @Test("skipEngine: no sessions returns .notConfident")
-    func noSessionsReturnsNotConfident() async {
+    @Test("skipEngine: no sessions returns .noSessions")
+    func noSessionsReturnsNoSessions() async {
         let ctx = await makeRouter()
 
         let result = await ctx.router.routeSkipEngine(
             text: "fix the build",
             routingState: RoutingState()
         )
-        guard case .notConfident(let text) = result else {
-            Issue.record("Expected .notConfident, got \(result)")
+        guard case .noSessions = result else {
+            Issue.record("Expected .noSessions, got \(result)")
             return
         }
-        #expect(text == "fix the build")
         #expect(ctx.engine.callCount == 0)
     }
 

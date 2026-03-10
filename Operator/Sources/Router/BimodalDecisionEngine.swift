@@ -26,10 +26,8 @@ public enum BimodalDecision: Sendable {
 /// For step 3, only deterministic routing signals (operator commands, single-session
 /// bypass) are trusted. Multi-session heuristic scoring results are discarded because
 /// concept expansion inflates scores from a single domain-adjacent word to 300-450
-/// points, producing an 87.5% false positive rate (HYP-001, REJECTED). Users wanting
+/// points, producing false positives on everyday English. Users wanting
 /// agent routing in a multi-session terminal context use keyword addressing.
-///
-/// Reference: design.md Section 3.3; requirements.md FR-001
 public struct BimodalDecisionEngine: Sendable {
     private static let logger = Log.logger(for: "BimodalDecisionEngine")
 
@@ -118,8 +116,8 @@ public struct BimodalDecisionEngine: Sendable {
     /// Calls `routeSkipEngine` to leverage the existing priority chain but only
     /// trusts deterministic results: operator commands and single-session bypass.
     /// Multi-session `.route` results are discarded because they originate from
-    /// heuristic scoring, which concept expansion renders unreliable for bimodal
-    /// gating (HYP-001: 87.5% false positive rate on everyday English).
+    /// heuristic scoring, where concept expansion inflates scores from a single
+    /// domain-adjacent word, producing false positives on everyday English.
     private func decideForTerminal(
         text: String,
         routingState: RoutingState,
@@ -144,13 +142,19 @@ public struct BimodalDecisionEngine: Sendable {
             // domain-adjacent word ("server", "dashboard", "profile") into scores of
             // 300-450, trivially passing thresholds designed for same-modality routing.
             // Discard the heuristic result and fall through to dictation.
-            Self.logger.info("Bimodal: terminal + heuristic (untrusted per HYP-001) -> dictate")
+            Self.logger.info("Bimodal: terminal + heuristic (untrusted, high false positive rate) -> dictate")
 
         case .notConfident:
             Self.logger.info("Bimodal: terminal + not confident -> dictate")
 
-        default:
-            Self.logger.info("Bimodal: terminal + unhandled result -> dictate")
+        case .clarify:
+            Self.logger.info("Bimodal: terminal + clarify -> dictate")
+
+        case .noSessions:
+            Self.logger.info("Bimodal: terminal + no sessions -> dictate")
+
+        case .cliNotFound:
+            Self.logger.info("Bimodal: terminal + CLI not found -> dictate")
         }
 
         if isTextField {

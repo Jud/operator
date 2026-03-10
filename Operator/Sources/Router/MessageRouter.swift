@@ -112,6 +112,68 @@ public final class MessageRouter: Sendable {
     }
 }
 
+// MARK: - Deterministic Routing Chain
+
+extension MessageRouter {
+    /// Intermediate result from the deterministic priority chain shared by
+    /// `route()` and `routeSkipEngine()`.
+    enum DeterministicResult {
+        /// A step in the chain produced a confident routing result.
+        case resolved(RoutingResult)
+        /// No deterministic step matched; callers decide what to do next.
+        case unresolved(trimmed: String, sessions: [SessionState])
+    }
+
+    /// Run the deterministic routing steps: operator commands, keyword extraction,
+    /// single-session bypass, session affinity, and heuristic scoring.
+    ///
+    /// Both `route()` and `routeSkipEngine()` delegate here, diverging only on
+    /// the unresolved path (routing engine vs `.notConfident`).
+    func deterministicChain(
+        text: String,
+        routingState: RoutingState
+    ) async -> DeterministicResult {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowered = trimmed.lowercased()
+
+        if let command = matchOperatorCommand(lowered) {
+            Self.logger.info("Matched operator command: \(String(describing: command))")
+            return .resolved(.operatorCommand(command))
+        }
+
+        let sessions = await registry.allSessions()
+        let sessionNames = sessions.map { $0.name }
+
+        if let (target, message) = extractKeyword(from: trimmed, sessionNames: sessionNames) {
+            Self.logger.info("Keyword match: routing to '\(target)'")
+            return .resolved(.route(session: target, message: message))
+        }
+
+        if sessions.count == 1 {
+            let session = sessions[0]
+            Self.logger.info("Single session bypass: routing to '\(session.name)'")
+            return .resolved(.route(session: session.name, message: trimmed))
+        }
+
+        if let affinityTarget = routingState.affinityTarget() {
+            if sessionNames.contains(where: { $0 == affinityTarget }) {
+                Self.logger.info("Session affinity: routing to '\(affinityTarget)'")
+                return .resolved(.route(session: affinityTarget, message: trimmed))
+            }
+            Self.logger.debug(
+                "Affinity target '\(affinityTarget)' no longer registered; falling through"
+            )
+        }
+
+        if let heuristicTarget = heuristicRoute(text: trimmed, sessions: sessions) {
+            Self.logger.info("Context heuristic: routing to '\(heuristicTarget)'")
+            return .resolved(.route(session: heuristicTarget, message: trimmed))
+        }
+
+        return .unresolved(trimmed: trimmed, sessions: sessions)
+    }
+}
+
 // MARK: - Primary Routing
 
 extension MessageRouter {
@@ -122,56 +184,24 @@ extension MessageRouter {
     ///   - routingState: Current routing state with affinity and history data.
     /// - Returns: A `RoutingResult` indicating how the message should be handled.
     public func route(text: String, routingState: RoutingState) async -> RoutingResult {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let lowered = trimmed.lowercased()
+        Self.logger.info("Routing message: \"\(text.prefix(80))\"")
 
-        Self.logger.info("Routing message: \"\(trimmed.prefix(80))\"")
+        switch await deterministicChain(text: text, routingState: routingState) {
+        case .resolved(let result):
+            return result
 
-        if let command = matchOperatorCommand(lowered) {
-            Self.logger.info("Matched operator command: \(String(describing: command))")
-            return .operatorCommand(command)
-        }
-
-        let sessions = await registry.allSessions()
-
-        if sessions.isEmpty {
-            Self.logger.warning("No sessions registered; cannot route")
-            return .noSessions
-        }
-
-        let sessionNames = sessions.map { $0.name }
-
-        if let (target, message) = extractKeyword(from: trimmed, sessionNames: sessionNames) {
-            Self.logger.info("Keyword match: routing to '\(target)'")
-            return .route(session: target, message: message)
-        }
-
-        if sessions.count == 1 {
-            let session = sessions[0]
-            Self.logger.info("Single session bypass: routing to '\(session.name)'")
-            return .route(session: session.name, message: trimmed)
-        }
-
-        if let affinityTarget = routingState.affinityTarget() {
-            if sessionNames.contains(where: { $0 == affinityTarget }) {
-                Self.logger.info("Session affinity: routing to '\(affinityTarget)'")
-                return .route(session: affinityTarget, message: trimmed)
+        case .unresolved(let trimmed, let sessions):
+            if sessions.isEmpty {
+                Self.logger.warning("No sessions registered; cannot route")
+                return .noSessions
             }
-            Self.logger.debug("Affinity target '\(affinityTarget)' no longer registered; falling through")
+            Self.logger.info("Invoking routing engine for smart routing")
+            return await claudePipeRoute(
+                text: trimmed,
+                sessions: sessions,
+                routingState: routingState
+            )
         }
-
-        if let heuristicTarget = heuristicRoute(text: trimmed, sessions: sessions) {
-            Self.logger.info("Context heuristic: routing to '\(heuristicTarget)'")
-            return .route(session: heuristicTarget, message: trimmed)
-        }
-
-        Self.logger.info("Invoking claude -p for smart routing")
-
-        return await claudePipeRoute(
-            text: trimmed,
-            sessions: sessions,
-            routingState: routingState
-        )
     }
 }
 
