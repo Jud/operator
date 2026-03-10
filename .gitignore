@@ -33,6 +33,12 @@ mcp-server/dist/
 # rp1
 .rp1/
 
+# Build artifacts
+build/
+
+# Claude Code plugin (separate repo)
+plugin/
+
 # Scratch files
 .claude-say.sh
 test-harness-type.sh
