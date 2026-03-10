@@ -1,37 +1,22 @@
 import Foundation
 
-/// Errors that can occur during Ghostty JXA bridge operations.
 public enum GhosttyBridgeError: Error, CustomStringConvertible {
-    /// The osascript process exited with a non-zero status code.
     case scriptFailed(status: Int32, stderr: String)
-
-    /// Ghostty is not running; JXA cannot connect to the application.
     case ghosttyNotRunning
-
-    /// The target terminal was not found by its Ghostty ID.
     case terminalNotFound(id: String)
-
-    /// Failed to write the message text to a temporary file for file-based delivery.
     case tempFileWriteFailed(underlying: Error)
-
-    /// Failed to decode session discovery JSON output.
     case discoveryDecodeFailed(output: String, underlying: Error)
 
-    /// A human-readable description of the error.
     public var description: String {
         switch self {
         case .scriptFailed(let status, let stderr):
             return "osascript exited with status \(status): \(stderr)"
-
         case .ghosttyNotRunning:
             return "Ghostty is not running"
-
         case .terminalNotFound(let id):
             return "Ghostty terminal not found for ID: \(id)"
-
         case .tempFileWriteFailed(let underlying):
             return "Failed to write temp file for JXA delivery: \(underlying.localizedDescription)"
-
         case .discoveryDecodeFailed(let output, let underlying):
             return
                 "Failed to decode Ghostty discovery output: "
@@ -41,57 +26,34 @@ public enum GhosttyBridgeError: Error, CustomStringConvertible {
 }
 
 /// Bridge to Ghostty via JXA (JavaScript for Automation) for session discovery
-/// and text delivery to Claude Code TUI sessions.
+/// and file-based text delivery to Claude Code TUI sessions.
 ///
-/// Two primary operations:
+/// Delivery uses file-based injection matching the ITermBridge pattern:
+/// write message to temp file, JXA reads via ObjC Foundation, then executes
+/// inputText (paste) -> sendKey return (submit) on the matched terminal.
 ///
-/// **writeToSession** uses file-based delivery to avoid escaping issues:
-/// 1. Write message text to a temp file
-/// 2. JXA reads the temp file via ObjC.import('Foundation') + NSString.stringWithContentsOfFile
-/// 3. Find terminal by Ghostty ID match
-/// 4. Execute two-step sequence: inputText (paste) -> sendKey return (submit)
-/// 5. Clean up temp file
-///
-/// **discoverSessions** enumerates all Ghostty terminals across all windows and tabs,
-/// returning session metadata including terminal ID, name, and working directory.
-/// Ghostty does not expose TTY, isProcessing, or jobName, so those default to
-/// empty string, false, and nil respectively.
-///
-/// Both operations invoke `/usr/bin/osascript -l JavaScript` via the `runOsascript()` helper.
+/// Ghostty does not expose TTY, isProcessing, or jobName via AppleScript,
+/// so those default to empty string, false, and nil respectively.
 public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
     private static let logger = Log.logger(for: "GhosttyBridge")
 
-    /// Creates a new Ghostty bridge instance.
     public init() {}
 
-    /// Deliver text to a specific Ghostty terminal identified by a terminal identifier.
-    ///
-    /// Uses file-based delivery matching the ITermBridge pattern:
-    /// text is written to a temp file and read by JXA via ObjC.import('Foundation'),
-    /// avoiding all string escaping issues (nested shell + JXA quoting).
-    ///
-    /// - Parameters:
-    ///   - identifier: Must be `.ghosttyTerminal(id)`. Throws `terminalNotFound` for `.tty`.
-    ///   - text: The message text to deliver.
-    /// - Returns: `true` if the terminal was found and text was delivered.
-    /// - Throws: `GhosttyBridgeError` on JXA failure or temp file write failure.
     public func writeToSession(identifier: TerminalIdentifier, text: String) async throws -> Bool {
         guard case .ghosttyTerminal(let ghosttyId) = identifier else {
             throw GhosttyBridgeError.terminalNotFound(id: identifier.description)
         }
         Self.logger.info("Delivering text to Ghostty terminal: \(ghosttyId) (\(text.count) chars)")
 
-        let tempFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("operator-\(UUID().uuidString).txt")
-
+        let tempFile: URL
         do {
-            try text.write(to: tempFile, atomically: true, encoding: .utf8)
+            tempFile = try OsascriptRunner.writeTempFile(text)
         } catch {
             throw GhosttyBridgeError.tempFileWriteFailed(underlying: error)
         }
 
         defer {
-            try? FileManager.default.removeItem(at: tempFile)
+            OsascriptRunner.cleanupTempFile(tempFile)
             Self.logger.debug("Cleaned up temp file: \(tempFile.path)")
         }
 
@@ -109,7 +71,6 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
         return success
     }
 
-    /// Build and run the JXA write script for Ghostty delivery.
     private func runWriteScript(ghosttyId: String, tempFilePath: String) async throws -> String {
         let script = """
             (function() {
@@ -134,16 +95,25 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
             })();
             """
 
-        return try await runOsascript(script)
+        do {
+            return try await OsascriptRunner.run(script)
+        } catch OsascriptRunnerError.applicationNotRunning {
+            throw GhosttyBridgeError.ghosttyNotRunning
+        } catch let error as OsascriptRunnerError {
+            switch error {
+            case .scriptFailed(let status, let stderr):
+                throw GhosttyBridgeError.scriptFailed(status: status, stderr: stderr)
+            case .launchFailed(let underlying):
+                throw GhosttyBridgeError.scriptFailed(
+                    status: -1,
+                    stderr: "Failed to launch osascript: \(underlying.localizedDescription)"
+                )
+            case .applicationNotRunning:
+                throw GhosttyBridgeError.ghosttyNotRunning
+            }
+        }
     }
 
-    /// Discover all Ghostty terminals across all windows and tabs.
-    ///
-    /// Ghostty does not expose TTY paths, isProcessing state, or jobName.
-    /// These default to empty string, false, and nil respectively.
-    ///
-    /// - Returns: Array of `DiscoveredSession` structs representing all discovered terminals.
-    /// - Throws: `GhosttyBridgeError` on JXA failure or JSON decode failure.
     public func discoverSessions() async throws -> [DiscoveredSession] {
         Self.logger.debug("Discovering Ghostty sessions")
 
@@ -168,13 +138,30 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
             JSON.stringify(sessions);
             """
 
-        let output = try await runOsascript(script)
+        let output: String
+        do {
+            output = try await OsascriptRunner.run(script)
+        } catch OsascriptRunnerError.applicationNotRunning {
+            throw GhosttyBridgeError.ghosttyNotRunning
+        } catch let error as OsascriptRunnerError {
+            switch error {
+            case .scriptFailed(let status, let stderr):
+                throw GhosttyBridgeError.scriptFailed(status: status, stderr: stderr)
+            case .launchFailed(let underlying):
+                throw GhosttyBridgeError.scriptFailed(
+                    status: -1,
+                    stderr: "Failed to launch osascript: \(underlying.localizedDescription)"
+                )
+            case .applicationNotRunning:
+                throw GhosttyBridgeError.ghosttyNotRunning
+            }
+        }
+
         let sessions = try decodeDiscoveryOutput(output)
         Self.logger.info("Discovered \(sessions.count) Ghostty session(s)")
         return sessions
     }
 
-    /// Decode JXA discovery JSON output into DiscoveredSession objects.
     private func decodeDiscoveryOutput(_ output: String) throws -> [DiscoveredSession] {
         guard let data = output.data(using: .utf8) else {
             throw GhosttyBridgeError.discoveryDecodeFailed(
@@ -193,58 +180,5 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
         } catch {
             throw GhosttyBridgeError.discoveryDecodeFailed(output: output, underlying: error)
         }
-    }
-
-    /// Execute a JXA (JavaScript for Automation) script via /usr/bin/osascript.
-    ///
-    /// Detects "not running" / "connection is invalid" patterns in stderr to
-    /// throw `ghosttyNotRunning` instead of a generic script failure.
-    ///
-    /// - Parameter script: The JavaScript source code to execute.
-    /// - Returns: The trimmed stdout output from the script.
-    /// - Throws: `GhosttyBridgeError.ghosttyNotRunning` if Ghostty is not running,
-    ///   or `.scriptFailed` for other osascript failures.
-    private func runOsascript(_ script: String) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-l", "JavaScript", "-e", script]
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            throw GhosttyBridgeError.scriptFailed(
-                status: -1,
-                stderr: "Failed to launch osascript: \(error.localizedDescription)"
-            )
-        }
-
-        // Read stdout and stderr before waitUntilExit to avoid deadlock on full pipe buffers
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
-            let lower = stderrText.lowercased()
-            if lower.contains("is not running") || lower.contains("not running")
-                || lower.contains("connection is invalid")
-                || lower.contains("application can't be found")
-            {
-                throw GhosttyBridgeError.ghosttyNotRunning
-            }
-            throw GhosttyBridgeError.scriptFailed(
-                status: process.terminationStatus,
-                stderr: stderrText
-            )
-        }
-
-        let output = String(data: stdoutData, encoding: .utf8) ?? ""
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
