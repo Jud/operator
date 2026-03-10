@@ -9,11 +9,11 @@ import Testing
 internal final class MockTerminalBridge: TerminalBridge, @unchecked Sendable {
     var writeResult: Bool = true
     var writeError: Error?
-    var lastWrittenTTY: String?
+    var lastWrittenIdentifier: TerminalIdentifier?
     var lastWrittenText: String?
 
-    func writeToSession(tty: String, text: String) async throws -> Bool {
-        lastWrittenTTY = tty
+    func writeToSession(identifier: TerminalIdentifier, text: String) async throws -> Bool {
+        lastWrittenIdentifier = identifier
         lastWrittenText = text
         if let error = writeError { throw error }
         return writeResult
@@ -106,16 +106,31 @@ internal struct DeliveryCoordinatorTests {
         #expect(session == "sudo")
     }
 
-    @Test("deliver when bridge throws itermNotRunning returns .itermNotRunning")
+    @Test("deliver when bridge throws terminalNotRunning for iTerm returns .terminalNotRunning")
     func deliverBridgeThrowsItermNotRunning() async {
         let bridge = MockTerminalBridge()
-        bridge.writeError = ITermBridgeError.itermNotRunning
+        bridge.writeError = TerminalBridgeError.terminalNotRunning(terminal: .iterm)
         let ctx = makeCoordinator(bridge: bridge)
         await ctx.registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
 
         let result = await ctx.coordinator.deliver("hello", to: "sudo")
-        guard case .itermNotRunning(let session) = result else {
-            Issue.record("Expected .itermNotRunning, got \(result)")
+        guard case .terminalNotRunning(let session) = result else {
+            Issue.record("Expected .terminalNotRunning, got \(result)")
+            return
+        }
+        #expect(session == "sudo")
+    }
+
+    @Test("deliver when bridge throws terminalNotRunning for Ghostty returns .terminalNotRunning")
+    func deliverBridgeThrowsGhosttyNotRunning() async {
+        let bridge = MockTerminalBridge()
+        bridge.writeError = TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
+        let ctx = makeCoordinator(bridge: bridge)
+        await ctx.registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
+
+        let result = await ctx.coordinator.deliver("hello", to: "sudo")
+        guard case .terminalNotRunning(let session) = result else {
+            Issue.record("Expected .terminalNotRunning, got \(result)")
             return
         }
         #expect(session == "sudo")

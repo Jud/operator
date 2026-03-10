@@ -1,94 +1,33 @@
 import Foundation
 
-/// Errors that can occur during iTerm2 JXA bridge operations.
-public enum ITermBridgeError: Error, CustomStringConvertible {
-    /// The osascript process exited with a non-zero status code.
-    case jxaFailed(status: Int32, stderr: String)
-
-    /// iTerm2 is not running; JXA cannot connect to the application.
-    case itermNotRunning
-
-    /// The target session was not found by TTY path.
-    case sessionNotFound(tty: String)
-
-    /// Failed to write the message text to a temporary file for file-based delivery.
-    case tempFileWriteFailed(underlying: Error)
-
-    /// Failed to decode session discovery JSON output.
-    case discoveryDecodeFailed(output: String, underlying: Error)
-
-    /// A human-readable description of the error.
-    public var description: String {
-        switch self {
-        case .jxaFailed(let status, let stderr):
-            return "osascript exited with status \(status): \(stderr)"
-
-        case .itermNotRunning:
-            return "iTerm2 is not running"
-
-        case .sessionNotFound(let tty):
-            return "iTerm session not found for TTY: \(tty)"
-
-        case .tempFileWriteFailed(let underlying):
-            return "Failed to write temp file for JXA delivery: \(underlying.localizedDescription)"
-
-        case .discoveryDecodeFailed(let output, let underlying):
-            return
-                "Failed to decode session discovery output: "
-                + "\(underlying.localizedDescription) -- raw: \(output.prefix(200))"
-        }
-    }
-}
-
 /// Bridge to iTerm2 via JXA (JavaScript for Automation) for session discovery
-/// and text delivery to Claude Code TUI sessions.
+/// and file-based text delivery to Claude Code TUI sessions.
 ///
-/// Two primary operations:
-///
-/// **writeToSession** uses file-based delivery to avoid escaping issues:
-/// 1. Write message text to a temp file
-/// 2. JXA reads the temp file via ObjC.import('Foundation') + NSString.stringWithContentsOfFile
-/// 3. Find session by TTY match (globally unique, stable across tab switches)
-/// 4. Execute three-step sequence: Escape (clear) -> 300ms delay -> text -> 200ms delay -> CR (submit)
-/// 5. Clean up temp file
-///
-/// **discoverSessions** enumerates all iTerm2 sessions across all windows and tabs,
-/// returning session metadata including TTY, name, processing state, and working directory.
-///
-/// Both operations invoke `/usr/bin/osascript -l JavaScript` via the `runOsascript()` helper.
-///
-/// Reference: technical-spec.md Component 5; research doc "What Worked: The Proven Recipe"
+/// Delivery uses file-based injection to avoid shell + JXA double-escaping:
+/// write message to temp file, JXA reads via ObjC Foundation, then executes
+/// Escape (clear) -> text -> CR (submit) on the matched session.
 public class ITermBridge: @unchecked Sendable, TerminalBridge {
     private static let logger = Log.logger(for: "ITermBridge")
 
-    /// Creates a new iTerm bridge instance.
+    /// Creates a new iTerm2 bridge instance.
     public init() {}
 
-    /// Deliver text to a specific iTerm2 session identified by TTY path.
-    ///
-    /// Uses file-based delivery per technical-spec.md Key Design Decision #3:
-    /// text is written to a temp file and read by JXA via ObjC.import('Foundation'),
-    /// avoiding all string escaping issues (nested shell + JXA quoting).
-    ///
-    /// - Parameters:
-    ///   - tty: The TTY device path (e.g., "/dev/ttys004") identifying the target session.
-    ///   - text: The message text to deliver.
-    /// - Returns: `true` if the session was found and text was delivered.
-    /// - Throws: `ITermBridgeError` on JXA failure or temp file write failure.
-    public func writeToSession(tty: String, text: String) async throws -> Bool {
+    /// Write text to an iTerm2 session identified by its TTY path.
+    public func writeToSession(identifier: TerminalIdentifier, text: String) async throws -> Bool {
+        guard case .tty(let tty) = identifier else {
+            throw TerminalBridgeError.sessionNotFound(identifier: identifier.description)
+        }
         Self.logger.info("Delivering text to session at TTY: \(tty) (\(text.count) chars)")
 
-        let tempFile = FileManager.default.temporaryDirectory
-            .appendingPathComponent("operator-\(UUID().uuidString).txt")
-
+        let tempFile: URL
         do {
-            try text.write(to: tempFile, atomically: true, encoding: .utf8)
+            tempFile = try OsascriptRunner.writeTempFile(text)
         } catch {
-            throw ITermBridgeError.tempFileWriteFailed(underlying: error)
+            throw TerminalBridgeError.tempFileWriteFailed(underlying: error)
         }
 
         defer {
-            try? FileManager.default.removeItem(at: tempFile)
+            OsascriptRunner.cleanupTempFile(tempFile)
             Self.logger.debug("Cleaned up temp file: \(tempFile.path)")
         }
 
@@ -96,7 +35,7 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
 
         if output.contains("session_not_found") {
             Self.logger.warning("Session not found for TTY: \(tty)")
-            throw ITermBridgeError.sessionNotFound(tty: tty)
+            throw TerminalBridgeError.sessionNotFound(identifier: tty)
         }
 
         let success = output.contains("ok")
@@ -106,7 +45,6 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
         return success
     }
 
-    /// Build and run the JXA write script.
     private func runWriteScript(tty: String, tempFilePath: String) async throws -> String {
         let script = """
             (function() {
@@ -134,13 +72,10 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
             })();
             """
 
-        return try await runOsascript(script)
+        return try await OsascriptRunner.runForTerminal(script, terminal: .iterm)
     }
 
-    /// Discover all iTerm2 sessions across all windows and tabs.
-    ///
-    /// - Returns: Array of `DiscoveredSession` structs representing all discovered sessions.
-    /// - Throws: `ITermBridgeError` on JXA failure or JSON decode failure.
+    /// Discover all sessions in running iTerm2 windows.
     public func discoverSessions() async throws -> [DiscoveredSession] {
         Self.logger.debug("Discovering iTerm sessions")
 
@@ -164,73 +99,9 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
             JSON.stringify(sessions);
             """
 
-        let output = try await runOsascript(script)
-
-        guard let data = output.data(using: .utf8) else {
-            throw ITermBridgeError.discoveryDecodeFailed(
-                output: output,
-                underlying: NSError(
-                    domain: "ITermBridge",
-                    code: -1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "Failed to convert output to UTF-8 data"
-                    ]
-                )
-            )
-        }
-
-        do {
-            let sessions = try JSONDecoder().decode([DiscoveredSession].self, from: data)
-            Self.logger.info("Discovered \(sessions.count) iTerm session(s)")
-            return sessions
-        } catch {
-            throw ITermBridgeError.discoveryDecodeFailed(output: output, underlying: error)
-        }
-    }
-
-    /// Execute a JXA (JavaScript for Automation) script via /usr/bin/osascript.
-    ///
-    /// - Parameter script: The JavaScript source code to execute.
-    /// - Returns: The trimmed stdout output from the script.
-    /// - Throws: `ITermBridgeError.jxaFailed` if the process exits with non-zero status.
-    private func runOsascript(_ script: String) async throws -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = ["-l", "JavaScript", "-e", script]
-
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        do {
-            try process.run()
-        } catch {
-            throw ITermBridgeError.jxaFailed(
-                status: -1,
-                stderr: "Failed to launch osascript: \(error.localizedDescription)"
-            )
-        }
-
-        // Read stdout and stderr before waitUntilExit to avoid deadlock on full pipe buffers
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            let stderrText = String(data: stderrData, encoding: .utf8) ?? ""
-            let lower = stderrText.lowercased()
-            if lower.contains("is not running") || lower.contains("not running")
-                || lower.contains("connection is invalid")
-                || lower.contains("application can't be found")
-            {
-                throw ITermBridgeError.itermNotRunning
-            }
-            throw ITermBridgeError.jxaFailed(status: process.terminationStatus, stderr: stderrText)
-        }
-
-        let output = String(data: stdoutData, encoding: .utf8) ?? ""
-        return output.trimmingCharacters(in: .whitespacesAndNewlines)
+        let output = try await OsascriptRunner.runForTerminal(script, terminal: .iterm)
+        let sessions = try OsascriptRunner.decodeDiscoveryJSON(output)
+        Self.logger.info("Discovered \(sessions.count) iTerm session(s)")
+        return sessions
     }
 }

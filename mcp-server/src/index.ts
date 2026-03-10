@@ -1,14 +1,20 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { readFileSync } from "fs";
-import { execSync } from "child_process";
+import { readFileSync, writeFileSync } from "fs";
+import { execSync, execFile } from "child_process";
+import { promisify } from "util";
 import { homedir } from "os";
 import { basename } from "path";
+import { randomUUID } from "crypto";
 
 const TOKEN = readFileSync(`${homedir()}/.operator/token`, "utf-8").trim();
 const DAEMON_URL = "http://localhost:7420";
 const SESSION_NAME = basename(process.cwd());
+
+// Detect terminal type from TERM_PROGRAM environment variable
+const TERMINAL_TYPE: "ghostty" | "iterm2" =
+    process.env.TERM_PROGRAM === "ghostty" ? "ghostty" : "iterm2";
 
 // Detect TTY of the parent shell (same logic as the hook script)
 function detectTTY(): string {
@@ -27,7 +33,16 @@ function detectTTY(): string {
 
 const TTY = detectTTY();
 
+// Track whether Ghostty terminal ID resolution has been performed for this session
+let terminalIdResolved = false;
+
 // --- Daemon helpers ---
+
+interface SessionStartResponse {
+    ok: boolean;
+    // eslint-disable-next-line @typescript-eslint/naming-convention
+    needs_terminal_id?: boolean;
+}
 
 async function daemonPost(path: string, body: object): Promise<unknown> {
     const res = await fetch(`${DAEMON_URL}${path}`, {
@@ -44,6 +59,67 @@ async function daemonPost(path: string, body: object): Promise<unknown> {
         throw new Error(`Daemon error: ${String(res.status)}`);
     }
     return res.json();
+}
+
+// --- Terminal ID Resolution ---
+
+function delay(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+        setTimeout(resolve, ms);
+    });
+}
+
+async function resolveTerminalId(): Promise<void> {
+    if (TTY === "unknown") {
+        return;
+    }
+    const marker = `OPERATOR-${randomUUID()}`;
+    try {
+        // Write ANSI title escape directly to the terminal device file.
+        // stdout is used by the MCP stdio transport, so we bypass it
+        // and write to the TTY device to set the terminal title.
+        writeFileSync(TTY, `\x1b]2;${marker}\x07`);
+
+        // Allow Ghostty to process the title change
+        await delay(500);
+
+        const script = `(function() {
+            var app = Application("Ghostty");
+            var wins = app.windows();
+            for (var i = 0; i < wins.length; i++) {
+                var tabs = wins[i].tabs();
+                for (var j = 0; j < tabs.length; j++) {
+                    var terms = tabs[j].terminals();
+                    for (var k = 0; k < terms.length; k++) {
+                        if (terms[k].name().includes("${marker}")) {
+                            return String(terms[k].id());
+                        }
+                    }
+                }
+            }
+            return "not_found";
+        })();`;
+
+        const execFileAsync = promisify(execFile);
+        const { stdout } = await execFileAsync("/usr/bin/osascript", [
+            "-l",
+            "JavaScript",
+            "-e",
+            script,
+        ]);
+        const ghosttyId = stdout.trim();
+
+        if (ghosttyId !== "" && ghosttyId !== "not_found") {
+            await daemonPost("/hook/terminal-id", {
+                tty: TTY,
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                ghostty_id: ghosttyId,
+            });
+            terminalIdResolved = true;
+        }
+    } catch {
+        // Resolution failed -- session remains TTY-keyed, delivery will fail gracefully
+    }
 }
 
 // --- Tools ---
@@ -77,15 +153,21 @@ server.registerTool(
 
 // --- Heartbeat ---
 
-// Re-register with the daemon every 30s so sessions survive Operator restarts.
+// Re-register with the daemon every 5s so sessions survive Operator restarts.
 async function heartbeat(): Promise<void> {
     try {
-        await daemonPost("/hook/session-start", {
+        const response = (await daemonPost("/hook/session-start", {
             // eslint-disable-next-line @typescript-eslint/naming-convention
             session_id: SESSION_NAME,
             tty: TTY,
             cwd: process.cwd(),
-        });
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            terminal_type: TERMINAL_TYPE,
+        })) as SessionStartResponse;
+
+        if (!terminalIdResolved && response.needs_terminal_id === true) {
+            await resolveTerminalId();
+        }
     } catch {
         // Daemon unavailable — will retry next interval.
     }

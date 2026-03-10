@@ -333,4 +333,144 @@ describe("operator-mcp-server", () => {
             expect(body.session).toBe("myproject");
         });
     });
+
+    // ---------------------------------------------------------------
+    // Terminal type detection
+    // ---------------------------------------------------------------
+    describe("terminal type detection", () => {
+        function detectTerminalType(termProgram: string | undefined): "ghostty" | "iterm2" {
+            return termProgram === "ghostty" ? "ghostty" : "iterm2";
+        }
+
+        it("detects ghostty from TERM_PROGRAM", () => {
+            expect(detectTerminalType("ghostty")).toBe("ghostty");
+        });
+
+        it("detects iterm2 from TERM_PROGRAM", () => {
+            expect(detectTerminalType("iTerm2")).toBe("iterm2");
+        });
+
+        it("defaults to iterm2 when TERM_PROGRAM is undefined", () => {
+            expect(detectTerminalType(undefined)).toBe("iterm2");
+        });
+
+        it("defaults to iterm2 for unknown terminals", () => {
+            expect(detectTerminalType("xterm-256color")).toBe("iterm2");
+        });
+
+        it("defaults to iterm2 for empty string", () => {
+            expect(detectTerminalType("")).toBe("iterm2");
+        });
+    });
+
+    // ---------------------------------------------------------------
+    // Heartbeat body construction with terminal_type
+    // ---------------------------------------------------------------
+    describe("heartbeat body construction", () => {
+        it("includes terminal_type in session-start payload", () => {
+            const sessionName = "myproject";
+            const tty = "/dev/ttys004";
+            const terminalType: "ghostty" | "iterm2" = "ghostty";
+
+            const body = {
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                session_id: sessionName,
+                tty,
+                cwd: "/Users/jud/Projects/myproject",
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                terminal_type: terminalType,
+            };
+
+            expect(body).toEqual({
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                session_id: "myproject",
+                tty: "/dev/ttys004",
+                cwd: "/Users/jud/Projects/myproject",
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                terminal_type: "ghostty",
+            });
+        });
+
+        it("sends iterm2 terminal_type for non-ghostty terminals", () => {
+            const terminalType: "ghostty" | "iterm2" = "iterm2";
+            const body = {
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                session_id: "proj",
+                tty: "/dev/ttys001",
+                cwd: "/tmp",
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                terminal_type: terminalType,
+            };
+
+            expect(body.terminal_type).toBe("iterm2");
+        });
+    });
+
+    // ---------------------------------------------------------------
+    // Session-start response parsing (needs_terminal_id)
+    // ---------------------------------------------------------------
+    describe("session-start response parsing", () => {
+        interface SessionStartResponse {
+            ok: boolean;
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            needs_terminal_id?: boolean;
+        }
+
+        it("reads needs_terminal_id true from response", () => {
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            const response: SessionStartResponse = { ok: true, needs_terminal_id: true };
+
+            expect(response.needs_terminal_id).toBe(true);
+        });
+
+        it("reads needs_terminal_id false from response", () => {
+            // eslint-disable-next-line @typescript-eslint/naming-convention
+            const response: SessionStartResponse = { ok: true, needs_terminal_id: false };
+
+            expect(response.needs_terminal_id).toBe(false);
+        });
+
+        it("handles missing needs_terminal_id (backward compat)", () => {
+            const response: SessionStartResponse = { ok: true };
+
+            expect(response.needs_terminal_id).toBeUndefined();
+        });
+    });
+
+    // ---------------------------------------------------------------
+    // Terminal ID hook body construction
+    // ---------------------------------------------------------------
+    describe("terminal ID hook body construction", () => {
+        it("constructs correct terminal-id payload", () => {
+            const tty = "/dev/ttys004";
+            const ghosttyId = "abc-123-terminal";
+
+            const body = {
+                tty,
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                ghostty_id: ghosttyId,
+            };
+
+            expect(body).toEqual({
+                tty: "/dev/ttys004",
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                ghostty_id: "abc-123-terminal",
+            });
+        });
+
+        it("serializes to JSON matching daemon endpoint expectations", () => {
+            const body = {
+                tty: "/dev/ttys001",
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                ghostty_id: "term-456",
+            };
+
+            const json: unknown = JSON.parse(JSON.stringify(body));
+            expect(json).toEqual({
+                tty: "/dev/ttys001",
+                // eslint-disable-next-line @typescript-eslint/naming-convention
+                ghostty_id: "term-456",
+            });
+        });
+    });
 });

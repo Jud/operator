@@ -1,79 +1,6 @@
 import Foundation
 import Hummingbird
 
-/// JSON body for POST /speak.
-///
-/// Matches the MCP server's speak() tool output: message text, optional
-/// session name for voice lookup, and optional priority level.
-public struct SpeakRequest: Decodable, Sendable {
-    let message: String
-    let session: String?
-    let priority: String?
-}
-
-/// JSON response for successful operations.
-public struct OkResponse: ResponseEncodable, Sendable {
-    let ok: Bool
-}
-
-/// JSON response for POST /speak confirming message was queued.
-public struct QueuedResponse: ResponseEncodable, Sendable {
-    let queued: Bool
-}
-
-/// JSON response for GET /state.
-///
-/// Returns daemon state, audio queue depth, and all registered sessions.
-public struct StateResponse: ResponseEncodable, Sendable {
-    let state: String
-    let queueLength: Int
-    let sessions: [SessionSnapshot]
-}
-
-/// JSON body for POST /hook/session-start.
-///
-/// Accepts the Claude Code hook payload for session start events.
-public struct HookSessionStartRequest: Decodable, Sendable {
-    enum CodingKeys: String, CodingKey {
-        case sessionId = "session_id"
-        case tty
-        case cwd
-    }
-
-    let sessionId: String
-    let tty: String
-    let cwd: String
-}
-
-/// JSON body for POST /hook/stop.
-///
-/// Accepts the Claude Code hook payload for stop events, including
-/// the last assistant message for context tracking.
-public struct HookStopRequest: Decodable, Sendable {
-    enum CodingKeys: String, CodingKey {
-        case sessionId = "session_id"
-        case tty
-        case lastAssistantMessage = "last_assistant_message"
-    }
-
-    let sessionId: String
-    let tty: String
-    let lastAssistantMessage: String?
-}
-
-/// JSON body for POST /hook/session-end.
-///
-/// Accepts the Claude Code hook payload for session end events.
-public struct HookSessionEndRequest: Decodable, Sendable {
-    enum CodingKeys: String, CodingKey {
-        case sessionId = "session_id"
-        case tty
-    }
-
-    let sessionId: String
-    let tty: String
-}
-
 /// Middleware that validates bearer token authentication on all requests.
 ///
 /// Reads the expected token from ~/.operator/token (created at first launch
@@ -136,24 +63,6 @@ public struct BearerAuthMiddleware: RouterMiddleware {
     }
 }
 
-/// Errors specific to the HTTP server setup.
-public enum OperatorHTTPServerError: Error, CustomStringConvertible {
-    case tokenFileUnreadable
-
-    case portInUse
-
-    /// A human-readable description of the error.
-    public var description: String {
-        switch self {
-        case .tokenFileUnreadable:
-            return "Could not read bearer token from ~/.operator/token"
-
-        case .portInUse:
-            return "Port 7420 is already in use. Another Operator instance may be running."
-        }
-    }
-}
-
 /// Hummingbird HTTP server on localhost:7420 with bearer token authentication.
 ///
 /// Exposes endpoints for the MCP server and Claude Code hooks to communicate
@@ -163,6 +72,7 @@ public enum OperatorHTTPServerError: Error, CustomStringConvertible {
 /// - POST /hook/session-start: Handle Claude Code session start hook
 /// - POST /hook/stop: Handle Claude Code stop hook
 /// - POST /hook/session-end: Handle Claude Code session end hook
+/// - POST /hook/terminal-id: Register Ghostty terminal ID mapping
 ///
 /// All mutations are dispatched to the SessionRegistry and AudioQueue actors
 /// for thread-safe state management.
@@ -296,17 +206,11 @@ extension OperatorHTTPServer {
     ///
     /// These endpoints receive raw hook JSON from Claude Code and route
     /// the payloads to the session registry for lifecycle management.
-    private func configureHookRoutes(router: Router<BasicRequestContext>, registry: SessionRegistry) {
-        router.post("/hook/session-start") { request, context -> OkResponse in
-            let body = try await context.requestDecoder.decode(
-                HookSessionStartRequest.self,
-                from: request,
-                context: context
-            )
-            await registry.handleSessionStart(sessionId: body.sessionId, tty: body.tty, cwd: body.cwd)
-            Self.logger.info("Hook session-start for session \(body.sessionId)")
-            return OkResponse(ok: true)
-        }
+    private func configureHookRoutes(
+        router: Router<BasicRequestContext>,
+        registry: SessionRegistry
+    ) {
+        configureSessionStartRoute(router: router, registry: registry)
 
         router.post("/hook/stop") { request, context -> OkResponse in
             let body = try await context.requestDecoder.decode(
@@ -331,6 +235,62 @@ extension OperatorHTTPServer {
             )
             await registry.handleSessionEnd(sessionId: body.sessionId, tty: body.tty)
             Self.logger.info("Hook session-end for session \(body.sessionId)")
+            return OkResponse(ok: true)
+        }
+
+        configureTerminalIdRoute(router: router, registry: registry)
+    }
+
+    /// Configure POST /hook/session-start route.
+    ///
+    /// Accepts terminal_type from the MCP server and returns needs_terminal_id
+    /// to trigger Ghostty terminal ID resolution when needed.
+    private func configureSessionStartRoute(
+        router: Router<BasicRequestContext>,
+        registry: SessionRegistry
+    ) {
+        router.post("/hook/session-start") { request, context -> HookSessionStartResponse in
+            let body = try await context.requestDecoder.decode(
+                HookSessionStartRequest.self,
+                from: request,
+                context: context
+            )
+            let terminalType: TerminalType = body.terminalType == "ghostty" ? .ghostty : .iterm
+            let result = await registry.handleSessionStart(
+                sessionId: body.sessionId,
+                tty: body.tty,
+                cwd: body.cwd,
+                terminalType: terminalType
+            )
+            Self.logger.info("Hook session-start for session \(body.sessionId)")
+            return HookSessionStartResponse(ok: result.ok, needsTerminalId: result.needsTerminalId)
+        }
+    }
+
+    /// Configure POST /hook/terminal-id route for Ghostty terminal ID resolution.
+    ///
+    /// Receives the TTY-to-Ghostty-ID mapping from the MCP server after the
+    /// title-marker handshake and re-keys the session in the registry.
+    private func configureTerminalIdRoute(
+        router: Router<BasicRequestContext>,
+        registry: SessionRegistry
+    ) {
+        router.post("/hook/terminal-id") { request, context -> OkResponse in
+            let body = try await context.requestDecoder.decode(
+                HookTerminalIdRequest.self,
+                from: request,
+                context: context
+            )
+            let success = await registry.handleTerminalIdResolution(
+                tty: body.tty,
+                ghosttyId: body.ghosttyId
+            )
+            guard success else {
+                throw HTTPError(.notFound, message: "No session found for TTY")
+            }
+            Self.logger.info(
+                "Hook terminal-id: mapped TTY \(body.tty) to Ghostty ID \(body.ghosttyId)"
+            )
             return OkResponse(ok: true)
         }
     }

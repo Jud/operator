@@ -534,8 +534,8 @@ extension StateMachine {
             feedback.play(.error)
             enterIdle()
 
-        case .itermNotRunning(let sess):
-            speakOperator("Couldn't deliver to \(sess). iTerm doesn't seem to be running.")
+        case .terminalNotRunning:
+            speakOperator("The terminal doesn't seem to be running.")
             feedback.play(.error)
             enterIdle()
         }

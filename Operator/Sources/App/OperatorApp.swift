@@ -156,7 +156,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         audioQueue = aq
         await aq.startListening()
 
-        let itermBridge: any TerminalBridge = ITermBridge()
+        let itermBridge = ITermBridge()
+        let ghosttyBridge = GhosttyBridge()
+        let terminalBridge: any TerminalBridge = MultiTerminalBridge(
+            itermBridge: itermBridge,
+            ghosttyBridge: ghosttyBridge
+        )
         let reg = SessionRegistry(voiceManager: vm)
         registry = reg
         let router = MessageRouter(registry: reg, engine: engines.adaptiveRouting)
@@ -167,12 +172,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             aq: aq,
             router: router,
             fb: fb,
-            itermBridge: itermBridge,
+            terminalBridge: terminalBridge,
             reg: reg,
             vm: vm
         )
         bootstrapTrigger()
-        bootstrapDiscovery(terminalBridge: itermBridge, reg: reg, aq: aq, vm: vm)
+        bootstrapDiscovery(terminalBridge: terminalBridge, reg: reg, aq: aq, vm: vm)
         wireFallbackNotifications(
             adaptiveSTT: engines.adaptiveSTT,
             adaptiveTTS: engines.adaptiveTTS,
@@ -311,7 +316,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         aq: AudioQueue,
         router: MessageRouter,
         fb: AudioFeedback,
-        itermBridge: any TerminalBridge,
+        terminalBridge: any TerminalBridge,
         reg: SessionRegistry,
         vm: VoiceManager
     ) {
@@ -335,7 +340,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             audioQueue: aq,
             router: router,
             feedback: fb,
-            terminalBridge: itermBridge,
+            terminalBridge: terminalBridge,
             registry: reg,
             voiceManager: vm,
             waveformPanel: wp,
