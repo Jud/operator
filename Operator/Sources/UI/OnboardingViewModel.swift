@@ -14,6 +14,7 @@ import Speech
 public final class OnboardingViewModel {
     // MARK: - Subtypes
 
+    /// The five sequential steps of the onboarding flow.
     public enum Step: Int, CaseIterable, Sendable {
         case welcome = 0
         case permissions = 1
@@ -31,17 +32,22 @@ public final class OnboardingViewModel {
 
     // MARK: - Instance Properties
 
+    /// The currently displayed onboarding step.
     public var currentStep: Step = .welcome
 
+    /// Whether microphone access has been granted.
     public var microphoneGranted: Bool = false
 
+    /// Whether speech recognition access has been granted.
     public var speechRecognitionGranted: Bool = false
 
     /// Whether Accessibility (AXIsProcessTrusted) has been granted.
     public var accessibilityGranted: Bool = false
 
+    /// Whether microphone permission has been requested during this session.
     public var microphoneRequested: Bool = false
 
+    /// Whether speech recognition permission has been requested during this session.
     public var speechRecognitionRequested: Bool = false
 
     private var completionHandler: (() -> Void)?
@@ -50,6 +56,7 @@ public final class OnboardingViewModel {
 
     // MARK: - Initialization
 
+    /// Creates a new onboarding view model.
     public init() {}
 
     // MARK: - Type Methods
@@ -95,6 +102,9 @@ public final class OnboardingViewModel {
         Self.logger.info("Onboarding prepared with completion handler")
     }
 
+    /// Advance to the next step.
+    ///
+    /// Does nothing if already on `.done`.
     public func advance() {
         guard let nextRaw = Step(rawValue: currentStep.rawValue + 1) else {
             return
@@ -104,6 +114,9 @@ public final class OnboardingViewModel {
         Self.logger.info("Advanced from \(previous.rawValue) to \(nextRaw.rawValue)")
     }
 
+    /// Return to the previous step.
+    ///
+    /// Does nothing if already on `.welcome`.
     public func goBack() {
         guard let previousRaw = Step(rawValue: currentStep.rawValue - 1) else {
             return
@@ -124,6 +137,7 @@ public final class OnboardingViewModel {
         }
     }
 
+    /// Open the Accessibility pane in System Settings.
     public func openAccessibilitySettings() {
         SystemSettings.openAccessibility()
         Self.logger.info("Opened Accessibility System Settings")
@@ -154,6 +168,7 @@ public final class OnboardingViewModel {
         Self.logger.info("Started Accessibility polling")
     }
 
+    /// Stop the accessibility permission polling timer.
     public func stopAccessibilityPolling() {
         axPollingTimer?.invalidate()
         axPollingTimer = nil

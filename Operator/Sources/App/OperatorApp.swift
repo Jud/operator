@@ -491,7 +491,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     @discardableResult
     private func ensureOnboardingWindow() -> OnboardingWindow {
-        if let existing = onboardingWindow { return existing }
+        if let existing = onboardingWindow {
+            return existing
+        }
         let window = OnboardingWindow()
         let delegate = OnboardingWindowDelegate()
         window.delegate = delegate

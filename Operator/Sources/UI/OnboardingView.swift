@@ -9,6 +9,7 @@ import SwiftUI
 public struct OnboardingView: View {
     var model: OnboardingViewModel
 
+    /// The step-driven onboarding content with a navigation bar.
     public var body: some View {
         VStack(spacing: 0) {
             stepContent
@@ -25,6 +26,7 @@ public struct OnboardingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Creates an onboarding view driven by the given model.
     public init(model: OnboardingViewModel) {
         self.model = model
     }

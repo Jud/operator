@@ -14,6 +14,7 @@ import SwiftUI
 public final class OnboardingWindow: NSWindow {
     private static let logger = Log.logger(for: "OnboardingWindow")
 
+    /// Creates the onboarding window centered on screen at 500x400.
     public init() {
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 500, height: 400),
@@ -31,6 +32,7 @@ public final class OnboardingWindow: NSWindow {
         Self.logger.debug("OnboardingWindow initialized")
     }
 
+    /// Activate the app and bring the onboarding window to front.
     public func show() {
         NSApp.activate(ignoringOtherApps: true)
         self.makeKeyAndOrderFront(nil)
@@ -46,6 +48,7 @@ public final class OnboardingWindow: NSWindow {
 public final class OnboardingWindowDelegate: NSObject, NSWindowDelegate {
     private static let logger = Log.logger(for: "OnboardingWindowDelegate")
 
+    /// Completes onboarding when the user closes the window via the close button.
     nonisolated public func windowWillClose(_ notification: Notification) {
         Task { @MainActor in
             OnboardingViewModel.shared.completeOnboarding()
