@@ -156,7 +156,7 @@ extension MessageRouter {
         }
 
         if let affinityTarget = routingState.affinityTarget() {
-            if sessionNames.contains(where: { $0 == affinityTarget }) {
+            if sessionNames.contains(affinityTarget) {
                 Self.logger.info("Session affinity: routing to '\(affinityTarget)'")
                 return .resolved(.route(session: affinityTarget, message: trimmed))
             }
@@ -276,9 +276,8 @@ extension MessageRouter {
             let sessionName = json["session"] as? String
 
             if confident, let session = sessionName,
-                sessionNames.contains(where: { $0.lowercased() == session.lowercased() })
+                let canonical = sessionNames.first(where: { $0.lowercased() == session.lowercased() })
             {
-                let canonical = sessionNames.first { $0.lowercased() == session.lowercased() } ?? session
                 return .route(session: canonical, message: text)
             }
 

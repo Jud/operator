@@ -4,28 +4,18 @@ import Testing
 
 @testable import OperatorCore
 
-/// Routing engine that tracks whether it was invoked (to verify skipEngine never calls it).
-private final class SpyRoutingEngine: RoutingEngine, @unchecked Sendable {
-    private(set) var callCount = 0
-
-    func run(prompt _: String, timeout _: TimeInterval) async throws -> [String: Any] {
-        callCount += 1
-        return ["session": "", "confident": false]
-    }
-}
-
 /// Bundles objects for skipEngine tests.
 private struct SkipEngineTestContext {
     let router: MessageRouter
     let registry: SessionRegistry
-    let engine: SpyRoutingEngine
+    let engine: CountingRoutingEngine
 }
 
 @Suite("MessageRouter - routeSkipEngine")
 internal struct MessageRouterSkipEngineTests {
     // MARK: - Helpers
 
-    private func makeRouter(engine: SpyRoutingEngine = SpyRoutingEngine()) async -> SkipEngineTestContext {
+    private func makeRouter(engine: CountingRoutingEngine = CountingRoutingEngine()) async -> SkipEngineTestContext {
         let voiceManager = VoiceManager()
         let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry, engine: engine)
@@ -158,7 +148,7 @@ internal struct MessageRouterSkipEngineTests {
 
     @Test("skipEngine: never invokes routing engine regardless of outcome")
     func neverInvokesRoutingEngine() async {
-        let engine = SpyRoutingEngine()
+        let engine = CountingRoutingEngine()
         let voiceManager = VoiceManager()
         let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry, engine: engine)
@@ -194,7 +184,7 @@ internal struct MessageRouterSkipEngineTests {
 
     @Test("existing route() method still invokes routing engine for ambiguous messages")
     func existingRouteStillUsesEngine() async {
-        let engine = SpyRoutingEngine()
+        let engine = CountingRoutingEngine()
         let voiceManager = VoiceManager()
         let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry, engine: engine)
@@ -219,7 +209,7 @@ internal struct MessageRouterSkipEngineTests {
     // MARK: - Heuristic Match
 
     private func makeHeuristicContext() async -> SkipEngineTestContext {
-        let engine = SpyRoutingEngine()
+        let engine = CountingRoutingEngine()
         let voiceManager = VoiceManager()
         let registry = SessionRegistry(voiceManager: voiceManager)
         let router = MessageRouter(registry: registry, engine: engine)

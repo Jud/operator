@@ -199,6 +199,8 @@ extension FNKeyTrigger {
         doubleTapTimer = nil
         isToggleListening = false
         isSecondaryToggleListening = false
+        fnDown = false
+        secondaryDown = false
         fnKeyDownTime = nil
         secondaryKeyDownTime = nil
         dispatch(onCancel)

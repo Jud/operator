@@ -508,8 +508,8 @@ extension StateMachine {
 
     /// Enqueue a replay of an interrupted message.
     private func enqueueReplay(context: PendingInterruption) async {
-        async let voice = registry.voiceFor(session: context.session)
-        async let pitch = registry.pitchFor(session: context.session)
+        let voice = await registry.voiceFor(session: context.session)
+        let pitch = await registry.pitchFor(session: context.session)
 
         let fullText = context.heardText + context.unheardText
 
@@ -746,10 +746,7 @@ extension StateMachine {
         let state = currentState
         timeoutTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-
-            await MainActor.run { [weak self] in
-                self?.handleTimeout(seconds: seconds, forState: state)
-            }
+            self?.handleTimeout(seconds: seconds, forState: state)
         }
     }
 
@@ -789,10 +786,7 @@ extension StateMachine {
     private func scheduleErrorRecovery() {
         currentTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_000_000_000)
-
-            await MainActor.run { [weak self] in
-                self?.performErrorRecovery()
-            }
+            self?.performErrorRecovery()
         }
     }
 

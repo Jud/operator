@@ -4,7 +4,7 @@ import Testing
 
 @testable import OperatorCore
 
-private final class CountingRoutingEngine: RoutingEngine, @unchecked Sendable {
+internal final class CountingRoutingEngine: RoutingEngine, @unchecked Sendable {
     private(set) var callCount = 0
     private let result: [String: Any]
 

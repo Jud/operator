@@ -5,13 +5,28 @@ import Testing
 
 @Suite("MessageRouter - Clarification")
 internal struct MessageRouterClarificationTests {
-    @Test("clarification: keyword match resolves to session")
-    func clarificationKeywordMatch() async {
+    // MARK: - Helpers
+
+    /// Creates a router with the given session names registered.
+    private func makeRouter(sessions: [String] = ["sudo", "frontend"]) async -> MessageRouter {
         let voiceManager = VoiceManager()
         let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        for (i, name) in sessions.enumerated() {
+            await registry.register(
+                name: name,
+                tty: "/dev/ttys\(String(format: "%03d", i + 1))",
+                cwd: "/tmp",
+                context: nil
+            )
+        }
+        return MessageRouter(registry: registry)
+    }
+
+    // MARK: - Tests
+
+    @Test("clarification: keyword match resolves to session")
+    func clarificationKeywordMatch() async {
+        let router = await makeRouter(sessions: ["sudo", "frontend"])
 
         let result = await router.handleClarification(
             response: "sudo",
@@ -27,10 +42,7 @@ internal struct MessageRouterClarificationTests {
 
     @Test("clarification: cancel intent")
     func clarificationCancel() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        let router = await makeRouter(sessions: ["sudo"])
 
         let result = await router.handleClarification(
             response: "never mind",
@@ -45,10 +57,7 @@ internal struct MessageRouterClarificationTests {
 
     @Test("clarification: cancel with 'cancel'")
     func clarificationCancelWord() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        let router = await makeRouter(sessions: ["sudo"])
 
         let result = await router.handleClarification(
             response: "cancel",
@@ -63,10 +72,7 @@ internal struct MessageRouterClarificationTests {
 
     @Test("clarification: both/all sends to all")
     func clarificationBoth() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        let router = await makeRouter(sessions: ["sudo"])
 
         let result = await router.handleClarification(
             response: "both",
@@ -81,10 +87,7 @@ internal struct MessageRouterClarificationTests {
 
     @Test("clarification: 'all of them' sends to all")
     func clarificationAllOfThem() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        let router = await makeRouter(sessions: ["sudo"])
 
         let result = await router.handleClarification(
             response: "all of them",
@@ -99,10 +102,7 @@ internal struct MessageRouterClarificationTests {
 
     @Test("clarification: repeat question")
     func clarificationRepeat() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        let router = await makeRouter(sessions: ["sudo"])
 
         let result = await router.handleClarification(
             response: "repeat",
@@ -117,11 +117,7 @@ internal struct MessageRouterClarificationTests {
 
     @Test("clarification: ordinal 'the first one'")
     func clarificationOrdinalFirst() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        let router = await makeRouter(sessions: ["sudo", "frontend"])
 
         let result = await router.handleClarification(
             response: "the first one",
@@ -137,11 +133,7 @@ internal struct MessageRouterClarificationTests {
 
     @Test("clarification: ordinal 'second'")
     func clarificationOrdinalSecond() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        let router = await makeRouter(sessions: ["sudo", "frontend"])
 
         let result = await router.handleClarification(
             response: "second",
@@ -157,11 +149,7 @@ internal struct MessageRouterClarificationTests {
 
     @Test("clarification: ordinal 'the second one'")
     func clarificationOrdinalSecondOne() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        await registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
-        let router = MessageRouter(registry: registry)
+        let router = await makeRouter(sessions: ["sudo", "frontend"])
 
         let result = await router.handleClarification(
             response: "the second one",
