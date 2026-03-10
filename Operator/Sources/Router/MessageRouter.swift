@@ -266,6 +266,19 @@ extension MessageRouter {
     }
 }
 
+// MARK: - Case-Insensitive Session Lookup
+
+extension MessageRouter {
+    /// Find the canonical session name matching `name` case-insensitively.
+    static func canonicalSession(
+        _ name: String,
+        in sessionNames: [String]
+    ) -> String? {
+        let lowered = name.lowercased()
+        return sessionNames.first { $0.lowercased() == lowered }
+    }
+}
+
 // MARK: - claude -p Smart Routing
 
 extension MessageRouter {
@@ -289,7 +302,7 @@ extension MessageRouter {
             let sessionName = json["session"] as? String
 
             if confident, let session = sessionName,
-                let canonical = sessionNames.first(where: { $0.lowercased() == session.lowercased() })
+                let canonical = Self.canonicalSession(session, in: sessionNames)
             {
                 return .route(session: canonical, message: text)
             }
@@ -297,7 +310,7 @@ extension MessageRouter {
             let candidates: [String]
             if let rawCandidates = json["candidates"] as? [String] {
                 candidates = rawCandidates.filter { name in
-                    sessionNames.contains { $0.lowercased() == name.lowercased() }
+                    Self.canonicalSession(name, in: sessionNames) != nil
                 }
             } else {
                 candidates = sessionNames

@@ -126,6 +126,14 @@ public final class FNKeyTrigger: TriggerSource {
         }
     }
 
+    /// Compute the duration since a key-down timestamp, returning `.infinity` if the timestamp is nil.
+    private func pressDuration(since downTime: Date?) -> TimeInterval {
+        guard let downTime else {
+            return .infinity
+        }
+        return Date().timeIntervalSince(downTime)
+    }
+
     /// Periodically re-enable the event tap in case macOS disables it due to timeout.
     private func startTapWatchdog() {
         tapWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
@@ -254,17 +262,12 @@ extension FNKeyTrigger {
     private func handleFnKeyUp() {
         fnDown = false
 
-        let pressDuration: TimeInterval
-        if let downTime = fnKeyDownTime {
-            pressDuration = Date().timeIntervalSince(downTime)
-        } else {
-            pressDuration = .infinity
-        }
+        let duration = pressDuration(since: fnKeyDownTime)
         fnKeyDownTime = nil
 
         if isToggleListening {
             Self.logger.debug("FN key released (toggle stop press — ignored)")
-        } else if isToggleModeEnabled && pressDuration < toggleThreshold {
+        } else if isToggleModeEnabled && duration < toggleThreshold {
             Self.logger.debug("FN key released (quick tap — toggle mode)")
             isToggleListening = true
             startDoubleTapTimer()
@@ -342,19 +345,14 @@ extension FNKeyTrigger {
         if secondaryDown {
             secondaryDown = false
 
-            let pressDuration: TimeInterval
-            if let downTime = secondaryKeyDownTime {
-                pressDuration = Date().timeIntervalSince(downTime)
-            } else {
-                pressDuration = .infinity
-            }
+            let duration = pressDuration(since: secondaryKeyDownTime)
             secondaryKeyDownTime = nil
 
             if isSecondaryToggleListening {
                 Self.logger.debug(
                     "Secondary hotkey released (toggle stop press — ignored): keyCode=\(keyCode)"
                 )
-            } else if isToggleModeEnabled && pressDuration < toggleThreshold {
+            } else if isToggleModeEnabled && duration < toggleThreshold {
                 Self.logger.debug("Secondary hotkey released (quick tap — toggle mode): keyCode=\(keyCode)")
                 isSecondaryToggleListening = true
             } else {

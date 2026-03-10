@@ -18,7 +18,7 @@ internal final class CountingRoutingEngine: RoutingEngine, @unchecked Sendable {
     }
 }
 
-private struct SessionFixture {
+internal struct SessionFixture {
     let name: String
     let tty: String
     let cwd: String
@@ -27,7 +27,7 @@ private struct SessionFixture {
     let recent: String
 }
 
-private let heuristicFixtures: [SessionFixture] = [
+internal let heuristicFixtures: [SessionFixture] = [
     SessionFixture(
         name: "ui-shell",
         tty: "/dev/ttys101",
@@ -54,50 +54,59 @@ private let heuristicFixtures: [SessionFixture] = [
     )
 ]
 
+/// Registers all `heuristicFixtures` sessions into the given registry.
+///
+/// Shared across test files that need the 3-session heuristic scenario.
+internal func registerHeuristicFixtures(into registry: SessionRegistry) async {
+    for fixture in heuristicFixtures {
+        await registry.register(
+            name: fixture.name,
+            tty: fixture.tty,
+            cwd: fixture.cwd,
+            context: fixture.ctx
+        )
+        await registry.updateContext(
+            tty: fixture.tty,
+            summary: fixture.summary,
+            recentMessages: [
+                SessionMessage(role: "assistant", text: fixture.recent)
+            ]
+        )
+    }
+}
+
 // MARK: - Routing Tests
 
 @Suite("MessageRouter - Routing")
 internal struct MessageRouterRoutingTests {
+    /// Creates a router with the given session names (and optional per-session cwds).
+    private func makeRouter(
+        sessions: [SessionFixture] = []
+    ) async -> (MessageRouter, SessionRegistry) {
+        let registry = SessionRegistry(voiceManager: VoiceManager())
+        for session in sessions {
+            await registry.register(name: session.name, tty: session.tty, cwd: session.cwd, context: nil)
+        }
+        return (MessageRouter(registry: registry), registry)
+    }
+
     private func makeHeuristicRouter(
         engine: CountingRoutingEngine
     ) async -> MessageRouter {
         let registry = SessionRegistry(voiceManager: VoiceManager())
-
-        for fixture in heuristicFixtures {
-            await registry.register(
-                name: fixture.name,
-                tty: fixture.tty,
-                cwd: fixture.cwd,
-                context: fixture.ctx
-            )
-            await registry.updateContext(
-                tty: fixture.tty,
-                summary: fixture.summary,
-                recentMessages: [
-                    SessionMessage(role: "assistant", text: fixture.recent)
-                ]
-            )
-        }
-
+        await registerHeuristicFixtures(into: registry)
         return MessageRouter(registry: registry, engine: engine)
     }
 
     @Test("single session routes directly without routing overhead")
     func singleSessionBypass() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(
-            name: "sudo",
-            tty: "/dev/ttys001",
-            cwd: "/tmp",
-            context: nil
-        )
-        let router = MessageRouter(registry: registry)
-        let state = RoutingState()
+        let (router, _) = await makeRouter(sessions: [
+            SessionFixture(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", ctx: "", summary: "", recent: "")
+        ])
 
         let result = await router.route(
             text: "make the button bigger",
-            routingState: state
+            routingState: RoutingState()
         )
         guard case .route(let session, let message) = result else {
             Issue.record("Expected .route, got \(result)")
@@ -109,12 +118,9 @@ internal struct MessageRouterRoutingTests {
 
     @Test("returns noSessions when no sessions registered")
     func noSessionsRegistered() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        let router = MessageRouter(registry: registry)
-        let state = RoutingState()
+        let (router, _) = await makeRouter()
 
-        let result = await router.route(text: "fix the build", routingState: state)
+        let result = await router.route(text: "fix the build", routingState: RoutingState())
         guard case .noSessions = result else {
             Issue.record("Expected .noSessions, got \(result)")
             return
@@ -123,21 +129,17 @@ internal struct MessageRouterRoutingTests {
 
     @Test("session affinity routes to last target within 15s window")
     func sessionAffinityWithinWindow() async {
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        await registry.register(
-            name: "sudo",
-            tty: "/dev/ttys001",
-            cwd: "/tmp/sudo",
-            context: nil
-        )
-        await registry.register(
-            name: "frontend",
-            tty: "/dev/ttys002",
-            cwd: "/tmp/frontend",
-            context: nil
-        )
-        let router = MessageRouter(registry: registry)
+        let (router, _) = await makeRouter(sessions: [
+            SessionFixture(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp/sudo", ctx: "", summary: "", recent: ""),
+            SessionFixture(
+                name: "frontend",
+                tty: "/dev/ttys002",
+                cwd: "/tmp/frontend",
+                ctx: "",
+                summary: "",
+                recent: ""
+            )
+        ])
 
         var state = RoutingState()
         state.recordRoute(

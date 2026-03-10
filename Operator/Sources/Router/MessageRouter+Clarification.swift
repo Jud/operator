@@ -3,6 +3,13 @@ import Foundation
 // MARK: - Clarification Response Handling
 
 extension MessageRouter {
+    /// Ordinal patterns mapped to candidate indices.
+    private static let ordinalPatterns: [(patterns: [String], index: Int)] = [
+        (["the first one", "first one", "the first", "first", "number one", "number 1", "1"], 0),
+        (["the second one", "second one", "the second", "second", "number two", "number 2", "2"], 1),
+        (["the third one", "third one", "the third", "third", "number three", "number 3", "3"], 2)
+    ]
+
     /// Process a user's response during the CLARIFYING state.
     ///
     /// - Parameters:
@@ -37,7 +44,7 @@ extension MessageRouter {
             response: trimmed,
             candidates: candidates,
             originalText: originalText,
-            allSessionNames: allNames
+            allSessions: allSessions
         )
     }
 
@@ -75,22 +82,11 @@ extension MessageRouter {
 
     /// Match ordinal references against candidates.
     func matchOrdinal(lowered: String, candidates: [String]) -> String? {
-        let firstPatterns = ["the first one", "first one", "the first", "first", "number one", "number 1", "1"]
-        let secondPatterns = ["the second one", "second one", "the second", "second", "number two", "number 2", "2"]
-        let thirdPatterns = ["the third one", "third one", "the third", "third", "number three", "number 3", "3"]
-
-        for pattern in firstPatterns where lowered == pattern || lowered.contains(pattern) {
-            return candidates.indices.contains(0) ? candidates[0] : nil
+        for (patterns, index) in Self.ordinalPatterns {
+            for pattern in patterns where lowered == pattern || lowered.contains(pattern) {
+                return candidates.indices.contains(index) ? candidates[index] : nil
+            }
         }
-
-        for pattern in secondPatterns where lowered == pattern || lowered.contains(pattern) {
-            return candidates.indices.contains(1) ? candidates[1] : nil
-        }
-
-        for pattern in thirdPatterns where lowered == pattern || lowered.contains(pattern) {
-            return candidates.indices.contains(2) ? candidates[2] : nil
-        }
-
         return nil
     }
 
@@ -99,10 +95,10 @@ extension MessageRouter {
         response: String,
         candidates: [String],
         originalText: String,
-        allSessionNames: [String]
+        allSessions: [SessionState]
     ) async -> ClarificationResult {
-        let sessions = await registry.allSessions()
-        let candidateSessions = sessions.filter { candidates.contains($0.name) }
+        let allSessionNames = allSessions.map(\.name)
+        let candidateSessions = allSessions.filter { candidates.contains($0.name) }
 
         var promptLines: [String] = [
             "A user was asked which Claude Code session a message was for.",
@@ -130,11 +126,8 @@ extension MessageRouter {
             let json = try await engine.run(prompt: prompt)
 
             if let sessionName = json["session"] as? String,
-                allSessionNames.contains(where: { $0.lowercased() == sessionName.lowercased() })
+                let canonical = Self.canonicalSession(sessionName, in: allSessionNames)
             {
-                let canonical =
-                    allSessionNames.first { $0.lowercased() == sessionName.lowercased() }
-                    ?? sessionName
                 Self.logger.info("claude -p clarification resolved to '\(canonical)'")
                 return .resolved(session: canonical)
             }

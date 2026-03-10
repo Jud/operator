@@ -149,35 +149,22 @@ internal struct MessageRouterSkipEngineTests {
     @Test("skipEngine: never invokes routing engine regardless of outcome")
     func neverInvokesRoutingEngine() async {
         let engine = CountingRoutingEngine()
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        let router = MessageRouter(registry: registry, engine: engine)
-
+        let ctx = await makeRouter(engine: engine)
         // Register multiple sessions to avoid single-session bypass
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        await registry.register(
-            name: "frontend",
-            tty: "/dev/ttys002",
-            cwd: "/tmp",
-            context: nil
-        )
-        await registry.register(
-            name: "backend",
-            tty: "/dev/ttys003",
-            cwd: "/tmp",
-            context: nil
-        )
+        await ctx.registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
+        await ctx.registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
+        await ctx.registry.register(name: "backend", tty: "/dev/ttys003", cwd: "/tmp", context: nil)
 
         // Multiple calls with different messages
-        _ = await router.routeSkipEngine(text: "hello", routingState: RoutingState())
-        _ = await router.routeSkipEngine(text: "fix the database", routingState: RoutingState())
-        _ = await router.routeSkipEngine(text: "deploy to staging", routingState: RoutingState())
-        _ = await router.routeSkipEngine(
+        _ = await ctx.router.routeSkipEngine(text: "hello", routingState: RoutingState())
+        _ = await ctx.router.routeSkipEngine(text: "fix the database", routingState: RoutingState())
+        _ = await ctx.router.routeSkipEngine(text: "deploy to staging", routingState: RoutingState())
+        _ = await ctx.router.routeSkipEngine(
             text: "what's the status",
             routingState: RoutingState()
         )
 
-        #expect(engine.callCount == 0, "routeSkipEngine must never invoke the routing engine")
+        #expect(ctx.engine.callCount == 0, "routeSkipEngine must never invoke the routing engine")
     }
 
     // MARK: - Existing route() Unaffected
@@ -185,25 +172,17 @@ internal struct MessageRouterSkipEngineTests {
     @Test("existing route() method still invokes routing engine for ambiguous messages")
     func existingRouteStillUsesEngine() async {
         let engine = CountingRoutingEngine()
-        let voiceManager = VoiceManager()
-        let registry = SessionRegistry(voiceManager: voiceManager)
-        let router = MessageRouter(registry: registry, engine: engine)
-
-        await registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
-        await registry.register(
-            name: "frontend",
-            tty: "/dev/ttys002",
-            cwd: "/tmp",
-            context: nil
-        )
+        let ctx = await makeRouter(engine: engine)
+        await ctx.registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
+        await ctx.registry.register(name: "frontend", tty: "/dev/ttys002", cwd: "/tmp", context: nil)
 
         // This should fall through to claude -p (routing engine)
-        _ = await router.route(
+        _ = await ctx.router.route(
             text: "some ambiguous message",
             routingState: RoutingState()
         )
 
-        #expect(engine.callCount > 0, "regular route() should invoke routing engine for ambiguous messages")
+        #expect(ctx.engine.callCount > 0, "regular route() should invoke routing engine for ambiguous messages")
     }
 
     // MARK: - Heuristic Match
@@ -212,36 +191,8 @@ internal struct MessageRouterSkipEngineTests {
         let engine = CountingRoutingEngine()
         let voiceManager = VoiceManager()
         let registry = SessionRegistry(voiceManager: voiceManager)
+        await registerHeuristicFixtures(into: registry)
         let router = MessageRouter(registry: registry, engine: engine)
-
-        await registry.register(
-            name: "ui-shell",
-            tty: "/dev/ttys101",
-            cwd: "/Users/jud/work/operator-ui",
-            context: "Branch feat/settings-loading"
-        )
-        await registry.updateContext(
-            tty: "/dev/ttys101",
-            summary: "Editing React components, CSS layout, dashboard styles",
-            recentMessages: [
-                SessionMessage(
-                    role: "assistant",
-                    text: "Fixing the React shell layout and button spacing."
-                )
-            ]
-        )
-        await registry.register(
-            name: "profile-api",
-            tty: "/dev/ttys102",
-            cwd: "/Users/jud/work/operator-api",
-            context: "Branch feat/profile-endpoints"
-        )
-        await registry.register(
-            name: "staging-infra",
-            tty: "/dev/ttys103",
-            cwd: "/Users/jud/work/operator-infra",
-            context: "Branch chore/staging-network"
-        )
         return SkipEngineTestContext(router: router, registry: registry, engine: engine)
     }
 

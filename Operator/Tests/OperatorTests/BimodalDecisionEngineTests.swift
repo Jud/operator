@@ -310,53 +310,13 @@ internal struct BimodalEdgeCaseTests {
     }
 }
 
-/// Register 3 sessions with context for HYP-001 multi-session heuristic testing.
-private func registerMultiSessions(_ registry: SessionRegistry) async {
-    await registry.register(
-        name: "ui-shell",
-        tty: "/dev/ttys101",
-        cwd: "/Users/jud/work/operator-ui",
-        context: "Branch feat/settings-loading"
-    )
-    await registry.updateContext(
-        tty: "/dev/ttys101",
-        summary: "Editing React components, CSS layout, dashboard styles",
-        recentMessages: [
-            SessionMessage(
-                role: "assistant",
-                text: "Fixing the React shell layout and button spacing."
-            )
-        ]
-    )
-    await registry.register(
-        name: "profile-api",
-        tty: "/dev/ttys102",
-        cwd: "/Users/jud/work/operator-api",
-        context: "Branch feat/profile-endpoints"
-    )
-    await registry.register(
-        name: "staging-infra",
-        tty: "/dev/ttys103",
-        cwd: "/Users/jud/work/operator-infra",
-        context: "Branch chore/staging-network"
-    )
-}
-
 /// Build a BimodalDecisionEngine with 3 sessions and terminal frontmost for HYP-001 testing.
 private func makeMultiSessionTerminalEngine() async -> (BimodalDecisionEngine, SessionRegistry) {
-    let mock = MockAccessibilityQuery(
-        bundleID: "com.googlecode.iterm2",
+    let (engine, registry) = await makeEngine(
         isTerminal: true,
-        isTextField: true
+        isTextField: true,
+        bundleID: "com.googlecode.iterm2"
     )
-    let voiceManager = VoiceManager()
-    let registry = SessionRegistry(voiceManager: voiceManager)
-    let router = MessageRouter(registry: registry)
-    await registerMultiSessions(registry)
-    let engine = BimodalDecisionEngine(
-        accessibilityQuery: mock,
-        router: router,
-        registry: registry
-    )
+    await registerHeuristicFixtures(into: registry)
     return (engine, registry)
 }
