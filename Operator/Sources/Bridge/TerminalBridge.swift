@@ -1,5 +1,42 @@
 import Foundation
 
+/// Unified error type for all terminal bridge operations.
+///
+/// Both ITermBridge and GhosttyBridge throw these errors, parameterized
+/// by `TerminalType` where the source terminal matters. OsascriptRunnerError
+/// remains separate as a lower-level utility concern; each bridge catches
+/// it and rethrows as the appropriate TerminalBridgeError case.
+public enum TerminalBridgeError: Error, CustomStringConvertible {
+    case terminalNotRunning(terminal: TerminalType)
+    case sessionNotFound(identifier: String)
+    case tempFileWriteFailed(underlying: Error)
+    case discoveryDecodeFailed(output: String, underlying: Error)
+    case scriptFailed(terminal: TerminalType, status: Int32, stderr: String)
+
+    /// A human-readable description of the error.
+    public var description: String {
+        switch self {
+        case .terminalNotRunning(let terminal):
+            let name = terminal == .iterm ? "iTerm2" : "Ghostty"
+            return "\(name) is not running"
+
+        case .sessionNotFound(let identifier):
+            return "Terminal session not found: \(identifier)"
+
+        case .tempFileWriteFailed(let underlying):
+            return "Failed to write temp file for JXA delivery: \(underlying.localizedDescription)"
+
+        case .discoveryDecodeFailed(let output, let underlying):
+            return
+                "Failed to decode session discovery output: "
+                + "\(underlying.localizedDescription) -- raw: \(output.prefix(200))"
+
+        case .scriptFailed(let terminal, let status, let stderr):
+            return "osascript exited with status \(status) for \(terminal.rawValue): \(stderr)"
+        }
+    }
+}
+
 /// A terminal session discovered during enumeration.
 ///
 /// Terminal-agnostic representation of a session found by any bridge

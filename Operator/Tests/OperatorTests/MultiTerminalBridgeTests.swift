@@ -76,7 +76,7 @@ internal struct MultiTerminalBridgeTests {
         let iterm = StubBridge()
         iterm.discoverResult = [makeItermSession()]
         let ghostty = StubBridge()
-        ghostty.discoverError = GhosttyBridgeError.ghosttyNotRunning
+        ghostty.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
 
         let composite = MultiTerminalBridge(itermBridge: iterm, ghosttyBridge: ghostty)
         let sessions = try await composite.discoverSessions()
@@ -88,7 +88,7 @@ internal struct MultiTerminalBridgeTests {
     @Test("discovery returns Ghostty sessions when iTerm fails")
     func discoveryGhosttyOnlyWhenItermFails() async throws {
         let iterm = StubBridge()
-        iterm.discoverError = ITermBridgeError.itermNotRunning
+        iterm.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .iterm)
         let ghostty = StubBridge()
         ghostty.discoverResult = [makeGhosttySession()]
 
@@ -102,9 +102,9 @@ internal struct MultiTerminalBridgeTests {
     @Test("discovery returns empty when both bridges fail")
     func discoveryEmptyWhenBothFail() async throws {
         let iterm = StubBridge()
-        iterm.discoverError = ITermBridgeError.itermNotRunning
+        iterm.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .iterm)
         let ghostty = StubBridge()
-        ghostty.discoverError = GhosttyBridgeError.ghosttyNotRunning
+        ghostty.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
 
         let composite = MultiTerminalBridge(itermBridge: iterm, ghosttyBridge: ghostty)
         let sessions = try await composite.discoverSessions()
@@ -132,7 +132,7 @@ internal struct MultiTerminalBridgeTests {
         let iterm = StubBridge()
         iterm.discoverResult = [makeItermSession()]
         let ghostty = StubBridge()
-        ghostty.discoverError = GhosttyBridgeError.ghosttyNotRunning
+        ghostty.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
 
         let composite = MultiTerminalBridge(itermBridge: iterm, ghosttyBridge: ghostty)
         _ = try await composite.discoverSessions()
@@ -201,7 +201,7 @@ internal struct MultiTerminalBridgeTests {
     @Test("writeToSession propagates errors from the targeted bridge")
     func writePropagatesBridgeError() async {
         let iterm = StubBridge()
-        iterm.writeError = ITermBridgeError.itermNotRunning
+        iterm.writeError = TerminalBridgeError.terminalNotRunning(terminal: .iterm)
         let composite = MultiTerminalBridge(itermBridge: iterm, ghosttyBridge: StubBridge())
 
         do {
@@ -210,7 +210,7 @@ internal struct MultiTerminalBridgeTests {
                 text: "hello"
             )
             Issue.record("Expected error to be thrown")
-        } catch is ITermBridgeError {
+        } catch is TerminalBridgeError {
             // Expected
         } catch {
             Issue.record("Unexpected error type: \(error)")

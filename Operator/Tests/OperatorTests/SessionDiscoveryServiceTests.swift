@@ -88,7 +88,7 @@ internal struct SessionDiscoveryServiceTests {
         itermBridge.discoverResult = [makeItermSession(tty: "/dev/ttys001")]
 
         let ghosttyBridge = StubBridge()
-        ghosttyBridge.discoverError = GhosttyBridgeError.ghosttyNotRunning
+        ghosttyBridge.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
 
         let composite = MultiTerminalBridge(itermBridge: itermBridge, ghosttyBridge: ghosttyBridge)
         let collector = RemovedNameCollector()
@@ -120,7 +120,7 @@ internal struct SessionDiscoveryServiceTests {
         )
 
         let itermBridge = StubBridge()
-        itermBridge.discoverError = ITermBridgeError.itermNotRunning
+        itermBridge.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .iterm)
 
         let ghosttyBridge = StubBridge()
         ghosttyBridge.discoverResult = [makeGhosttySession(id: "ghost-1")]
@@ -267,10 +267,10 @@ internal struct SessionDiscoveryServiceTests {
         )
 
         let itermBridge = StubBridge()
-        itermBridge.discoverError = ITermBridgeError.itermNotRunning
+        itermBridge.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .iterm)
 
         let ghosttyBridge = StubBridge()
-        ghosttyBridge.discoverError = GhosttyBridgeError.ghosttyNotRunning
+        ghosttyBridge.discoverError = TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
 
         let composite = MultiTerminalBridge(itermBridge: itermBridge, ghosttyBridge: ghosttyBridge)
         let collector = RemovedNameCollector()

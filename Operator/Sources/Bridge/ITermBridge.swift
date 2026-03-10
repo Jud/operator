@@ -1,30 +1,5 @@
 import Foundation
 
-public enum ITermBridgeError: Error, CustomStringConvertible {
-    case jxaFailed(status: Int32, stderr: String)
-    case itermNotRunning
-    case sessionNotFound(tty: String)
-    case tempFileWriteFailed(underlying: Error)
-    case discoveryDecodeFailed(output: String, underlying: Error)
-
-    public var description: String {
-        switch self {
-        case .jxaFailed(let status, let stderr):
-            return "osascript exited with status \(status): \(stderr)"
-        case .itermNotRunning:
-            return "iTerm2 is not running"
-        case .sessionNotFound(let tty):
-            return "iTerm session not found for TTY: \(tty)"
-        case .tempFileWriteFailed(let underlying):
-            return "Failed to write temp file for JXA delivery: \(underlying.localizedDescription)"
-        case .discoveryDecodeFailed(let output, let underlying):
-            return
-                "Failed to decode session discovery output: "
-                + "\(underlying.localizedDescription) -- raw: \(output.prefix(200))"
-        }
-    }
-}
-
 /// Bridge to iTerm2 via JXA (JavaScript for Automation) for session discovery
 /// and file-based text delivery to Claude Code TUI sessions.
 ///
@@ -38,7 +13,7 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
 
     public func writeToSession(identifier: TerminalIdentifier, text: String) async throws -> Bool {
         guard case .tty(let tty) = identifier else {
-            throw ITermBridgeError.sessionNotFound(tty: identifier.description)
+            throw TerminalBridgeError.sessionNotFound(identifier: identifier.description)
         }
         Self.logger.info("Delivering text to session at TTY: \(tty) (\(text.count) chars)")
 
@@ -46,7 +21,7 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
         do {
             tempFile = try OsascriptRunner.writeTempFile(text)
         } catch {
-            throw ITermBridgeError.tempFileWriteFailed(underlying: error)
+            throw TerminalBridgeError.tempFileWriteFailed(underlying: error)
         }
 
         defer {
@@ -58,7 +33,7 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
 
         if output.contains("session_not_found") {
             Self.logger.warning("Session not found for TTY: \(tty)")
-            throw ITermBridgeError.sessionNotFound(tty: tty)
+            throw TerminalBridgeError.sessionNotFound(identifier: tty)
         }
 
         let success = output.contains("ok")
@@ -98,18 +73,18 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
         do {
             return try await OsascriptRunner.run(script)
         } catch OsascriptRunnerError.applicationNotRunning {
-            throw ITermBridgeError.itermNotRunning
+            throw TerminalBridgeError.terminalNotRunning(terminal: .iterm)
         } catch let error as OsascriptRunnerError {
             switch error {
             case .scriptFailed(let status, let stderr):
-                throw ITermBridgeError.jxaFailed(status: status, stderr: stderr)
+                throw TerminalBridgeError.scriptFailed(terminal: .iterm, status: status, stderr: stderr)
+
             case .launchFailed(let underlying):
-                throw ITermBridgeError.jxaFailed(
-                    status: -1,
-                    stderr: "Failed to launch osascript: \(underlying.localizedDescription)"
-                )
+                let msg = "Failed to launch osascript: \(underlying.localizedDescription)"
+                throw TerminalBridgeError.scriptFailed(terminal: .iterm, status: -1, stderr: msg)
+
             case .applicationNotRunning:
-                throw ITermBridgeError.itermNotRunning
+                throw TerminalBridgeError.terminalNotRunning(terminal: .iterm)
             }
         }
     }
@@ -141,23 +116,23 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
         do {
             output = try await OsascriptRunner.run(script)
         } catch OsascriptRunnerError.applicationNotRunning {
-            throw ITermBridgeError.itermNotRunning
+            throw TerminalBridgeError.terminalNotRunning(terminal: .iterm)
         } catch let error as OsascriptRunnerError {
             switch error {
             case .scriptFailed(let status, let stderr):
-                throw ITermBridgeError.jxaFailed(status: status, stderr: stderr)
+                throw TerminalBridgeError.scriptFailed(terminal: .iterm, status: status, stderr: stderr)
+
             case .launchFailed(let underlying):
-                throw ITermBridgeError.jxaFailed(
-                    status: -1,
-                    stderr: "Failed to launch osascript: \(underlying.localizedDescription)"
-                )
+                let msg = "Failed to launch osascript: \(underlying.localizedDescription)"
+                throw TerminalBridgeError.scriptFailed(terminal: .iterm, status: -1, stderr: msg)
+
             case .applicationNotRunning:
-                throw ITermBridgeError.itermNotRunning
+                throw TerminalBridgeError.terminalNotRunning(terminal: .iterm)
             }
         }
 
         guard let data = output.data(using: .utf8) else {
-            throw ITermBridgeError.discoveryDecodeFailed(
+            throw TerminalBridgeError.discoveryDecodeFailed(
                 output: output,
                 underlying: NSError(
                     domain: "ITermBridge",
@@ -174,7 +149,7 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
             Self.logger.info("Discovered \(sessions.count) iTerm session(s)")
             return sessions
         } catch {
-            throw ITermBridgeError.discoveryDecodeFailed(output: output, underlying: error)
+            throw TerminalBridgeError.discoveryDecodeFailed(output: output, underlying: error)
         }
     }
 }

@@ -106,10 +106,10 @@ internal struct DeliveryCoordinatorTests {
         #expect(session == "sudo")
     }
 
-    @Test("deliver when bridge throws itermNotRunning returns .terminalNotRunning")
+    @Test("deliver when bridge throws terminalNotRunning for iTerm returns .terminalNotRunning")
     func deliverBridgeThrowsItermNotRunning() async {
         let bridge = MockTerminalBridge()
-        bridge.writeError = ITermBridgeError.itermNotRunning
+        bridge.writeError = TerminalBridgeError.terminalNotRunning(terminal: .iterm)
         let ctx = makeCoordinator(bridge: bridge)
         await ctx.registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
 
@@ -121,10 +121,10 @@ internal struct DeliveryCoordinatorTests {
         #expect(session == "sudo")
     }
 
-    @Test("deliver when bridge throws ghosttyNotRunning returns .terminalNotRunning")
+    @Test("deliver when bridge throws terminalNotRunning for Ghostty returns .terminalNotRunning")
     func deliverBridgeThrowsGhosttyNotRunning() async {
         let bridge = MockTerminalBridge()
-        bridge.writeError = GhosttyBridgeError.ghosttyNotRunning
+        bridge.writeError = TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
         let ctx = makeCoordinator(bridge: bridge)
         await ctx.registry.register(name: "sudo", tty: "/dev/ttys001", cwd: "/tmp", context: nil)
 

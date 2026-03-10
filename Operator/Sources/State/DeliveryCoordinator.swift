@@ -79,10 +79,7 @@ public struct DeliveryCoordinator {
             Self.logger.info("Delivered message to \(session)")
             feedback.play(.delivered)
             return .success(message: message, session: session)
-        } catch ITermBridgeError.itermNotRunning {
-            Self.logger.error("Terminal not running during delivery to \(session)")
-            return .terminalNotRunning(session: session)
-        } catch GhosttyBridgeError.ghosttyNotRunning {
+        } catch TerminalBridgeError.terminalNotRunning {
             Self.logger.error("Terminal not running during delivery to \(session)")
             return .terminalNotRunning(session: session)
         } catch {

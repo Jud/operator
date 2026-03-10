@@ -1,30 +1,5 @@
 import Foundation
 
-public enum GhosttyBridgeError: Error, CustomStringConvertible {
-    case scriptFailed(status: Int32, stderr: String)
-    case ghosttyNotRunning
-    case terminalNotFound(id: String)
-    case tempFileWriteFailed(underlying: Error)
-    case discoveryDecodeFailed(output: String, underlying: Error)
-
-    public var description: String {
-        switch self {
-        case .scriptFailed(let status, let stderr):
-            return "osascript exited with status \(status): \(stderr)"
-        case .ghosttyNotRunning:
-            return "Ghostty is not running"
-        case .terminalNotFound(let id):
-            return "Ghostty terminal not found for ID: \(id)"
-        case .tempFileWriteFailed(let underlying):
-            return "Failed to write temp file for JXA delivery: \(underlying.localizedDescription)"
-        case .discoveryDecodeFailed(let output, let underlying):
-            return
-                "Failed to decode Ghostty discovery output: "
-                + "\(underlying.localizedDescription) -- raw: \(output.prefix(200))"
-        }
-    }
-}
-
 /// Bridge to Ghostty via JXA (JavaScript for Automation) for session discovery
 /// and file-based text delivery to Claude Code TUI sessions.
 ///
@@ -41,7 +16,7 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
 
     public func writeToSession(identifier: TerminalIdentifier, text: String) async throws -> Bool {
         guard case .ghosttyTerminal(let ghosttyId) = identifier else {
-            throw GhosttyBridgeError.terminalNotFound(id: identifier.description)
+            throw TerminalBridgeError.sessionNotFound(identifier: identifier.description)
         }
         Self.logger.info("Delivering text to Ghostty terminal: \(ghosttyId) (\(text.count) chars)")
 
@@ -49,7 +24,7 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
         do {
             tempFile = try OsascriptRunner.writeTempFile(text)
         } catch {
-            throw GhosttyBridgeError.tempFileWriteFailed(underlying: error)
+            throw TerminalBridgeError.tempFileWriteFailed(underlying: error)
         }
 
         defer {
@@ -61,7 +36,7 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
 
         if output.contains("terminal_not_found") {
             Self.logger.warning("Ghostty terminal not found for ID: \(ghosttyId)")
-            throw GhosttyBridgeError.terminalNotFound(id: ghosttyId)
+            throw TerminalBridgeError.sessionNotFound(identifier: ghosttyId)
         }
 
         let success = output.contains("ok")
@@ -98,18 +73,18 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
         do {
             return try await OsascriptRunner.run(script)
         } catch OsascriptRunnerError.applicationNotRunning {
-            throw GhosttyBridgeError.ghosttyNotRunning
+            throw TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
         } catch let error as OsascriptRunnerError {
             switch error {
             case .scriptFailed(let status, let stderr):
-                throw GhosttyBridgeError.scriptFailed(status: status, stderr: stderr)
+                throw TerminalBridgeError.scriptFailed(terminal: .ghostty, status: status, stderr: stderr)
+
             case .launchFailed(let underlying):
-                throw GhosttyBridgeError.scriptFailed(
-                    status: -1,
-                    stderr: "Failed to launch osascript: \(underlying.localizedDescription)"
-                )
+                let msg = "Failed to launch osascript: \(underlying.localizedDescription)"
+                throw TerminalBridgeError.scriptFailed(terminal: .ghostty, status: -1, stderr: msg)
+
             case .applicationNotRunning:
-                throw GhosttyBridgeError.ghosttyNotRunning
+                throw TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
             }
         }
     }
@@ -142,18 +117,18 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
         do {
             output = try await OsascriptRunner.run(script)
         } catch OsascriptRunnerError.applicationNotRunning {
-            throw GhosttyBridgeError.ghosttyNotRunning
+            throw TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
         } catch let error as OsascriptRunnerError {
             switch error {
             case .scriptFailed(let status, let stderr):
-                throw GhosttyBridgeError.scriptFailed(status: status, stderr: stderr)
+                throw TerminalBridgeError.scriptFailed(terminal: .ghostty, status: status, stderr: stderr)
+
             case .launchFailed(let underlying):
-                throw GhosttyBridgeError.scriptFailed(
-                    status: -1,
-                    stderr: "Failed to launch osascript: \(underlying.localizedDescription)"
-                )
+                let msg = "Failed to launch osascript: \(underlying.localizedDescription)"
+                throw TerminalBridgeError.scriptFailed(terminal: .ghostty, status: -1, stderr: msg)
+
             case .applicationNotRunning:
-                throw GhosttyBridgeError.ghosttyNotRunning
+                throw TerminalBridgeError.terminalNotRunning(terminal: .ghostty)
             }
         }
 
@@ -164,7 +139,7 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
 
     private func decodeDiscoveryOutput(_ output: String) throws -> [DiscoveredSession] {
         guard let data = output.data(using: .utf8) else {
-            throw GhosttyBridgeError.discoveryDecodeFailed(
+            throw TerminalBridgeError.discoveryDecodeFailed(
                 output: output,
                 underlying: NSError(
                     domain: "GhosttyBridge",
@@ -178,7 +153,7 @@ public class GhosttyBridge: @unchecked Sendable, TerminalBridge {
         do {
             return try JSONDecoder().decode([DiscoveredSession].self, from: data)
         } catch {
-            throw GhosttyBridgeError.discoveryDecodeFailed(output: output, underlying: error)
+            throw TerminalBridgeError.discoveryDecodeFailed(output: output, underlying: error)
         }
     }
 }
