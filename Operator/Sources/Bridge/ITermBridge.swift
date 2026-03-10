@@ -70,23 +70,7 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
             })();
             """
 
-        do {
-            return try await OsascriptRunner.run(script)
-        } catch OsascriptRunnerError.applicationNotRunning {
-            throw TerminalBridgeError.terminalNotRunning(terminal: .iterm)
-        } catch let error as OsascriptRunnerError {
-            switch error {
-            case .scriptFailed(let status, let stderr):
-                throw TerminalBridgeError.scriptFailed(terminal: .iterm, status: status, stderr: stderr)
-
-            case .launchFailed(let underlying):
-                let msg = "Failed to launch osascript: \(underlying.localizedDescription)"
-                throw TerminalBridgeError.scriptFailed(terminal: .iterm, status: -1, stderr: msg)
-
-            case .applicationNotRunning:
-                throw TerminalBridgeError.terminalNotRunning(terminal: .iterm)
-            }
-        }
+        return try await OsascriptRunner.runForTerminal(script, terminal: .iterm)
     }
 
     public func discoverSessions() async throws -> [DiscoveredSession] {
@@ -112,44 +96,9 @@ public class ITermBridge: @unchecked Sendable, TerminalBridge {
             JSON.stringify(sessions);
             """
 
-        let output: String
-        do {
-            output = try await OsascriptRunner.run(script)
-        } catch OsascriptRunnerError.applicationNotRunning {
-            throw TerminalBridgeError.terminalNotRunning(terminal: .iterm)
-        } catch let error as OsascriptRunnerError {
-            switch error {
-            case .scriptFailed(let status, let stderr):
-                throw TerminalBridgeError.scriptFailed(terminal: .iterm, status: status, stderr: stderr)
-
-            case .launchFailed(let underlying):
-                let msg = "Failed to launch osascript: \(underlying.localizedDescription)"
-                throw TerminalBridgeError.scriptFailed(terminal: .iterm, status: -1, stderr: msg)
-
-            case .applicationNotRunning:
-                throw TerminalBridgeError.terminalNotRunning(terminal: .iterm)
-            }
-        }
-
-        guard let data = output.data(using: .utf8) else {
-            throw TerminalBridgeError.discoveryDecodeFailed(
-                output: output,
-                underlying: NSError(
-                    domain: "ITermBridge",
-                    code: -1,
-                    userInfo: [
-                        NSLocalizedDescriptionKey: "Failed to convert output to UTF-8 data"
-                    ]
-                )
-            )
-        }
-
-        do {
-            let sessions = try JSONDecoder().decode([DiscoveredSession].self, from: data)
-            Self.logger.info("Discovered \(sessions.count) iTerm session(s)")
-            return sessions
-        } catch {
-            throw TerminalBridgeError.discoveryDecodeFailed(output: output, underlying: error)
-        }
+        let output = try await OsascriptRunner.runForTerminal(script, terminal: .iterm)
+        let sessions = try OsascriptRunner.decodeDiscoveryJSON(output)
+        Self.logger.info("Discovered \(sessions.count) iTerm session(s)")
+        return sessions
     }
 }

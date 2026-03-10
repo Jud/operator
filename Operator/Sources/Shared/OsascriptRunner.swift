@@ -86,4 +86,51 @@ public enum OsascriptRunner {
     public static func cleanupTempFile(_ url: URL) {
         try? FileManager.default.removeItem(at: url)
     }
+
+    /// Run a JXA script and map `OsascriptRunnerError` to `TerminalBridgeError`
+    /// for the given terminal type.
+    public static func runForTerminal(
+        _ script: String, terminal: TerminalType
+    ) async throws -> String {
+        do {
+            return try await run(script)
+        } catch let error as OsascriptRunnerError {
+            throw error.asTerminalBridgeError(terminal: terminal)
+        }
+    }
+
+    /// Decode JXA JSON output into `[DiscoveredSession]`, wrapping errors
+    /// as `TerminalBridgeError.discoveryDecodeFailed`.
+    public static func decodeDiscoveryJSON(_ output: String) throws -> [DiscoveredSession] {
+        guard let data = output.data(using: .utf8) else {
+            throw TerminalBridgeError.discoveryDecodeFailed(
+                output: output,
+                underlying: NSError(
+                    domain: "OsascriptRunner", code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "Output is not valid UTF-8"]
+                )
+            )
+        }
+        do {
+            return try JSONDecoder().decode([DiscoveredSession].self, from: data)
+        } catch {
+            throw TerminalBridgeError.discoveryDecodeFailed(output: output, underlying: error)
+        }
+    }
+}
+
+extension OsascriptRunnerError {
+    func asTerminalBridgeError(terminal: TerminalType) -> TerminalBridgeError {
+        switch self {
+        case .applicationNotRunning:
+            return .terminalNotRunning(terminal: terminal)
+        case .scriptFailed(let status, let stderr):
+            return .scriptFailed(terminal: terminal, status: status, stderr: stderr)
+        case .launchFailed(let underlying):
+            return .scriptFailed(
+                terminal: terminal, status: -1,
+                stderr: "Failed to launch osascript: \(underlying.localizedDescription)"
+            )
+        }
+    }
 }
