@@ -411,11 +411,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 voice: voiceManager.operatorVoice,
                 prefix: "Operator"
             )
-            if let url = URL(
-                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-            ) {
-                NSWorkspace.shared.open(url)
-            }
+            SystemSettings.openAccessibility()
         }
 
         let micGranted = await AVCaptureDevice.requestAccess(for: .audio)

@@ -1,5 +1,4 @@
 import AVFoundation
-import AppKit
 import Foundation
 import Speech
 
@@ -126,12 +125,8 @@ public final class OnboardingViewModel {
     }
 
     public func openAccessibilitySettings() {
-        if let url = URL(
-            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-        ) {
-            NSWorkspace.shared.open(url)
-            Self.logger.info("Opened Accessibility System Settings")
-        }
+        SystemSettings.openAccessibility()
+        Self.logger.info("Opened Accessibility System Settings")
     }
 
     /// Start polling `AXIsProcessTrusted()` every 1 second.
@@ -223,11 +218,7 @@ public final class OnboardingViewModel {
         }
 
         speechRecognitionRequested = true
-        let status = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status)
-            }
-        }
+        let status = await AppleSpeechEngine.requestAuthorization()
         speechRecognitionGranted = status == .authorized
         Self.logger.info(
             "Speech recognition permission: \(String(describing: status))"
