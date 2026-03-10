@@ -309,8 +309,8 @@ extension MessageRouter {
 
             let candidates: [String]
             if let rawCandidates = json["candidates"] as? [String] {
-                candidates = rawCandidates.filter { name in
-                    Self.canonicalSession(name, in: sessionNames) != nil
+                candidates = rawCandidates.compactMap { name in
+                    Self.canonicalSession(name, in: sessionNames)
                 }
             } else {
                 candidates = sessionNames
