@@ -144,9 +144,9 @@ extension MessageRouter {
         let sessions = await registry.allSessions()
         let sessionNames = sessions.map { $0.name }
 
-        if let (target, message) = extractKeyword(from: trimmed, sessionNames: sessionNames) {
-            Self.logger.info("Keyword match: routing to '\(target)'")
-            return .resolved(.route(session: target, message: message))
+        if let match = AgentNameMatcher.match(in: trimmed, sessionNames: sessionNames) {
+            Self.logger.info("Keyword match: routing to '\(match.session)'")
+            return .resolved(.route(session: match.session, message: match.message))
         }
 
         if sessions.count == 1 {
@@ -241,7 +241,7 @@ extension MessageRouter {
             let nameRange = Range(match.range(at: 1), in: lowered)
         {
             let agentName = String(lowered[nameRange])
-            if agentName.lowercased() != "i" {
+            if agentName != "i" {
                 return .replayAgent(name: agentName)
             }
         }
@@ -250,21 +250,6 @@ extension MessageRouter {
             return matcher.command
         }
         return nil
-    }
-}
-
-// MARK: - Keyword Extraction
-
-extension MessageRouter {
-    /// Extract an explicit agent name and message from the user's utterance.
-    func extractKeyword(
-        from text: String,
-        sessionNames: [String]
-    ) -> (session: String, message: String)? {
-        guard let result = AgentNameMatcher.match(in: text, sessionNames: sessionNames) else {
-            return nil
-        }
-        return (session: result.session, message: result.message)
     }
 }
 

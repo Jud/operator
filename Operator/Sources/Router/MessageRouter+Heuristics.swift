@@ -87,10 +87,6 @@ extension MessageRouter {
         return HeuristicCandidate(session: session.name, score: score, directHits: directHits)
     }
 
-    static func heuristicMessageTokens(from text: String) -> Set<String> {
-        heuristicExpandedTokens(from: text)
-    }
-
     static func heuristicExpandedTokens(
         from text: String,
         dropStopWords: Bool = true
@@ -138,7 +134,7 @@ extension MessageRouter {
         text: String,
         sessions: [SessionState]
     ) -> String? {
-        let messageTokens = Self.heuristicMessageTokens(from: text)
+        let messageTokens = Self.heuristicExpandedTokens(from: text)
         guard !messageTokens.isEmpty else {
             return nil
         }
