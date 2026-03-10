@@ -369,8 +369,6 @@ extension FNKeyTrigger {
     /// Prompt the user for Accessibility permission with a spoken error and open System Settings.
     private func promptForAccessibilityPermission() {
         Self.logger.info("Opening System Settings for Accessibility permission")
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
-            NSWorkspace.shared.open(url)
-        }
+        SystemSettings.openAccessibility()
     }
 }

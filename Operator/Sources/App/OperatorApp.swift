@@ -46,6 +46,12 @@ public struct MenuBarContentView: View {
 
         Divider()
 
+        Button("Setup Guide...") {
+            if let appDelegate = NSApp.delegate as? AppDelegate {
+                appDelegate.showSetupGuide()
+            }
+        }
+
         Button("Settings...") {
             NSApp.activate(ignoringOtherApps: true)
             openSettings()
@@ -109,6 +115,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var modelManager: ModelManager?
     private var adaptiveTranscriptionEngine: AdaptiveTranscriptionEngine?
     private var adaptiveRoutingEngine: AdaptiveRoutingEngine?
+    private var onboardingWindow: OnboardingWindow?
+    private var onboardingWindowDelegate: OnboardingWindowDelegate?
 
     /// Called when the application finishes launching to bootstrap all components.
     nonisolated public func applicationDidFinishLaunching(_ notification: Notification) {
@@ -137,7 +145,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let sm = SpeechManager()
         speechManager = sm
 
-        await checkPermissions(speechManager: sm, voiceManager: vm)
+        if shouldShowOnboarding() {
+            await showOnboardingAndWait()
+        } else {
+            await checkPermissions(speechManager: sm, voiceManager: vm)
+        }
 
         let engines = bootstrapAdaptiveEngines(mm: mm, sm: sm)
         let aq = AudioQueue(speechManager: engines.adaptiveTTS, feedback: fb)
@@ -412,11 +424,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 voice: voiceManager.operatorVoice,
                 prefix: "Operator"
             )
-            if let url = URL(
-                string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-            ) {
-                NSWorkspace.shared.open(url)
-            }
+            SystemSettings.openAccessibility()
         }
 
         let micGranted = await AVCaptureDevice.requestAccess(for: .audio)
@@ -445,8 +453,66 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             "inputDeviceUID": "",
             "sttEngine": "parakeet",
             "ttsEngine": "qwen3",
-            "routingEngine": "local"
+            "routingEngine": "local",
+            "hasCompletedOnboarding": false
         ])
+    }
+
+    /// Whether the onboarding flow should be shown.
+    ///
+    /// Delegates to ``OnboardingViewModel/shouldShowOnboarding()`` which checks
+    /// the `hasCompletedOnboarding` flag and current permission states.
+    private func shouldShowOnboarding() -> Bool {
+        OnboardingViewModel.shouldShowOnboarding()
+    }
+
+    /// Show the onboarding window and suspend until the user completes it.
+    ///
+    /// Creates the ``OnboardingWindow``, wires its close-button delegate, and
+    /// uses `withCheckedContinuation` so the bootstrap flow blocks until
+    /// ``OnboardingViewModel/completeOnboarding()`` fires (either from the
+    /// "Get Started" button or from the window close button).
+    private func showOnboardingAndWait() async {
+        let window = ensureOnboardingWindow()
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            OnboardingViewModel.shared.prepare {
+                continuation.resume()
+            }
+            window.show()
+        }
+
+        window.close()
+        onboardingWindow = nil
+        onboardingWindowDelegate = nil
+        Self.logger.info("Onboarding completed, resuming bootstrap")
+    }
+
+    /// Show the onboarding window from the "Setup Guide..." menu item.
+    ///
+    /// Refreshes current permission states, resets to the welcome step, and
+    /// opens the window. The completion handler is nil so finishing onboarding
+    /// simply closes the window without restarting bootstrap.
+    public func showSetupGuide() {
+        let vm = OnboardingViewModel.shared
+        vm.refreshPermissionStates()
+        vm.currentStep = .welcome
+
+        ensureOnboardingWindow().show()
+        Self.logger.info("Setup Guide opened from menu bar")
+    }
+
+    @discardableResult
+    private func ensureOnboardingWindow() -> OnboardingWindow {
+        if let existing = onboardingWindow {
+            return existing
+        }
+        let window = OnboardingWindow()
+        let delegate = OnboardingWindowDelegate()
+        window.delegate = delegate
+        onboardingWindow = window
+        onboardingWindowDelegate = delegate
+        return window
     }
 
     /// Wire fallback notification callbacks on each adaptive engine.
