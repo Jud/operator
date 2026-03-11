@@ -18,8 +18,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "OperatorShared",
+            path: "Sources/OperatorShared"
+        ),
+        .target(
             name: "OperatorCore",
             dependencies: [
+                "OperatorShared",
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "AudioCommon", package: "speech-swift"),
                 .product(name: "Qwen3TTS", package: "speech-swift"),
@@ -30,7 +35,10 @@ let package = Package(
                 .product(name: "MLXStructured", package: "mlx-swift-structured"),
             ],
             path: "Sources",
-            exclude: ["App/OperatorApp.swift"],
+            exclude: [
+                "App/OperatorApp.swift",
+                "OperatorShared/",
+            ],
             resources: [
                 .process("Resources"),
             ]
