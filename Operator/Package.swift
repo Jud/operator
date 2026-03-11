@@ -38,6 +38,7 @@ let package = Package(
             exclude: [
                 "App/OperatorApp.swift",
                 "OperatorShared/",
+                "MCPServer/",
             ],
             resources: [
                 .process("Resources"),
