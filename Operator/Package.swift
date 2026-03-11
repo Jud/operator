@@ -18,8 +18,13 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "OperatorShared",
+            path: "Sources/OperatorShared"
+        ),
+        .target(
             name: "OperatorCore",
             dependencies: [
+                "OperatorShared",
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "AudioCommon", package: "speech-swift"),
                 .product(name: "Qwen3TTS", package: "speech-swift"),
@@ -30,7 +35,11 @@ let package = Package(
                 .product(name: "MLXStructured", package: "mlx-swift-structured"),
             ],
             path: "Sources",
-            exclude: ["App/OperatorApp.swift"],
+            exclude: [
+                "App/OperatorApp.swift",
+                "OperatorShared/",
+                "MCPServer/",
+            ],
             resources: [
                 .process("Resources"),
             ]
@@ -40,10 +49,26 @@ let package = Package(
             dependencies: ["OperatorCore"],
             path: "Sources/App"
         ),
+        .target(
+            name: "OperatorMCPCore",
+            dependencies: ["OperatorShared"],
+            path: "Sources/MCPServer",
+            exclude: ["Entry/OperatorMCPApp.swift"]
+        ),
+        .executableTarget(
+            name: "OperatorMCP",
+            dependencies: ["OperatorMCPCore"],
+            path: "Sources/MCPServer/Entry"
+        ),
         .executableTarget(
             name: "E2ETests",
             dependencies: ["OperatorCore"],
             path: "Tests/E2E"
+        ),
+        .testTarget(
+            name: "OperatorMCPTests",
+            dependencies: ["OperatorMCPCore"],
+            path: "Tests/OperatorMCPTests"
         ),
         .testTarget(
             name: "OperatorTests",

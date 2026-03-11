@@ -1,26 +1,15 @@
 // swiftlint:disable:this file_name
 import Foundation
 import Hummingbird
+@_exported import OperatorShared
 
-/// JSON body for POST /speak.
-///
-/// Matches the MCP server's speak() tool output: message text, optional
-/// session name for voice lookup, and optional priority level.
-public struct SpeakRequest: Decodable, Sendable {
-    let message: String
-    let session: String?
-    let priority: String?
-}
+// MARK: - OperatorShared ResponseEncodable Conformances
 
-/// JSON response for successful operations.
-public struct OkResponse: ResponseEncodable, Sendable {
-    let ok: Bool
-}
+extension OkResponse: ResponseEncodable {}
+extension QueuedResponse: ResponseEncodable {}
+extension HookSessionStartResponse: ResponseEncodable {}
 
-/// JSON response for POST /speak confirming message was queued.
-public struct QueuedResponse: ResponseEncodable, Sendable {
-    let queued: Bool
-}
+// MARK: - Daemon-Only Types
 
 /// JSON response for GET /state.
 ///
@@ -29,48 +18,6 @@ public struct StateResponse: ResponseEncodable, Sendable {
     let state: String
     let queueLength: Int
     let sessions: [SessionSnapshot]
-}
-
-/// JSON body for POST /hook/session-start.
-///
-/// Accepts the Claude Code hook payload for session start events.
-/// The optional `terminal_type` field identifies the terminal emulator
-/// ("ghostty" or "iterm2"). When absent, defaults to iTerm2 behavior
-/// for backward compatibility with older MCP server versions.
-public struct HookSessionStartRequest: Decodable, Sendable {
-    enum CodingKeys: String, CodingKey {
-        case sessionId = "session_id"
-        case tty
-        case cwd
-        case terminalType = "terminal_type"
-    }
-
-    let sessionId: String
-    let tty: String
-    let cwd: String
-    let terminalType: String?
-}
-
-/// JSON response for POST /hook/session-start with `needs_terminal_id` for Ghostty resolution.
-public struct HookSessionStartResponse: ResponseEncodable, Sendable {
-    enum CodingKeys: String, CodingKey {
-        case ok
-        case needsTerminalId = "needs_terminal_id"
-    }
-
-    let ok: Bool
-    let needsTerminalId: Bool
-}
-
-/// JSON body for POST /hook/terminal-id mapping a TTY to its Ghostty terminal ID.
-public struct HookTerminalIdRequest: Decodable, Sendable {
-    enum CodingKeys: String, CodingKey {
-        case tty
-        case ghosttyId = "ghostty_id"
-    }
-
-    let tty: String
-    let ghosttyId: String
 }
 
 /// JSON body for POST /hook/stop.

@@ -6,19 +6,21 @@ MACOS := $(CONTENTS)/MacOS
 RESOURCES := $(CONTENTS)/Resources
 SWIFT_BUILD := Operator/.build/release
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo "0.1.0")
-NODE := $(shell nodenv which node 2>/dev/null || command -v node 2>/dev/null || echo "node")
 
-.PHONY: all clean app mcp zip verify bench bench-list bench-routing bench-routing-latency bench-routing-accuracy bench-tts bench-stt bench-stt-latency bench-stt-long bench-memory
+.PHONY: all clean app zip verify bench bench-list bench-routing bench-routing-latency bench-routing-accuracy bench-tts bench-stt bench-stt-latency bench-stt-long bench-memory
 
 all: app
 
 # Build the complete .app bundle
-app: swift-build mcp-build
+app: swift-build
 	@echo "==> Assembling $(APP_NAME).app"
 	mkdir -p $(MACOS) $(RESOURCES)
 
-	# Binary
+	# Daemon binary
 	cp $(SWIFT_BUILD)/Operator $(MACOS)/Operator
+
+	# MCP server binary
+	cp $(SWIFT_BUILD)/OperatorMCP $(MACOS)/operator-mcp
 
 	# SPM resource bundle (audio cues)
 	# Must be at .app root — SPM's Bundle.module looks at Bundle.main.bundleURL/
@@ -31,31 +33,12 @@ app: swift-build mcp-build
 	# Entitlements (for reference; used at signing time)
 	cp Operator/Operator.entitlements $(CONTENTS)/
 
-	# MCP server
-	mkdir -p $(RESOURCES)/mcp-server
-	cp -R mcp-server/build $(RESOURCES)/mcp-server/
-	cp mcp-server/package.json $(RESOURCES)/mcp-server/
-	cp -R mcp-server/node_modules $(RESOURCES)/mcp-server/
-
-	# CLI wrapper: operator-mcp (resolves symlinks before finding Resources)
-	@echo '#!/bin/bash' > $(MACOS)/operator-mcp
-	@echo 'SELF="$$0"' >> $(MACOS)/operator-mcp
-	@echo 'while [ -L "$$SELF" ]; do SELF="$$(readlink "$$SELF")"; done' >> $(MACOS)/operator-mcp
-	@echo 'RESOURCES="$$(cd "$$(dirname "$$SELF")/../Resources" && pwd)"' >> $(MACOS)/operator-mcp
-	@echo 'exec "$(NODE)" "$$RESOURCES/mcp-server/build/index.js" "$$@"' >> $(MACOS)/operator-mcp
-	chmod +x $(MACOS)/operator-mcp
-
 	@echo "==> $(APP_BUNDLE) assembled"
 
-# Build the Swift daemon
+# Build the Swift daemon and MCP server
 swift-build:
-	@echo "==> Building Swift daemon (release)"
+	@echo "==> Building Swift targets (release)"
 	cd Operator && swift build -c release --disable-sandbox
-
-# Build the MCP server
-mcp-build:
-	@echo "==> Building MCP server"
-	cd mcp-server && npm ci --ignore-scripts && npm run build
 
 # Create distributable zip
 zip: app
