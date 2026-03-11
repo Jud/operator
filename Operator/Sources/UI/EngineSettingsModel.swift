@@ -40,6 +40,12 @@ public final class EngineSettingsModel {
     /// The Bool parameter indicates whether to use the local engine.
     public var onRoutingEngineChanged: ((Bool) -> Void)?
 
+    /// Called when the speech rate preference changes.
+    public var onSpeechRateChanged: ((Float) -> Void)?
+
+    /// Called when the voice style instruction changes.
+    public var onVoiceInstructChanged: ((String) -> Void)?
+
     // MARK: - Lifecycle
 
     private var observationTask: Task<Void, Never>?

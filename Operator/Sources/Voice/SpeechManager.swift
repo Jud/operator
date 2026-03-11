@@ -31,6 +31,12 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     /// The session name (prefix) associated with the currently playing utterance.
     private var currentSession: String = ""
 
+    /// Playback speed multiplier for Apple TTS.
+    ///
+    /// Mapped from the user-facing 0.5–2.0 range to AVSpeechUtterance's rate scale
+    /// where 0.5 is the Apple default. A value of 1.0 here means "normal" (Apple rate 0.55).
+    public var speechRate: Float = 1.0
+
     /// Stream that yields each time an utterance finishes playing (not interrupted).
     ///
     /// AudioQueue consumes this to trigger playback of the next queued message.
@@ -66,7 +72,8 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
 
         let utterance = AVSpeechUtterance(string: fullText)
         utterance.voice = voice.appleVoice
-        utterance.rate = 0.55
+        let scaledRate = 0.55 * speechRate
+        utterance.rate = min(max(scaledRate, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
         utterance.pitchMultiplier = pitchMultiplier
 
         Self.logger.info("Speaking: \"\(prefix): \(text.prefix(60))...\" (pitch: \(pitchMultiplier))")

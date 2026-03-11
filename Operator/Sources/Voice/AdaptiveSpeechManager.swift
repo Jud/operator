@@ -102,6 +102,25 @@ public final class AdaptiveSpeechManager: SpeechManaging {
         Self.logger.info("TTS engine preference changed to \(enabled ? "Qwen3-TTS" : "Apple")")
     }
 
+    /// Set the playback speed multiplier on both engines.
+    ///
+    /// 1.0 = normal speed, 1.3 = 30% faster, 0.8 = 20% slower.
+    /// Takes effect immediately, including on currently playing audio (Qwen3-TTS).
+    /// For Apple TTS, takes effect on the next utterance.
+    public func setSpeechRate(_ rate: Float) {
+        localEngine.speechRate = rate
+        fallbackEngine.speechRate = rate
+        Self.logger.info("Speech rate changed to \(rate)")
+    }
+
+    /// Set the Qwen3-TTS voice style instruction.
+    ///
+    /// Only affects the local Qwen3-TTS engine. Apple TTS ignores this.
+    public func setVoiceInstruct(_ instruct: String) {
+        localEngine.voiceInstruct = instruct
+        Self.logger.info("Voice instruct changed to \"\(instruct)\"")
+    }
+
     // MARK: - SpeechManaging Methods
 
     /// Speak text using the currently active engine.

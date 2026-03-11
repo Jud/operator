@@ -255,6 +255,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         adaptiveTranscriptionEngine = adaptiveSTT
 
         let qwenTTS = Qwen3TTSSpeechManager(modelManager: mm)
+        applyStoredVoiceSettings(qwenTTS: qwenTTS, appleTTS: sm)
         let adaptiveTTS = AdaptiveSpeechManager(
             localEngine: qwenTTS,
             fallbackEngine: sm,
@@ -459,7 +460,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             "sttEngine": "parakeet",
             "ttsEngine": "qwen3",
             "routingEngine": "local",
-            "hasCompletedOnboarding": false
+            "hasCompletedOnboarding": false,
+            "speechRate": 1.0,
+            "voiceInstruct": "Speak naturally."
         ])
     }
 
@@ -603,6 +606,21 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         settings.onRoutingEngineChanged = { [weak adaptiveRouting] useLocal in
             adaptiveRouting?.setUseLocal(useLocal)
         }
+        settings.onSpeechRateChanged = { [weak adaptiveTTS] rate in
+            adaptiveTTS?.setSpeechRate(rate)
+        }
+        settings.onVoiceInstructChanged = { [weak adaptiveTTS] instruct in
+            adaptiveTTS?.setVoiceInstruct(instruct)
+        }
+    }
+
+    /// Apply stored speech rate and voice instruct preferences to TTS engines at startup.
+    private func applyStoredVoiceSettings(qwenTTS: Qwen3TTSSpeechManager, appleTTS: SpeechManager) {
+        let storedRate = Float(UserDefaults.standard.double(forKey: "speechRate"))
+        let rate = storedRate > 0 ? storedRate : 1.0
+        qwenTTS.speechRate = rate
+        qwenTTS.voiceInstruct = UserDefaults.standard.string(forKey: "voiceInstruct") ?? "Speak naturally."
+        appleTTS.speechRate = rate
     }
 
     private func installCLISymlinks() {

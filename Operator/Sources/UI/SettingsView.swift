@@ -38,6 +38,14 @@ public struct SettingsView: View {
     @AppStorage("routingEngine")
     private var routingEngine: String = "local"
 
+    /// Speech playback speed multiplier (0.5–2.0, default 1.0).
+    @AppStorage("speechRate")
+    private var speechRate: Double = 1.0
+
+    /// Voice style instruction for Qwen3-TTS.
+    @AppStorage("voiceInstruct")
+    private var voiceInstruct: String = "Speak naturally."
+
     // MARK: - Local State
 
     @State private var inputDevices: [AudioDevice] = []
@@ -58,6 +66,7 @@ extension SettingsView {
         Form {
             audioDeviceSection
             engineSelectionSection
+            voiceSection
             modelStatusSection
             triggerKeySection
             triggerBehaviorSection
@@ -65,11 +74,13 @@ extension SettingsView {
             aboutSection
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 620)
+        .frame(width: 450, height: 680)
         .onAppear { refreshDevices() }
         .onChange(of: sttEngine) { handleSTTEngineChange($1) }
         .onChange(of: ttsEngine) { handleTTSEngineChange($1) }
         .onChange(of: routingEngine) { handleRoutingEngineChange($1) }
+        .onChange(of: speechRate) { handleSpeechRateChange($1) }
+        .onChange(of: voiceInstruct) { handleVoiceInstructChange($1) }
     }
 
     private var audioDeviceSection: some View {
@@ -129,6 +140,32 @@ extension SettingsView {
             if routingEngine == "local" {
                 engineStatusRow(for: .routing)
             }
+        }
+    }
+
+    private var voiceSection: some View {
+        Section("Voice") {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Speech Rate")
+                    Spacer()
+                    Text(speechRateLabel)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(value: $speechRate, in: 0.5...2.0, step: 0.05)
+            }
+            Picker("Voice Style", selection: $voiceInstruct) {
+                Text("Natural").tag("Speak naturally.")
+                Text("Brisk").tag("Speak at a brisk, clear pace.")
+                Text("Calm").tag("Speak slowly and calmly.")
+                Text("Energetic").tag("Speak with energy and enthusiasm.")
+            }
+            Text(
+                "Speech rate adjusts playback speed. Voice style guides Qwen3-TTS pacing and tone."
+            )
+            .font(.caption)
+            .foregroundStyle(.tertiary)
         }
     }
 
@@ -200,6 +237,10 @@ extension SettingsView {
             return "FN/Globe (key code 63)"
         }
         return "Key code \(triggerKeyCode)"
+    }
+
+    private var speechRateLabel: String {
+        String(format: "%.0f%%", speechRate * 100)
     }
 
     private var appVersion: String {
@@ -333,5 +374,13 @@ extension SettingsView {
 
     private func handleRoutingEngineChange(_ newValue: String) {
         EngineSettingsModel.shared.onRoutingEngineChanged?(newValue == "local")
+    }
+
+    private func handleSpeechRateChange(_ newValue: Double) {
+        EngineSettingsModel.shared.onSpeechRateChanged?(Float(newValue))
+    }
+
+    private func handleVoiceInstructChange(_ newValue: String) {
+        EngineSettingsModel.shared.onVoiceInstructChanged?(newValue)
     }
 }

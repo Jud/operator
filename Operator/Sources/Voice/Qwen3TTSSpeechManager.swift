@@ -16,11 +16,13 @@ private actor TTSModelSerializer {
     func synthesizeStream(
         text: String,
         speaker: String,
-        streaming: StreamingConfig
+        streaming: StreamingConfig,
+        instruct: String? = nil
     ) -> AsyncThrowingStream<AudioChunk, Error> {
         model.synthesizeStream(
             text: text,
             speaker: speaker,
+            instruct: instruct,
             streaming: streaming
         )
     }
@@ -60,6 +62,7 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
 
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
+    private let timePitchNode = AVAudioUnitTimePitch()
     private let outputFormat: AVAudioFormat
 
     // MARK: - Playback Tracking
@@ -81,6 +84,22 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
     /// ``AdaptiveSpeechManager`` to proactively fall back to Apple TTS
     /// before attempting to speak, preventing silent message loss.
     public private(set) var modelLoadFailed = false
+
+    /// Playback speed multiplier applied via AVAudioUnitTimePitch.
+    ///
+    /// 1.0 = normal speed, 1.3 = 30% faster, 0.8 = 20% slower.
+    /// Pitch is preserved regardless of rate. Takes effect immediately,
+    /// including on currently playing audio.
+    public var speechRate: Float = 1.0 {
+        didSet { timePitchNode.rate = speechRate }
+    }
+
+    /// Natural language instruction for Qwen3-TTS voice style control.
+    ///
+    /// Influences pacing, tone, and expressiveness at the model level.
+    /// Examples: "Speak naturally.", "Speak at a brisk, clear pace.",
+    /// "Speak slowly and calmly."
+    public var voiceInstruct: String = "Speak naturally."
 
     /// Stream that yields each time an utterance finishes playing (not interrupted).
     public let finishedSpeaking: AsyncStream<Void>
@@ -150,8 +169,9 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
 
         Self.logger.info("Speaking: \"\(prefix): \(text.prefix(60))...\" (speaker: \(voice.qwenSpeakerID))")
 
+        let instruct = voiceInstruct
         generationTask = Task { [weak self] in
-            await self?.performSpeech(fullText: fullText, speakerID: voice.qwenSpeakerID)
+            await self?.performSpeech(fullText: fullText, speakerID: voice.qwenSpeakerID, instruct: instruct)
         }
     }
 
@@ -198,13 +218,17 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
 
     private func setupAudioEngine() {
         audioEngine.attach(playerNode)
-        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: outputFormat)
+        audioEngine.attach(timePitchNode)
+        timePitchNode.pitch = 0
+        timePitchNode.rate = speechRate
+        audioEngine.connect(playerNode, to: timePitchNode, format: outputFormat)
+        audioEngine.connect(timePitchNode, to: audioEngine.mainMixerNode, format: outputFormat)
     }
 
     // MARK: - Speech Generation
 
     /// Run the full TTS pipeline: load model, start audio engine, stream chunks, schedule completion.
-    private func performSpeech(fullText: String, speakerID: String) async {
+    private func performSpeech(fullText: String, speakerID: String, instruct: String) async {
         do {
             try await ensureModelLoaded()
         } catch {
@@ -227,7 +251,7 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
             return
         }
 
-        await streamAndScheduleBuffers(serializer: serializer, text: fullText, speakerID: speakerID)
+        await streamAndScheduleBuffers(serializer: serializer, text: fullText, speakerID: speakerID, instruct: instruct)
 
         guard !Task.isCancelled else {
             return
@@ -257,12 +281,14 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
     private func streamAndScheduleBuffers(
         serializer: TTSModelSerializer,
         text: String,
-        speakerID: String
+        speakerID: String,
+        instruct: String
     ) async {
         let stream = await serializer.synthesizeStream(
             text: text,
             speaker: speakerID,
-            streaming: .lowLatency
+            streaming: .lowLatency,
+            instruct: instruct
         )
 
         do {
@@ -285,79 +311,6 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
         } catch {
             if !Task.isCancelled {
                 Self.logger.error("TTS streaming error: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    // MARK: - Model Lifecycle
-
-    /// Load the Qwen3-TTS model if not already in memory.
-    ///
-    /// Uses `Qwen3TTSModel.fromPretrained()` which handles downloading from
-    /// HuggingFace Hub (if not cached) and loading model weights. The model
-    /// remains resident after loading for the application session.
-    private func ensureModelLoaded() async throws {
-        guard serializer == nil else {
-            return
-        }
-        guard !isModelLoading else {
-            while isModelLoading {
-                try await Task.sleep(nanoseconds: 50_000_000)
-            }
-            return
-        }
-
-        isModelLoading = true
-        await modelManager.markLoading(.tts)
-        Self.logger.info("Loading Qwen3-TTS model...")
-
-        do {
-            // Inner scope limits `loaded` lifetime so it's consumed by the
-            // actor init before any subsequent suspension points.
-            do {
-                let loaded = try await Qwen3TTSModel.fromPretrained(
-                    modelId: TTSModelVariant.customVoice.rawValue
-                )
-                serializer = TTSModelSerializer(model: loaded)
-            }
-            isModelLoading = false
-            await modelManager.markLoaded(.tts)
-            Self.logger.info("Qwen3-TTS model loaded and ready")
-        } catch {
-            isModelLoading = false
-            await modelManager.markError(.tts, message: error.localizedDescription)
-            throw error
-        }
-    }
-
-    /// Register the download handler with ModelManager for Settings UI downloads.
-    private func registerDownloadHandler() {
-        let manager = modelManager
-        // swiftlint:disable:next unhandled_throwing_task
-        Task {
-            await manager.registerDownloadHandler(for: .tts) { _, progressCallback in
-                await progressCallback(0.0)
-                let modelId = TTSModelVariant.customVoice.rawValue
-                let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
-                if !HuggingFaceDownloader.weightsExist(in: cacheDir) {
-                    try await HuggingFaceDownloader.downloadWeights(
-                        modelId: modelId,
-                        to: cacheDir,
-                        additionalFiles: ["vocab.json", "merges.txt", "tokenizer_config.json"]
-                    )
-                }
-
-                let tokenizerModelId = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
-                let tokenizerDir = try HuggingFaceDownloader.getCacheDirectory(for: tokenizerModelId)
-                if !HuggingFaceDownloader.weightsExist(in: tokenizerDir) {
-                    try await HuggingFaceDownloader.downloadWeights(
-                        modelId: tokenizerModelId,
-                        to: tokenizerDir
-                    )
-                }
-
-                await progressCallback(1.0)
-                return cacheDir
             }
         }
     }
@@ -405,6 +358,81 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
         currentSession = ""
         totalScheduledSamples = 0
         finishedContinuation.yield()
+    }
+}
+
+// MARK: - Model Lifecycle
+
+extension Qwen3TTSSpeechManager {
+    /// Load the Qwen3-TTS model if not already in memory.
+    ///
+    /// Uses `Qwen3TTSModel.fromPretrained()` which handles downloading from
+    /// HuggingFace Hub (if not cached) and loading model weights. The model
+    /// remains resident after loading for the application session.
+    private func ensureModelLoaded() async throws {
+        guard serializer == nil else {
+            return
+        }
+        guard !isModelLoading else {
+            while isModelLoading {
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+            return
+        }
+
+        isModelLoading = true
+        await modelManager.markLoading(.tts)
+        Self.logger.info("Loading Qwen3-TTS model...")
+
+        do {
+            // Inner scope limits `loaded` lifetime so it's consumed by the
+            // actor init before any subsequent suspension points.
+            do {
+                let loaded = try await Qwen3TTSModel.fromPretrained(
+                    modelId: TTSModelVariant.customVoice.rawValue
+                )
+                serializer = TTSModelSerializer(model: loaded)
+            }
+            isModelLoading = false
+            await modelManager.markLoaded(.tts)
+            Self.logger.info("Qwen3-TTS model loaded and ready")
+        } catch {
+            isModelLoading = false
+            await modelManager.markError(.tts, message: error.localizedDescription)
+            throw error
+        }
+    }
+
+    /// Register the download handler with ModelManager for Settings UI downloads.
+    func registerDownloadHandler() {
+        let manager = modelManager
+        // swiftlint:disable:next unhandled_throwing_task
+        Task {
+            await manager.registerDownloadHandler(for: .tts) { _, progressCallback in
+                await progressCallback(0.0)
+                let modelId = TTSModelVariant.customVoice.rawValue
+                let cacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
+                if !HuggingFaceDownloader.weightsExist(in: cacheDir) {
+                    try await HuggingFaceDownloader.downloadWeights(
+                        modelId: modelId,
+                        to: cacheDir,
+                        additionalFiles: ["vocab.json", "merges.txt", "tokenizer_config.json"]
+                    )
+                }
+
+                let tokenizerModelId = "Qwen/Qwen3-TTS-Tokenizer-12Hz"
+                let tokenizerDir = try HuggingFaceDownloader.getCacheDirectory(for: tokenizerModelId)
+                if !HuggingFaceDownloader.weightsExist(in: tokenizerDir) {
+                    try await HuggingFaceDownloader.downloadWeights(
+                        modelId: tokenizerModelId,
+                        to: tokenizerDir
+                    )
+                }
+
+                await progressCallback(1.0)
+                return cacheDir
+            }
+        }
     }
 }
 
