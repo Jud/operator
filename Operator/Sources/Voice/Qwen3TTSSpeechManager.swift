@@ -49,6 +49,12 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
     /// Qwen3-TTS output sample rate.
     private static let sampleRate: Double = 24_000
 
+    /// Default speech rate multiplier (1.0 = normal speed).
+    public static let defaultSpeechRate: Float = 1.0
+
+    /// Default voice style instruction for Qwen3-TTS.
+    public static let defaultVoiceInstruct = "Speak naturally."
+
     // MARK: - Dependencies
 
     private let modelManager: ModelManager
@@ -90,7 +96,7 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
     /// 1.0 = normal speed, 1.3 = 30% faster, 0.8 = 20% slower.
     /// Pitch is preserved regardless of rate. Takes effect immediately,
     /// including on currently playing audio.
-    public var speechRate: Float = 1.0 {
+    public var speechRate: Float = Qwen3TTSSpeechManager.defaultSpeechRate {
         didSet { timePitchNode.rate = speechRate }
     }
 
@@ -99,7 +105,7 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
     /// Influences pacing, tone, and expressiveness at the model level.
     /// Examples: "Speak naturally.", "Speak at a brisk, clear pace.",
     /// "Speak slowly and calmly."
-    public var voiceInstruct: String = "Speak naturally."
+    public var voiceInstruct: String = Qwen3TTSSpeechManager.defaultVoiceInstruct
 
     /// Stream that yields each time an utterance finishes playing (not interrupted).
     public let finishedSpeaking: AsyncStream<Void>
@@ -219,8 +225,6 @@ public final class Qwen3TTSSpeechManager: SpeechManaging {
     private func setupAudioEngine() {
         audioEngine.attach(playerNode)
         audioEngine.attach(timePitchNode)
-        timePitchNode.pitch = 0
-        timePitchNode.rate = speechRate
         audioEngine.connect(playerNode, to: timePitchNode, format: outputFormat)
         audioEngine.connect(timePitchNode, to: audioEngine.mainMixerNode, format: outputFormat)
     }
@@ -404,7 +408,7 @@ extension Qwen3TTSSpeechManager {
     }
 
     /// Register the download handler with ModelManager for Settings UI downloads.
-    func registerDownloadHandler() {
+    private func registerDownloadHandler() {
         let manager = modelManager
         // swiftlint:disable:next unhandled_throwing_task
         Task {

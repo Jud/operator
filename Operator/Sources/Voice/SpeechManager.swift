@@ -35,7 +35,7 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     ///
     /// Mapped from the user-facing 0.5–2.0 range to AVSpeechUtterance's rate scale
     /// where 0.5 is the Apple default. A value of 1.0 here means "normal" (Apple rate 0.55).
-    public var speechRate: Float = 1.0
+    public var speechRate: Float = Qwen3TTSSpeechManager.defaultSpeechRate
 
     /// Stream that yields each time an utterance finishes playing (not interrupted).
     ///

@@ -461,8 +461,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             "ttsEngine": "qwen3",
             "routingEngine": "local",
             "hasCompletedOnboarding": false,
-            "speechRate": 1.0,
-            "voiceInstruct": "Speak naturally."
+            "speechRate": Double(Qwen3TTSSpeechManager.defaultSpeechRate),
+            "voiceInstruct": Qwen3TTSSpeechManager.defaultVoiceInstruct
         ])
     }
 
@@ -616,10 +616,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Apply stored speech rate and voice instruct preferences to TTS engines at startup.
     private func applyStoredVoiceSettings(qwenTTS: Qwen3TTSSpeechManager, appleTTS: SpeechManager) {
-        let storedRate = Float(UserDefaults.standard.double(forKey: "speechRate"))
-        let rate = storedRate > 0 ? storedRate : 1.0
+        let rate = Float(UserDefaults.standard.double(forKey: "speechRate"))
         qwenTTS.speechRate = rate
-        qwenTTS.voiceInstruct = UserDefaults.standard.string(forKey: "voiceInstruct") ?? "Speak naturally."
+        qwenTTS.voiceInstruct =
+            UserDefaults.standard.string(forKey: "voiceInstruct")
+            ?? Qwen3TTSSpeechManager.defaultVoiceInstruct
         appleTTS.speechRate = rate
     }
 
