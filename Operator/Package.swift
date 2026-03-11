@@ -66,6 +66,11 @@ let package = Package(
             path: "Tests/E2E"
         ),
         .testTarget(
+            name: "OperatorMCPTests",
+            dependencies: ["OperatorMCPCore"],
+            path: "Tests/OperatorMCPTests"
+        ),
+        .testTarget(
             name: "OperatorTests",
             dependencies: ["OperatorCore"],
             path: "Tests/OperatorTests"

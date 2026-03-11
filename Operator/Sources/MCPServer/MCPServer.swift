@@ -60,7 +60,7 @@ public struct MCPServer: Sendable {
 
     // MARK: - Method Dispatch
 
-    private func handleRequest(_ request: JSONRPCRequest) async -> JSONRPCResponse? {
+    func handleRequest(_ request: JSONRPCRequest) async -> JSONRPCResponse? {
         switch request.method {
         case "initialize":
             return handleInitialize(id: request.id)

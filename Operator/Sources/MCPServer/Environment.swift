@@ -10,10 +10,24 @@ public struct Config: Sendable {
     /// Daemon HTTP port (from OPERATOR_PORT, default 7_420).
     public let port: Int
     /// Base URL for daemon HTTP API.
-    public var baseURL: String { "http://localhost:\(port)" }
+    public var baseURL: String {
+        "http://localhost:\(port)"
+    }
 }
 
 // MARK: - Environment Detection
+
+/// Normalize raw TTY output from `ps` into a canonical device path.
+///
+/// Prepends `/dev/` if missing. Returns `"unknown"` for nil or empty input.
+internal func normalizeTTY(_ rawOutput: String?) -> String {
+    guard let raw = rawOutput?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !raw.isEmpty
+    else {
+        return "unknown"
+    }
+    return raw.hasPrefix("/dev/") ? raw : "/dev/\(raw)"
+}
 
 /// Detect the TTY of the parent shell process.
 ///
@@ -35,13 +49,8 @@ public func detectTTY() -> String {
         process.waitUntilExit()
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        guard let raw = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
-            !raw.isEmpty
-        else {
-            return "unknown"
-        }
-
-        return raw.hasPrefix("/dev/") ? raw : "/dev/\(raw)"
+        let raw = String(data: data, encoding: .utf8)
+        return normalizeTTY(raw)
     } catch {
         return "unknown"
     }
