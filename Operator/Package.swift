@@ -49,6 +49,17 @@ let package = Package(
             dependencies: ["OperatorCore"],
             path: "Sources/App"
         ),
+        .target(
+            name: "OperatorMCPCore",
+            dependencies: ["OperatorShared"],
+            path: "Sources/MCPServer",
+            exclude: ["Entry/OperatorMCPApp.swift"]
+        ),
+        .executableTarget(
+            name: "OperatorMCP",
+            dependencies: ["OperatorMCPCore"],
+            path: "Sources/MCPServer/Entry"
+        ),
         .executableTarget(
             name: "E2ETests",
             dependencies: ["OperatorCore"],

@@ -1,5 +1,6 @@
 import Foundation
 import OperatorShared
+import os
 
 /// Resolves the Ghostty terminal ID for a session by writing an ANSI title
 /// marker to the TTY device and enumerating Ghostty windows via JXA.
@@ -7,12 +8,16 @@ import OperatorShared
 /// Resolution is attempted at most once per session lifetime. If the TTY is
 /// `"unknown"` or resolution has already been attempted, the call is a no-op.
 /// All errors are silently swallowed and logged to stderr.
-internal final class GhosttyResolver: Sendable {
+public final class GhosttyResolver: Sendable {
     private let client: DaemonClient
     private let tty: String
     private let resolved: OSAllocatedUnfairLock<Bool>
 
-    init(client: DaemonClient, tty: String) {
+    /// Creates a new Ghostty resolver.
+    /// - Parameters:
+    ///   - client: Daemon HTTP client for posting the resolved terminal ID.
+    ///   - tty: TTY device path of the session.
+    public init(client: DaemonClient, tty: String) {
         self.client = client
         self.tty = tty
         self.resolved = OSAllocatedUnfairLock(initialState: false)
@@ -71,7 +76,7 @@ internal final class GhosttyResolver: Sendable {
         }
 
         let request = HookTerminalIdRequest(tty: tty, ghosttyId: ghosttyId)
-        _ = await client.post(path: "/hook/terminal-id", body: request) as Data?
+        _ = await client.postRaw(path: "/hook/terminal-id", body: request)
     }
 
     private func runJXAEnumeration(marker: String) throws -> String {

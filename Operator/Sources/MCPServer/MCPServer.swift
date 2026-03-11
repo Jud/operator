@@ -6,9 +6,11 @@ import OperatorShared
 /// Reads newline-delimited JSON-RPC requests from stdin, dispatches to method
 /// handlers, and writes JSON-RPC responses as single-line JSON to stdout.
 /// All diagnostic output goes to stderr to keep the MCP transport clean.
-internal struct MCPServer: Sendable {
-    let client: DaemonClient
-    let sessionName: String
+public struct MCPServer: Sendable {
+    /// Daemon HTTP client for speak tool requests.
+    public let client: DaemonClient
+    /// Session name derived from the CWD basename.
+    public let sessionName: String
 
     private let encoder: JSONEncoder = {
         let enc = JSONEncoder()
@@ -18,11 +20,20 @@ internal struct MCPServer: Sendable {
 
     private let decoder = JSONDecoder()
 
+    /// Creates a new MCP server.
+    /// - Parameters:
+    ///   - client: Daemon HTTP client for speak tool requests.
+    ///   - sessionName: Session name derived from the CWD basename.
+    public init(client: DaemonClient, sessionName: String) {
+        self.client = client
+        self.sessionName = sessionName
+    }
+
     /// Run the stdin read loop, processing one JSON-RPC request per line.
     ///
     /// Blocks on `readLine()` in the calling async context. Returns when
     /// stdin reaches EOF (Claude Code exited or closed the pipe).
-    func stdinLoop() async {
+    public func stdinLoop() async {
         while let line = readLine(strippingNewline: true) {
             guard !line.isEmpty else {
                 continue
@@ -151,7 +162,7 @@ internal struct MCPServer: Sendable {
             priority: priority
         )
 
-        guard let responseData: Data = await client.post(path: "/speak", body: speakRequest) else {
+        guard let responseData = await client.postRaw(path: "/speak", body: speakRequest) else {
             let errorContent = toolResultContent(
                 text: "Operator daemon unreachable",
                 isError: true

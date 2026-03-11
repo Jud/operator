@@ -4,13 +4,13 @@ import Foundation
 // MARK: - Config
 
 /// Runtime configuration for the MCP server, loaded from environment variables.
-internal struct Config: Sendable {
+public struct Config: Sendable {
     /// Bearer token for daemon API authentication (from OPERATOR_TOKEN).
-    let token: String
+    public let token: String
     /// Daemon HTTP port (from OPERATOR_PORT, default 7_420).
-    let port: Int
+    public let port: Int
     /// Base URL for daemon HTTP API.
-    var baseURL: String { "http://localhost:\(port)" }
+    public var baseURL: String { "http://localhost:\(port)" }
 }
 
 // MARK: - Environment Detection
@@ -19,7 +19,7 @@ internal struct Config: Sendable {
 ///
 /// Shells out to `ps -o tty= -p {ppid}` and normalizes the result
 /// to include a `/dev/` prefix. Returns `"unknown"` on failure.
-internal func detectTTY() -> String {
+public func detectTTY() -> String {
     let parentPID = getppid()
 
     let process = Process()
@@ -50,13 +50,13 @@ internal func detectTTY() -> String {
 /// Detect the terminal emulator type from the TERM_PROGRAM environment variable.
 ///
 /// Returns `"ghostty"` when running in Ghostty, `"iterm2"` for all other terminals.
-internal func detectTerminalType() -> String {
+public func detectTerminalType() -> String {
     let termProgram = ProcessInfo.processInfo.environment["TERM_PROGRAM"]
     return termProgram == "ghostty" ? "ghostty" : "iterm2"
 }
 
 /// Derive the session name from the basename of the current working directory.
-internal func deriveSessionName() -> String {
+public func deriveSessionName() -> String {
     URL(fileURLWithPath: FileManager.default.currentDirectoryPath).lastPathComponent
 }
 
@@ -64,7 +64,7 @@ internal func deriveSessionName() -> String {
 ///
 /// Reads `OPERATOR_TOKEN` for the bearer token and `OPERATOR_PORT` for the
 /// daemon port (defaults to 7_420 if unset or non-numeric). No file I/O is performed.
-internal func loadConfig() -> Config {
+public func loadConfig() -> Config {
     let env = ProcessInfo.processInfo.environment
     let token = env["OPERATOR_TOKEN"] ?? ""
     let port = env["OPERATOR_PORT"].flatMap(Int.init) ?? 7_420

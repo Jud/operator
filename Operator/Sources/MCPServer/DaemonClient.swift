@@ -4,17 +4,26 @@ import Foundation
 ///
 /// All requests are best-effort: errors are caught internally and logged
 /// to stderr. Methods return `nil` on failure rather than throwing.
-internal struct DaemonClient: Sendable {
+public struct DaemonClient: Sendable {
     /// Base URL of the daemon (e.g., "http://localhost:7420").
-    let baseURL: String
+    public let baseURL: String
     /// Bearer token for daemon authentication.
-    let token: String
+    public let token: String
+
+    /// Creates a new daemon client.
+    /// - Parameters:
+    ///   - baseURL: Base URL of the daemon (e.g., "http://localhost:7420").
+    ///   - token: Bearer token for daemon authentication.
+    public init(baseURL: String, token: String) {
+        self.baseURL = baseURL
+        self.token = token
+    }
 
     /// POST a JSON-encoded body to the daemon and return the raw response data.
     ///
     /// Returns `nil` if the request fails for any reason (network error,
     /// non-2xx status, encoding failure). Failures are logged to stderr.
-    func post<T: Encodable & Sendable>(path: String, body: T) async -> Data? {
+    func postRaw<T: Encodable & Sendable>(path: String, body: T) async -> Data? {
         guard let url = URL(string: "\(baseURL)\(path)") else {
             log("Invalid URL: \(baseURL)\(path)")
             return nil
@@ -53,7 +62,7 @@ internal struct DaemonClient: Sendable {
     ///
     /// Returns `nil` if the request fails or the response cannot be decoded.
     func post<T: Encodable & Sendable, R: Decodable>(path: String, body: T) async -> R? {
-        guard let data: Data = await post(path: path, body: body) else {
+        guard let data = await postRaw(path: path, body: body) else {
             return nil
         }
 

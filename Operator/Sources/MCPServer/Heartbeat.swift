@@ -7,13 +7,36 @@ import OperatorShared
 /// then every 5 seconds. After the first successful heartbeat, sends a spoken
 /// greeting and triggers Ghostty terminal ID resolution if requested by the daemon.
 /// All daemon communication failures are silently swallowed.
-internal struct Heartbeat: Sendable {
-    let client: DaemonClient
-    let ghosttyResolver: GhosttyResolver
-    let sessionName: String
-    let tty: String
-    let cwd: String
-    let terminalType: String
+public struct Heartbeat: Sendable {
+    /// Daemon HTTP client for heartbeat and greeting POST requests.
+    public let client: DaemonClient
+    /// Ghostty terminal ID resolver triggered on first heartbeat.
+    public let ghosttyResolver: GhosttyResolver
+    /// Session name derived from the CWD basename.
+    public let sessionName: String
+    /// TTY device path of the parent shell.
+    public let tty: String
+    /// Current working directory of the session.
+    public let cwd: String
+    /// Terminal emulator type ("ghostty" or "iterm2").
+    public let terminalType: String
+
+    /// Creates a new heartbeat instance.
+    public init(
+        client: DaemonClient,
+        ghosttyResolver: GhosttyResolver,
+        sessionName: String,
+        tty: String,
+        cwd: String,
+        terminalType: String
+    ) {
+        self.client = client
+        self.ghosttyResolver = ghosttyResolver
+        self.sessionName = sessionName
+        self.tty = tty
+        self.cwd = cwd
+        self.terminalType = terminalType
+    }
 
     /// Run the heartbeat registration loop.
     ///
@@ -23,7 +46,7 @@ internal struct Heartbeat: Sendable {
     /// the `GhosttyResolver` for one-shot terminal ID resolution.
     ///
     /// This method runs indefinitely until the task is cancelled.
-    func heartbeatLoop() async {
+    public func heartbeatLoop() async {
         var greetingSent = false
 
         while !Task.isCancelled {
@@ -73,6 +96,6 @@ internal struct Heartbeat: Sendable {
             session: sessionName,
             priority: "normal"
         )
-        _ = await client.post(path: "/speak", body: request) as Data?
+        _ = await client.postRaw(path: "/speak", body: request)
     }
 }
