@@ -48,7 +48,7 @@ public final class GhosttyResolver: Sendable {
         do {
             try await resolve()
         } catch {
-            log("Ghostty resolution failed: \(error)")
+            MCPLog.write("Ghostty resolution failed: \(error)")
         }
     }
 
@@ -56,7 +56,7 @@ public final class GhosttyResolver: Sendable {
         let marker = "OPERATOR-\(UUID().uuidString)"
 
         guard let fileHandle = FileHandle(forWritingAtPath: tty) else {
-            log("Cannot open TTY device for writing: \(tty)")
+            MCPLog.write("Cannot open TTY device for writing: \(tty)")
             return
         }
         defer { fileHandle.closeFile() }
@@ -69,9 +69,7 @@ public final class GhosttyResolver: Sendable {
 
         try await Task.sleep(for: .milliseconds(500))
 
-        let ghosttyId = try runJXAEnumeration(marker: marker)
-
-        guard !ghosttyId.isEmpty, ghosttyId != "not_found" else {
+        guard let ghosttyId = try runJXAEnumeration(marker: marker) else {
             return
         }
 
@@ -79,7 +77,7 @@ public final class GhosttyResolver: Sendable {
         _ = await client.postRaw(path: "/hook/terminal-id", body: request)
     }
 
-    private func runJXAEnumeration(marker: String) throws -> String {
+    private func runJXAEnumeration(marker: String) throws -> String? {
         let script = """
             (function() {
                 var app = Application("Ghostty");
@@ -111,14 +109,12 @@ public final class GhosttyResolver: Sendable {
         process.waitUntilExit()
 
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8)?
+        let output =
+            String(data: data, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    }
-
-    private func log(_ message: String) {
-        let line = "[OperatorMCP] \(message)\n"
-        if let data = line.data(using: .utf8) {
-            FileHandle.standardError.write(data)
+        guard !output.isEmpty, output != "not_found" else {
+            return nil
         }
+        return output
     }
 }

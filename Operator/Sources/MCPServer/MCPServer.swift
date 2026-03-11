@@ -40,7 +40,7 @@ public struct MCPServer: Sendable {
             }
 
             guard let data = line.data(using: .utf8) else {
-                log("Failed to convert stdin line to UTF-8")
+                MCPLog.write("Failed to convert stdin line to UTF-8")
                 continue
             }
 
@@ -48,7 +48,7 @@ public struct MCPServer: Sendable {
             do {
                 request = try decoder.decode(JSONRPCRequest.self, from: data)
             } catch {
-                log("Malformed JSON-RPC input: \(error)")
+                MCPLog.write("Malformed JSON-RPC input: \(error)")
                 continue
             }
 
@@ -194,24 +194,11 @@ public struct MCPServer: Sendable {
 
     private func writeResponse(_ response: JSONRPCResponse) {
         do {
-            let data = try encoder.encode(response)
-            guard var line = String(data: data, encoding: .utf8) else {
-                log("Failed to encode response to UTF-8 string")
-                return
-            }
-            line.append("\n")
-            if let outputData = line.data(using: .utf8) {
-                FileHandle.standardOutput.write(outputData)
-            }
+            var data = try encoder.encode(response)
+            data.append(0x0A)
+            FileHandle.standardOutput.write(data)
         } catch {
-            log("Failed to encode JSON-RPC response: \(error)")
-        }
-    }
-
-    private func log(_ message: String) {
-        let line = "[OperatorMCP] \(message)\n"
-        if let data = line.data(using: .utf8) {
-            FileHandle.standardError.write(data)
+            MCPLog.write("Failed to encode JSON-RPC response: \(error)")
         }
     }
 }

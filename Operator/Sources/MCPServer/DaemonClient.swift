@@ -10,10 +10,10 @@ public struct DaemonClient: Sendable {
     /// Bearer token for daemon authentication.
     public let token: String
 
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
     /// Creates a new daemon client.
-    /// - Parameters:
-    ///   - baseURL: Base URL of the daemon (e.g., "http://localhost:7420").
-    ///   - token: Bearer token for daemon authentication.
     public init(baseURL: String, token: String) {
         self.baseURL = baseURL
         self.token = token
@@ -25,7 +25,7 @@ public struct DaemonClient: Sendable {
     /// non-2xx status, encoding failure). Failures are logged to stderr.
     func postRaw<T: Encodable & Sendable>(path: String, body: T) async -> Data? {
         guard let url = URL(string: "\(baseURL)\(path)") else {
-            log("Invalid URL: \(baseURL)\(path)")
+            MCPLog.write("Invalid URL: \(baseURL)\(path)")
             return nil
         }
 
@@ -35,9 +35,9 @@ public struct DaemonClient: Sendable {
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
 
         do {
-            request.httpBody = try JSONEncoder().encode(body)
+            request.httpBody = try encoder.encode(body)
         } catch {
-            log("Failed to encode request body for \(path): \(error)")
+            MCPLog.write("Failed to encode request body for \(path): \(error)")
             return nil
         }
 
@@ -47,13 +47,13 @@ public struct DaemonClient: Sendable {
             if let httpResponse = response as? HTTPURLResponse,
                 !(200...299).contains(httpResponse.statusCode)
             {
-                log("Daemon error \(httpResponse.statusCode) for \(path)")
+                MCPLog.write("Daemon error \(httpResponse.statusCode) for \(path)")
                 return nil
             }
 
             return data
         } catch {
-            log("Daemon unreachable for \(path): \(error)")
+            MCPLog.write("Daemon unreachable for \(path): \(error)")
             return nil
         }
     }
@@ -67,20 +67,10 @@ public struct DaemonClient: Sendable {
         }
 
         do {
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
             return try decoder.decode(R.self, from: data)
         } catch {
-            log("Failed to decode response for \(path): \(error)")
+            MCPLog.write("Failed to decode response for \(path): \(error)")
             return nil
-        }
-    }
-
-    /// Write a diagnostic message to stderr.
-    private func log(_ message: String) {
-        let line = "[OperatorMCP] \(message)\n"
-        if let data = line.data(using: .utf8) {
-            FileHandle.standardError.write(data)
         }
     }
 }
