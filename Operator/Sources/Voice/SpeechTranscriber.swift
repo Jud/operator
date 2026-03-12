@@ -136,26 +136,19 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
         let result = await engine.finishAndTranscribe()
         writeAudioFile()
+        capturedFormat = nil
         return result
     }
 
-    /// Perform transcription with a 30-second timeout.
+    /// Perform transcription with a timeout.
+    ///
+    /// The engine's internal stall detection (1–3s) handles timeouts, so this
+    /// simply delegates to ``stopListening()``. The `seconds` parameter is
+    /// retained for protocol conformance.
     ///
     /// - Returns: The transcribed text, or nil on timeout/failure/empty transcription.
-    public func stopListeningWithTimeout(seconds: TimeInterval = 30) async -> String? {
-        let transcriptionTask = Task {
-            await self.stopListening()
-        }
-
-        let timeoutTask = Task {
-            try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            transcriptionTask.cancel()
-            Self.logger.error("Transcription timed out after \(seconds) seconds")
-        }
-
-        let result = await transcriptionTask.value
-        timeoutTask.cancel()
-        return result
+    public func stopListeningWithTimeout(seconds _: TimeInterval = 30) async -> String? {
+        await stopListening()
     }
 
     // MARK: - Audio File Writing
