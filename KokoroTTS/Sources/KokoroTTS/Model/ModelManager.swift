@@ -31,13 +31,6 @@ public enum ModelManager {
         "kokoro_21_10s.mlmodelc",
     ]
 
-    /// Files required for the two-stage pipeline.
-    private static let twoStageModelFiles = [
-        "kokoro_duration.mlmodelc",
-        "kokoro_har_3s.mlmodelc",
-        "kokoro_har_10s.mlmodelc",
-    ]
-
     /// Shared support files.
     private static let supportFiles = [
         "G2PEncoder.mlmodelc",
@@ -51,21 +44,12 @@ public enum ModelManager {
     /// Check whether enough models exist to run inference.
     public static func modelsAvailable(at directory: URL) -> Bool {
         let fm = FileManager.default
-        // Need at least one TTS model (either two-stage or unified)
-        let hasTwoStage = fm.fileExists(
-            atPath: directory.appendingPathComponent("kokoro_duration.mlmodelc").path)
-            && (fm.fileExists(atPath: directory.appendingPathComponent("kokoro_har_3s.mlmodelc").path)
-                || fm.fileExists(atPath: directory.appendingPathComponent("kokoro_har_10s.mlmodelc").path))
-
-        let hasUnified = unifiedModelFiles.contains { file in
+        let hasModel = unifiedModelFiles.contains { file in
             fm.fileExists(atPath: directory.appendingPathComponent(file).path)
         }
-
-        // Need voices directory
         let hasVoices = fm.fileExists(
             atPath: directory.appendingPathComponent("voices").path)
-
-        return (hasTwoStage || hasUnified) && hasVoices
+        return hasModel && hasVoices
     }
 
     /// Download all model files to the specified directory.
@@ -80,10 +64,7 @@ public enum ModelManager {
         let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        // Collect all files to download
-        var allFiles = supportFiles + unifiedModelFiles
-        // Also try two-stage if available
-        allFiles += twoStageModelFiles
+        let allFiles = supportFiles + unifiedModelFiles
 
         let totalSteps = allFiles.count + 1  // +1 for voices
         var completed = 0

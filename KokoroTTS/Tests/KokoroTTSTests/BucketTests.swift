@@ -3,30 +3,6 @@ import Testing
 
 @Suite("Bucket")
 struct BucketTests {
-    @Test("Short text selects 3s bucket")
-    func shortText() {
-        let bucket = Bucket.select(forTokenCount: 20)
-        #expect(bucket == .threeSecond)
-    }
-
-    @Test("Medium text selects 10s bucket")
-    func mediumText() {
-        let bucket = Bucket.select(forTokenCount: 100)
-        #expect(bucket == .tenSecond)
-    }
-
-    @Test("Boundary: exactly at 3s limit")
-    func boundary3s() {
-        let bucket = Bucket.select(forTokenCount: 60)
-        #expect(bucket == .threeSecond)
-    }
-
-    @Test("Boundary: just over 3s limit")
-    func boundary3sOver() {
-        let bucket = Bucket.select(forTokenCount: 61)
-        #expect(bucket == .tenSecond)
-    }
-
     @Test("Unified bucket selection prefers smallest fit")
     func unifiedPreferSmallest() {
         let bucket = UnifiedBucket.select(forTokenCount: 100)
@@ -41,17 +17,21 @@ struct BucketTests {
         #expect(bucket == nil)
     }
 
-    @Test("All HAR buckets have decoder model names")
-    func decoderNames() {
-        for bucket in Bucket.allCases {
-            #expect(!bucket.decoderModelName.isEmpty)
+    @Test("All unified buckets have model names")
+    func modelNames() {
+        for bucket in UnifiedBucket.allCases {
+            #expect(!bucket.modelName.isEmpty)
         }
     }
 
-    @Test("Max frames are positive")
-    func maxFrames() {
-        for bucket in Bucket.allCases {
-            #expect(bucket.maxFrames > 0)
+    @Test("Max tokens are positive and ordered")
+    func maxTokensOrdered() {
+        let sorted = UnifiedBucket.allCases.sorted(by: { $0.maxTokens < $1.maxTokens })
+        for bucket in sorted {
+            #expect(bucket.maxTokens > 0)
         }
+        // Verify ordering: v21_5s < v21_10s < v24_10s
+        #expect(UnifiedBucket.v21_5s.maxTokens < UnifiedBucket.v21_10s.maxTokens)
+        #expect(UnifiedBucket.v21_10s.maxTokens < UnifiedBucket.v24_10s.maxTokens)
     }
 }

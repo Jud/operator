@@ -14,6 +14,4 @@ public enum KokoroError: Error, Sendable {
     case downloadFailed(String)
     /// Text too long for available model buckets.
     case textTooLong(tokenCount: Int, maxTokens: Int)
-    /// Alignment math produced invalid output.
-    case alignmentFailed(String)
 }

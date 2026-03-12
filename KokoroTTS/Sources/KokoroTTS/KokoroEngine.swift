@@ -1,11 +1,12 @@
 import CoreML
 import Foundation
+import NaturalLanguage
 
 /// High-quality text-to-speech engine using Kokoro-82M CoreML models.
 ///
-/// Two pipeline modes:
-/// - **Unified** (primary): Single end-to-end model per bucket
-/// - **Two-stage** (future): Duration Model (CPU/GPU) → Alignment (Accelerate) → HAR Decoder (ANE)
+/// Uses unified end-to-end models (StyleTTS2 + iSTFTNet vocoder) with one
+/// CoreML model per bucket size. Runs on the Apple Neural Engine for 3.5x
+/// faster inference vs GPU.
 ///
 /// ```swift
 /// let engine = try KokoroEngine(modelDirectory: ModelManager.defaultDirectory)
@@ -19,23 +20,19 @@ public final class KokoroEngine: @unchecked Sendable {
     /// Output sample rate in Hz.
     public static let sampleRate = 24_000
 
-    /// Number of random phases for iSTFTNet vocoder (unified models only).
+    /// Number of random phases for iSTFTNet vocoder.
     static let numPhases = 9
 
     private let phonemizer: Phonemizer
     private let tokenizer: Tokenizer
     private let voiceStore: VoiceStore
     private let modelDirectory: URL
-
-    // Two-stage pipeline
-    private var durationModel: DurationModel?
-    private var harDecoders: [Bucket: HARDecoder] = [:]
-
-    // Unified pipeline (primary)
     private var unifiedModels: [UnifiedBucket: MLModel] = [:]
 
-    /// Whether the engine uses the two-stage pipeline (true) or unified (false).
-    private(set) var isTwoStage: Bool = false
+    /// Maximum tokens that can be processed in a single model call.
+    private var maxTokensPerChunk: Int {
+        UnifiedBucket.allCases.map(\.maxTokens).max() ?? 242
+    }
 
     /// Creates a KokoroEngine from cached models.
     ///
@@ -74,7 +71,7 @@ public final class KokoroEngine: @unchecked Sendable {
 
         self.voiceStore = try VoiceStore(directory: modelDirectory.appendingPathComponent("voices"))
 
-        // Try unified models first (primary path)
+        // Load unified models
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine  // ANE: 3.5x faster than GPU (425ms vs 1490ms)
         config.allowLowPrecisionAccumulationOnGPU = allowLowPrecisionGPU
@@ -85,79 +82,79 @@ public final class KokoroEngine: @unchecked Sendable {
             }
         }
 
-        // Fall back to two-stage if no unified models
-        if unifiedModels.isEmpty {
-            let durationURL = modelDirectory.appendingPathComponent("kokoro_duration.mlmodelc")
-            if FileManager.default.fileExists(atPath: durationURL.path) {
-                self.durationModel = try DurationModel(modelURL: durationURL)
-                for bucket in Bucket.allCases {
-                    let decoderURL = modelDirectory.appendingPathComponent(
-                        bucket.decoderModelName + ".mlmodelc")
-                    if FileManager.default.fileExists(atPath: decoderURL.path) {
-                        self.harDecoders[bucket] = try HARDecoder(
-                            modelURL: decoderURL, bucket: bucket)
-                    }
-                }
-                if !harDecoders.isEmpty {
-                    self.isTwoStage = true
-                }
-            }
-
-            if !isTwoStage {
-                throw KokoroError.modelsNotAvailable(modelDirectory)
-            }
+        guard !unifiedModels.isEmpty else {
+            throw KokoroError.modelsNotAvailable(modelDirectory)
         }
     }
 
     /// Synthesize text to PCM audio samples.
     ///
+    /// Automatically splits long text into sentences when it exceeds the model's
+    /// token limit. Each sentence is synthesized separately and the results are
+    /// concatenated.
+    ///
     /// - Parameters:
-    ///   - text: Text to speak (1-3 sentences recommended).
+    ///   - text: Text to speak (any length).
     ///   - voice: Voice preset name (e.g. "af_heart", "am_adam").
     ///   - speed: Playback speed multiplier (0.5–2.0). Native duration scaling, not post-processing.
     /// - Returns: Synthesis result with PCM samples and metadata.
     public func synthesize(text: String, voice: String, speed: Float = 1.0, verbose: Bool = false) throws -> SynthesisResult {
         let t0 = CFAbsoluteTimeGetCurrent()
-
         let styleVector = try voiceStore.embedding(for: voice)
-        let tVoice = CFAbsoluteTimeGetCurrent()
 
         let phonemes = phonemizer.textToPhonemes(text)
-        let tPhonemes = CFAbsoluteTimeGetCurrent()
-
         let tokenIds = tokenizer.encode(phonemes)
-        let tTokens = CFAbsoluteTimeGetCurrent()
 
-        let samples: [Float]
-        let phonemeDurations: [Int]
+        // If it fits in a single model call, synthesize directly
+        if tokenIds.count <= maxTokensPerChunk {
+            let (samples, durations) = try synthesizeUnified(
+                tokenIds: tokenIds, styleVector: styleVector, speed: speed)
+            let elapsed = CFAbsoluteTimeGetCurrent() - t0
+            if verbose {
+                print("  inference: \(String(format: "%.2f", elapsed * 1_000))ms  tokens: \(tokenIds.count)")
+            }
+            return SynthesisResult(
+                samples: samples, phonemeDurations: durations,
+                tokenCount: tokenIds.count, synthesisTime: elapsed)
+        }
 
-        if isTwoStage {
-            (samples, phonemeDurations) = try synthesizeTwoStage(
-                tokenIds: tokenIds, styleVector: styleVector, speed: speed
-            )
-        } else {
-            (samples, phonemeDurations) = try synthesizeUnified(
-                tokenIds: tokenIds, styleVector: styleVector, speed: speed
-            )
+        // Auto-chunk by sentence for long text
+        let sentences = splitSentences(text)
+        var allSamples: [Float] = []
+        var allDurations: [Int] = []
+        var totalTokens = 0
+
+        for sentence in sentences {
+            let sp = phonemizer.textToPhonemes(sentence)
+            let st = tokenizer.encode(sp)
+            totalTokens += st.count
+            let (samples, durations) = try synthesizeUnified(
+                tokenIds: st, styleVector: styleVector, speed: speed)
+            allSamples.append(contentsOf: samples)
+            allDurations.append(contentsOf: durations)
         }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
-
         if verbose {
-            let ms = { (t: Double) in String(format: "%.2f", t * 1_000) }
-            print("  voice lookup:  \(ms(tVoice - t0))ms")
-            print("  phonemize:     \(ms(tPhonemes - tVoice))ms")
-            print("  tokenize:      \(ms(tTokens - tPhonemes))ms")
-            print("  inference:     \(ms(elapsed - (tTokens - t0)))ms")
-            print("  total:         \(ms(elapsed))ms")
+            print("  total: \(String(format: "%.2f", elapsed * 1_000))ms (\(sentences.count) chunks, \(totalTokens) tokens)")
         }
 
         return SynthesisResult(
-            samples: samples,
-            phonemeDurations: phonemeDurations,
-            tokenCount: tokenIds.count,
-            synthesisTime: elapsed
-        )
+            samples: allSamples, phonemeDurations: allDurations,
+            tokenCount: totalTokens, synthesisTime: elapsed)
+    }
+
+    /// Split text into sentences using NLTokenizer.
+    private func splitSentences(_ text: String) -> [String] {
+        var sentences: [String] = []
+        let nlTokenizer = NLTokenizer(unit: .sentence)
+        nlTokenizer.string = text
+        nlTokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            let s = String(text[range]).trimmingCharacters(in: .whitespaces)
+            if !s.isEmpty { sentences.append(s) }
+            return true
+        }
+        return sentences.isEmpty ? [text] : sentences
     }
 
     /// Convert text to IPA phonemes and token IDs (for debugging).
@@ -177,37 +174,6 @@ public final class KokoroEngine: @unchecked Sendable {
         voiceStore.availableVoices
     }
 
-    // MARK: - Two-Stage Pipeline
-
-    private func synthesizeTwoStage(
-        tokenIds: [Int],
-        styleVector: [Float],
-        speed: Float
-    ) throws -> (samples: [Float], durations: [Int]) {
-        guard let durationModel else {
-            throw KokoroError.inferenceFailed("Duration model not loaded")
-        }
-
-        let bucket = Bucket.select(forTokenCount: tokenIds.count)
-        guard let decoder = harDecoders[bucket] else {
-            throw KokoroError.inferenceFailed("No HAR decoder for bucket \(bucket)")
-        }
-
-        let durOutput = try durationModel.predict(
-            tokenIds: tokenIds, styleVector: styleVector, speed: speed)
-
-        let alignment = try Alignment.compute(
-            predDur: durOutput.predDur, tEn: durOutput.tEn,
-            tokenCount: tokenIds.count, targetFrames: bucket.maxFrames)
-
-        let waveform = try decoder.predict(
-            asr: alignment.asr, f0Pred: alignment.f0Pred,
-            nPred: alignment.nPred, styleVector: styleVector)
-
-        let durations = durOutput.predDur.map { Int(roundf($0 * (1.0 / speed))) }
-        return (waveform, durations)
-    }
-
     // MARK: - Unified Pipeline
 
     private func synthesizeUnified(
@@ -216,7 +182,8 @@ public final class KokoroEngine: @unchecked Sendable {
         speed: Float
     ) throws -> (samples: [Float], durations: [Int]) {
         guard let bucket = UnifiedBucket.select(forTokenCount: tokenIds.count) else {
-            throw KokoroError.textTooLong(tokenCount: tokenIds.count, maxTokens: 249)
+            let maxAvailable = UnifiedBucket.allCases.map(\.maxTokens).max() ?? 0
+            throw KokoroError.textTooLong(tokenCount: tokenIds.count, maxTokens: maxAvailable)
         }
 
         // Find a loaded model: preferred bucket first, then any loaded model that fits
