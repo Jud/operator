@@ -1,5 +1,6 @@
 import CoreML
 import Foundation
+import MisakiSwift
 import NaturalLanguage
 
 /// High-quality text-to-speech engine using Kokoro-82M CoreML models.
@@ -23,7 +24,7 @@ public final class KokoroEngine: @unchecked Sendable {
     /// Number of random phases for iSTFTNet vocoder.
     static let numPhases = 9
 
-    private let phonemizer: Phonemizer
+    private let g2p: EnglishG2P
     private let tokenizer: Tokenizer
     private let voiceStore: VoiceStore
     private var unifiedModels: [UnifiedBucket: MLModel] = [:]
@@ -38,16 +39,7 @@ public final class KokoroEngine: @unchecked Sendable {
             throw KokoroError.modelsNotAvailable(modelDirectory)
         }
 
-        // Load phonemizer: prefer model directory (runtime download), fall back to bundle
-        let phonemizer = Phonemizer()
-        let hasRuntimeDicts = FileManager.default.fileExists(
-            atPath: modelDirectory.appendingPathComponent("us_gold.json").path)
-        if hasRuntimeDicts {
-            try phonemizer.loadDictionaries(from: modelDirectory)
-        } else {
-            phonemizer.loadDictionariesFromBundle()
-        }
-        self.phonemizer = phonemizer
+        self.g2p = EnglishG2P(british: false)
 
         // Load tokenizer: try model directory first, then bundle
         let vocabURL = modelDirectory.appendingPathComponent("vocab_index.json")
@@ -89,7 +81,7 @@ public final class KokoroEngine: @unchecked Sendable {
         let t0 = CFAbsoluteTimeGetCurrent()
         let styleVector = try voiceStore.embedding(for: voice)
 
-        let phonemes = phonemizer.textToPhonemes(text)
+        let (phonemes, _) = g2p.phonemize(text: text)
         let tokenIds = tokenizer.encode(phonemes)
 
         // If it fits in a single model call, synthesize directly
@@ -112,7 +104,7 @@ public final class KokoroEngine: @unchecked Sendable {
         var totalTokens = 0
 
         for sentence in sentences {
-            let sp = phonemizer.textToPhonemes(sentence)
+            let (sp, _) = g2p.phonemize(text: sentence)
             let st = tokenizer.encode(sp)
             totalTokens += st.count
             let (samples, durations) = try synthesizeUnified(
@@ -146,7 +138,7 @@ public final class KokoroEngine: @unchecked Sendable {
 
     /// Convert text to IPA phonemes and token IDs (for debugging).
     public func phonemize(_ text: String) -> (phonemes: String, tokenIds: [Int]) {
-        let phonemes = phonemizer.textToPhonemes(text)
+        let (phonemes, _) = g2p.phonemize(text: text)
         let tokenIds = tokenizer.encode(phonemes)
         return (phonemes, tokenIds)
     }
