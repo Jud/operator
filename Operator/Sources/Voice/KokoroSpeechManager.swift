@@ -19,9 +19,14 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
 
     /// Speech rate multiplier (0.5 = half speed, 2.0 = double speed).
     ///
-    /// Clamped to 0.5...2.0. Default 1.0.
+    /// Clamped to KokoroEngine.speedRange. Default 1.0.
     public var speechRate: Float = 1.0 {
-        didSet { speechRate = min(max(speechRate, 0.5), 2.0) }
+        didSet {
+            speechRate = min(
+                max(speechRate, KokoroEngine.speedRange.lowerBound),
+                KokoroEngine.speedRange.upperBound
+            )
+        }
     }
 
     /// The full text of the currently playing utterance.
@@ -148,7 +153,7 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         var charPosition = 0
         var frameAccum = 0
         for dur in currentDurations {
-            let frameCost = dur * (KokoroEngine.sampleRate / 24)  // scale to audio frames
+            let frameCost = dur * KokoroEngine.hopSize
             if frameAccum + frameCost > elapsedFrames { break }
             frameAccum += frameCost
             charPosition += 1

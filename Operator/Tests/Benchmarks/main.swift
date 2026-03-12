@@ -332,10 +332,10 @@ private func benchmarkTTS() {
                 lastResult = try engine.synthesize(text: phrase, voice: voice)
             }
             guard let result = lastResult else { continue }
-            let avg = result.synthesisTime * 1000
+            let lastMs = result.synthesisTime * 1000
             let line = String(
                 format: "  %.0fms (%.1fx RT) | \"%@\"",
-                avg,
+                lastMs,
                 result.realTimeFactor,
                 String(phrase.prefix(60))
             )
