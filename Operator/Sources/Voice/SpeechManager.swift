@@ -14,6 +14,9 @@ import AVFoundation
 public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerDelegate {
     private static let logger = Log.logger(for: "SpeechManager")
 
+    /// Base Apple TTS rate: slightly faster than the AVSpeechUtterance default of 0.5.
+    private static let baseAppleRate: Float = 0.55
+
     /// The underlying speech synthesizer instance.
     private let synthesizer = AVSpeechSynthesizer()
 
@@ -35,7 +38,7 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     ///
     /// Mapped from the user-facing 0.5–2.0 range to AVSpeechUtterance's rate scale
     /// where 0.5 is the Apple default. A value of 1.0 here means "normal" (Apple rate 0.55).
-    public var speechRate: Float = Qwen3TTSSpeechManager.defaultSpeechRate
+    public var speechRate: Float = 1.0
 
     /// Stream that yields each time an utterance finishes playing (not interrupted).
     ///
@@ -72,7 +75,7 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
 
         let utterance = AVSpeechUtterance(string: fullText)
         utterance.voice = voice.appleVoice
-        let scaledRate = 0.55 * speechRate
+        let scaledRate = Self.baseAppleRate * speechRate
         utterance.rate = min(max(scaledRate, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
         utterance.pitchMultiplier = pitchMultiplier
 
@@ -93,9 +96,11 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
         let heard = String(currentText.prefix(lastSpokenCharIndex))
         let unheard = String(currentText.dropFirst(lastSpokenCharIndex))
 
-        let charPos = self.lastSpokenCharIndex
+        let charIdx = self.lastSpokenCharIndex
         let total = self.currentText.count
-        Self.logger.info("Interrupted at char \(charPos)/\(total) for session \(self.currentSession)")
+        Self.logger.info(
+            "Interrupted at char \(charIdx)/\(total) for session \(self.currentSession)"
+        )
         Self.logger.debug("Heard: \"\(heard.suffix(40))\" | Unheard: \"\(unheard.prefix(40))\"")
 
         return InterruptInfo(heardText: heard, unheardText: unheard, session: currentSession)

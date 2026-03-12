@@ -1,11 +1,7 @@
 import SwiftUI
 
-/// Five-step onboarding interface that walks new users through macOS permissions
+/// Onboarding interface that walks new users through macOS permissions
 /// and teaches core Operator interaction mechanics.
-///
-/// Driven by ``OnboardingViewModel/currentStep`` to display step-specific content.
-/// Each step uses SF Symbols for visual identity and consistent navigation
-/// controls at the bottom of the view.
 public struct OnboardingView: View {
     var model: OnboardingViewModel
 
@@ -249,13 +245,10 @@ extension OnboardingView {
     private var howItWorksNotes: some View {
         VStack(spacing: 6) {
             Text("Operator lives in your menu bar at the top of the screen.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
             Text("Access settings from the menu bar dropdown.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
         }
+        .font(.callout)
+        .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
     }
 

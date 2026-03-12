@@ -48,6 +48,8 @@ extension MessageRouter {
 // MARK: - Heuristic Scoring
 
 extension MessageRouter {
+    private static let nonAlphanumeric = CharacterSet.alphanumerics.inverted
+
     static func scoreHeuristicRoute(
         messageTokens: Set<String>,
         session: SessionState
@@ -73,13 +75,12 @@ extension MessageRouter {
         var directHits = 0
 
         for token in messageTokens {
-            var matched = false
+            var tokenScore = 0
             for (sourceTokens, weight) in tokenWeights where sourceTokens.contains(token) {
-                score += weight
-                matched = true
+                tokenScore += weight
             }
-
-            if matched {
+            if tokenScore > 0 {
+                score += tokenScore
                 directHits += 1
             }
         }
@@ -108,7 +109,6 @@ extension MessageRouter {
     }
 
     static func heuristicBaseTokens(from text: String) -> Set<String> {
-        let separators = CharacterSet.alphanumerics.inverted
         let lowered =
             text
             .replacingOccurrences(
@@ -120,7 +120,7 @@ extension MessageRouter {
 
         let rawTokens =
             lowered
-            .components(separatedBy: separators)
+            .components(separatedBy: nonAlphanumeric)
             .filter { !$0.isEmpty }
 
         var tokens = Set(rawTokens)

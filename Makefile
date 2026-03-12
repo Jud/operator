@@ -7,7 +7,7 @@ RESOURCES := $(CONTENTS)/Resources
 SWIFT_BUILD := Operator/.build/release
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo "0.1.0")
 
-.PHONY: all clean app zip verify bench bench-list bench-routing bench-routing-latency bench-routing-accuracy bench-tts bench-stt bench-stt-latency bench-stt-long bench-memory
+.PHONY: all clean app zip verify bench bench-list bench-routing bench-routing-latency bench-routing-accuracy
 
 all: app
 
@@ -22,8 +22,8 @@ app: swift-build
 	# MCP server binary
 	cp $(SWIFT_BUILD)/OperatorMCP $(MACOS)/operator-mcp
 
-	# SPM resource bundle (audio cues)
-	# Must be at .app root — SPM's Bundle.module looks at Bundle.main.bundleURL/
+	# SPM resource bundle (audio cues).
+	# SPM's generated Bundle.module looks at Bundle.main.bundleURL/ (the .app root).
 	cp -R $(SWIFT_BUILD)/Operator_OperatorCore.bundle $(APP_BUNDLE)/
 
 	# Info.plist & PkgInfo
@@ -33,7 +33,17 @@ app: swift-build
 	# Entitlements (for reference; used at signing time)
 	cp Operator/Operator.entitlements $(CONTENTS)/
 
-	@echo "==> $(APP_BUNDLE) assembled"
+	# Codesign the main binary with a stable identity so macOS preserves TCC
+	# permissions (mic, accessibility) across rebuilds. Sign outside the .app
+	# then copy back — codesign refuses to sign inside an .app with unsealed
+	# root contents (the SPM resource bundle at the .app root).
+	cp $(MACOS)/Operator $(MACOS)/Operator.signing
+	codesign --force --sign "Apple Development: Jud Stephenson (3SZVREW2PR)" \
+		--entitlements Operator/Operator.entitlements \
+		$(MACOS)/Operator.signing
+	mv $(MACOS)/Operator.signing $(MACOS)/Operator
+
+	@echo "==> $(APP_BUNDLE) assembled (signed)"
 
 # Build the Swift daemon and MCP server
 swift-build:
@@ -67,18 +77,3 @@ bench-routing-latency:
 
 bench-routing-accuracy:
 	./scripts/run-benchmarks.sh routing-accuracy
-
-bench-tts:
-	./scripts/run-benchmarks.sh tts
-
-bench-stt:
-	./scripts/run-benchmarks.sh stt
-
-bench-stt-latency:
-	./scripts/run-benchmarks.sh stt-latency
-
-bench-stt-long:
-	./scripts/run-benchmarks.sh stt-long
-
-bench-memory:
-	./scripts/run-benchmarks.sh memory

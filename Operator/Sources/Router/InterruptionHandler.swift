@@ -78,12 +78,15 @@ public struct InterruptionHandler: Sendable {
     ]
 
     /// The routing engine used for LLM-based fallback classification.
-    private let engine: any RoutingEngine
-
-    /// Create an InterruptionHandler with the given routing engine.
     ///
-    /// - Parameter engine: The engine used when fast-path matching fails.
-    public init(engine: any RoutingEngine) {
+    /// When nil, ambiguous interruptions fall back to asking the user directly.
+    private let engine: (any RoutingEngine)?
+
+    /// Create an InterruptionHandler with an optional routing engine.
+    ///
+    /// - Parameter engine: The engine used when fast-path matching fails. When nil,
+    ///   ambiguous interruptions ask the user a clarifying question.
+    public init(engine: (any RoutingEngine)? = nil) {
         self.engine = engine
     }
 
@@ -112,14 +115,12 @@ public struct InterruptionHandler: Sendable {
             return .replay
         }
 
-        if let match = Self.matchAgentTarget(
+        if let action = Self.matchAgentTarget(
             utterance: trimmed,
             registeredSessionNames: registeredSessionNames
         ) {
-            Self.logger.info(
-                "Agent target detected in interruption, routing to \(match.target)"
-            )
-            return match.action
+            Self.logger.info("Agent target detected in interruption")
+            return action
         }
 
         Self.logger.info(
@@ -137,7 +138,7 @@ extension InterruptionHandler {
     private static func matchAgentTarget(
         utterance: String,
         registeredSessionNames: [String]
-    ) -> (target: String, action: InterruptionAction)? {
+    ) -> InterruptionAction? {
         guard
             let result = AgentNameMatcher.match(
                 in: utterance,
@@ -146,10 +147,12 @@ extension InterruptionHandler {
         else {
             return nil
         }
-        return (
-            target: result.session,
-            action: .route(target: result.session, message: result.message)
-        )
+        return .route(target: result.session, message: result.message)
+    }
+
+    /// Default fallback question when interruption intent is unclear.
+    private static func fallbackQuestion(agentName: String) -> String {
+        "Did you want to hear the rest of \(agentName)'s message?"
     }
 
     /// Build the prompt for interruption handling.
@@ -173,61 +176,59 @@ extension InterruptionHandler {
     /// Parse a routing engine JSON response into an InterruptionAction.
     private static func parseEngineResponse(
         _ json: [String: Any],
-        agentName: String
+        fallbackQuestion: String
     ) -> InterruptionAction {
-        let fallback = "Did you want to hear the rest of \(agentName)'s message?"
-
         guard let action = json["action"] as? String else {
             logger.warning("Routing engine response missing 'action' field")
-            return .ask(question: fallback)
+            return .ask(question: fallbackQuestion)
         }
+
+        let reason = json["reason"] as? String ?? "no reason given"
 
         switch action {
         case "skip":
-            let reason = json["reason"] as? String ?? "no reason given"
             logger.info("Routing engine decided: skip (\(reason))")
             return .skip
 
         case "replay":
-            let reason = json["reason"] as? String ?? "no reason given"
             logger.info("Routing engine decided: replay (\(reason))")
             return .replay
 
         case "ask":
-            let question = json["question"] as? String ?? fallback
+            let question = json["question"] as? String ?? fallbackQuestion
             logger.info("Routing engine decided: ask (\(question))")
             return .ask(question: question)
 
         default:
             logger.warning("Routing engine returned unknown action: \(action)")
-            return .ask(question: fallback)
+            return .ask(question: fallbackQuestion)
         }
     }
 
     /// Fall back to the routing engine for genuinely ambiguous interruptions.
+    ///
+    /// When no engine is configured, asks the user directly.
     private func engineFallback(
         userUtterance: String,
         context: InterruptionContext
     ) async -> InterruptionAction {
+        let fallback = Self.fallbackQuestion(agentName: context.agentName)
+
+        guard let engine else {
+            Self.logger.info("No routing engine; asking user directly")
+            return .ask(question: fallback)
+        }
+
         let prompt = Self.buildInterruptionPrompt(
             userUtterance: userUtterance,
             context: context
         )
-        let fallback =
-            "Did you want to hear the rest of \(context.agentName)'s message?"
 
         do {
             let json = try await engine.run(prompt: prompt)
-            return Self.parseEngineResponse(json, agentName: context.agentName)
-        } catch let error as ClaudePipeError {
-            Self.logger.error(
-                "Routing engine failed: \(error.description)"
-            )
-            return .ask(question: fallback)
+            return Self.parseEngineResponse(json, fallbackQuestion: fallback)
         } catch {
-            Self.logger.error(
-                "Unexpected error in interruption handling: \(error)"
-            )
+            Self.logger.error("Interruption routing engine failed: \(error)")
             return .ask(question: fallback)
         }
     }

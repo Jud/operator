@@ -6,15 +6,7 @@ let package = Package(
     platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
-        .package(url: "https://github.com/jud/speech-swift.git", branch: "operator-fork"),
-        .package(
-            url: "https://github.com/ml-explore/mlx-swift-lm.git",
-            branch: "main"
-        ),
-        .package(
-            url: "https://github.com/Jud/mlx-swift-structured.git",
-            branch: "main"
-        ),
+        .package(path: "../../harness"),
     ],
     targets: [
         .target(
@@ -26,17 +18,11 @@ let package = Package(
             dependencies: [
                 "OperatorShared",
                 .product(name: "Hummingbird", package: "hummingbird"),
-                .product(name: "AudioCommon", package: "speech-swift"),
-                .product(name: "Qwen3TTS", package: "speech-swift"),
-                .product(name: "ParakeetASR", package: "speech-swift"),
-                .product(name: "SpeechVAD", package: "speech-swift"),
-                .product(name: "MLXLLM", package: "mlx-swift-lm"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                .product(name: "MLXStructured", package: "mlx-swift-structured"),
+                .product(name: "HarnessCore", package: "Harness"),
             ],
             path: "Sources",
             exclude: [
-                "App/OperatorApp.swift",
+                "App/",
                 "OperatorShared/",
                 "MCPServer/",
             ],

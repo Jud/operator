@@ -9,7 +9,7 @@ import Foundation
 public enum SessionStatus: String, Codable, Sendable {
     case idle
     case thinking
-    case toolCalling = "toolCalling"  // swiftlint:disable:this redundant_string_enum_value
+    case toolCalling = "tool_calling"
 }
 
 /// A single message exchanged in a session, used for routing context.
@@ -39,11 +39,11 @@ public struct SessionMessage: Codable, Sendable {
 /// Reference: technical-spec.md, Session State Model
 public struct SessionState: Sendable {
     /// The human-readable session name.
-    public let name: String
+    public var name: String
     /// The typed terminal identifier for this session (TTY path or Ghostty terminal ID).
     public let identifier: TerminalIdentifier
     /// The working directory of the session.
-    public let cwd: String
+    public var cwd: String
     /// A summary of what the session is working on.
     public var context: String
     /// Recent conversation messages for routing context.
@@ -103,6 +103,22 @@ public struct SessionState: Sendable {
         self.init(
             name: name,
             identifier: .tty(tty),
+            cwd: cwd,
+            context: context,
+            recentMessages: recentMessages,
+            status: status,
+            lastActivity: lastActivity,
+            voice: voice,
+            pitchMultiplier: pitchMultiplier,
+            sessionId: sessionId
+        )
+    }
+
+    /// Returns a copy of this state with a different terminal identifier.
+    public func withIdentifier(_ newIdentifier: TerminalIdentifier) -> Self {
+        Self(
+            name: name,
+            identifier: newIdentifier,
             cwd: cwd,
             context: context,
             recentMessages: recentMessages,
@@ -175,6 +191,21 @@ public struct SessionSnapshot: Codable, Sendable {
         self.lastActivity = lastActivity
         self.pitchMultiplier = pitchMultiplier
         self.sessionId = sessionId
+    }
+
+    /// Creates a snapshot from a full session state (excludes non-Codable VoiceDescriptor).
+    public init(from state: SessionState) {
+        self.init(
+            name: state.name,
+            identifier: state.identifier,
+            cwd: state.cwd,
+            context: state.context,
+            recentMessages: state.recentMessages,
+            status: state.status,
+            lastActivity: state.lastActivity,
+            pitchMultiplier: state.pitchMultiplier,
+            sessionId: state.sessionId
+        )
     }
 
     /// Decodes the snapshot, reading `identifier` if present or falling back to `tty`.

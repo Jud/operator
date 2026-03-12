@@ -7,42 +7,23 @@ import Testing
 internal struct VoiceDescriptorTests {
     // MARK: - Construction
 
-    @Test("creation stores both Apple voice and Qwen speaker ID")
+    @Test("creation stores Apple voice")
     func creationStoresFields() {
         let appleVoice = AVSpeechSynthesisVoice()
-        let descriptor = VoiceDescriptor(appleVoice: appleVoice, qwenSpeakerID: "ryan")
+        let descriptor = VoiceDescriptor(appleVoice: appleVoice)
 
         #expect(descriptor.appleVoice.identifier == appleVoice.identifier)
-        #expect(descriptor.qwenSpeakerID == "ryan")
-    }
-
-    @Test("different Qwen speaker IDs create distinct descriptors")
-    func differentQwenSpeakerIDs() {
-        let appleVoice = AVSpeechSynthesisVoice()
-        let descriptorA = VoiceDescriptor(appleVoice: appleVoice, qwenSpeakerID: "ryan")
-        let descriptorB = VoiceDescriptor(appleVoice: appleVoice, qwenSpeakerID: "emma")
-
-        #expect(descriptorA != descriptorB)
     }
 
     // MARK: - Equality
 
-    @Test("equal when both Apple voice identifier and Qwen speaker ID match")
+    @Test("equal when Apple voice identifiers match")
     func equalWhenBothMatch() {
         let appleVoice = AVSpeechSynthesisVoice()
-        let descriptorA = VoiceDescriptor(appleVoice: appleVoice, qwenSpeakerID: "vivian")
-        let descriptorB = VoiceDescriptor(appleVoice: appleVoice, qwenSpeakerID: "vivian")
+        let descriptorA = VoiceDescriptor(appleVoice: appleVoice)
+        let descriptorB = VoiceDescriptor(appleVoice: appleVoice)
 
         #expect(descriptorA == descriptorB)
-    }
-
-    @Test("not equal when Qwen speaker IDs differ")
-    func notEqualDifferentQwen() {
-        let appleVoice = AVSpeechSynthesisVoice()
-        let first = VoiceDescriptor(appleVoice: appleVoice, qwenSpeakerID: "lucas")
-        let second = VoiceDescriptor(appleVoice: appleVoice, qwenSpeakerID: "olivia")
-
-        #expect(first != second)
     }
 
     @Test("not equal when Apple voice identifiers differ")
@@ -52,8 +33,8 @@ internal struct VoiceDescriptorTests {
             return
         }
 
-        let first = VoiceDescriptor(appleVoice: voices[0], qwenSpeakerID: "ryan")
-        let second = VoiceDescriptor(appleVoice: voices[1], qwenSpeakerID: "ryan")
+        let first = VoiceDescriptor(appleVoice: voices[0])
+        let second = VoiceDescriptor(appleVoice: voices[1])
 
         #expect(first != second)
     }
@@ -62,12 +43,9 @@ internal struct VoiceDescriptorTests {
 
     @Test("VoiceDescriptor is Sendable (compile-time check)")
     func sendableCompliance() async {
-        let descriptor = VoiceDescriptor(
-            appleVoice: AVSpeechSynthesisVoice(),
-            qwenSpeakerID: "ethan"
-        )
+        let descriptor = VoiceDescriptor(appleVoice: AVSpeechSynthesisVoice())
 
         let value = await Task.detached { descriptor }.value
-        #expect(value.qwenSpeakerID == "ethan")
+        #expect(value.appleVoice.identifier == descriptor.appleVoice.identifier)
     }
 }

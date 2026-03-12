@@ -1,25 +1,17 @@
 import Foundation
 
-/// Modular prompt template for the local routing model.
+/// Modular prompt template for routing engines.
 ///
 /// Extracts the routing prompt construction into a configurable module so that routing
-/// heuristics can be iterated without code changes to the engine. The local Qwen 3.5 0.8B
-/// model receives the same session context and message as the Claude CLI routing, but
-/// wrapped with a system instruction optimized for fast, direct classification.
-///
-/// The JSON output schema is defined here as the source of truth for both the grammar
-/// constraint (in ``MLXRoutingEngine``) and the format expected by ``MessageRouter``.
+/// heuristics can be iterated without code changes to the engine. Provides shared
+/// context formatting used by both the deterministic heuristics and any future
+/// routing engine (local model, Claude CLI, etc.).
 public enum RoutingPrompt {
     private static let currentUserMessageHeading = "Current user message:"
 
     // MARK: - System Prompt
 
-    /// System instruction optimized for the 0.8B model's classification task.
-    ///
-    /// Key characteristics:
-    /// - Concise and direct to maximize accuracy from a small model
-    /// - Explicitly states the JSON output format
-    /// - Requests non-thinking mode for fast direct answers (Qwen 3 `/no_think`)
+    /// System instruction for routing classification.
     public static let systemInstruction = """
         Route the user message to the best active session.
         Match using the provided session name, working directory, project context, and recent messages.
@@ -31,12 +23,7 @@ public enum RoutingPrompt {
 
     // MARK: - JSON Schema
 
-    /// Raw JSON schema string for grammar-constrained decoding.
-    ///
-    /// Defines the output structure that ``MLXRoutingEngine`` enforces via xgrammar.
-    /// Minimal schema (session + confident only) to minimize token generation.
-    /// ``MessageRouter`` has fallback defaults for candidates and question fields
-    /// when they're absent from the response.
+    /// JSON schema for routing engine output.
     public static let outputSchemaString = """
         {
           "type": "object",
@@ -57,17 +44,6 @@ public enum RoutingPrompt {
 
     // MARK: - Prompt Construction
 
-    /// Wrap a routing prompt from ``MessageRouter`` for optimal results with the local model.
-    ///
-    /// Appends the Qwen non-thinking flag. This is retained for compatibility with
-    /// callers that still provide the routing request as a single flat string.
-    ///
-    /// - Parameter routingPrompt: The prompt string built by MessageRouter.
-    /// - Returns: A wrapped prompt suitable for the local 0.8B model.
-    public static func wrapForLocalModel(_ routingPrompt: String) -> String {
-        "\(routingPrompt)\n/no_think"
-    }
-
     /// Build the static routing context section shared by MessageRouter and benchmarks.
     ///
     /// This excludes the current user utterance so local-model routing can prefill and
@@ -83,13 +59,13 @@ public enum RoutingPrompt {
             if !session.context.isEmpty {
                 sessionLine += " - \(session.context)"
             }
-            let recentMessages = session.recentMessages.suffix(2)
-            if !recentMessages.isEmpty {
-                let recentSummary = recentMessages.map { message in
-                    "\(message.role): \"\(message.text.prefix(60))\""
-                }
-                .joined(separator: " | ")
-                sessionLine += ", recent: \(recentSummary)"
+            let recent = session.recentMessages.suffix(2)
+            if !recent.isEmpty {
+                let summary =
+                    recent
+                    .map { "\($0.role): \"\($0.text.prefix(60))\"" }
+                    .joined(separator: " | ")
+                sessionLine += ", recent: \(summary)"
             }
             lines.append(sessionLine)
         }
@@ -105,17 +81,12 @@ public enum RoutingPrompt {
         sessions: [SessionState],
         routingState: RoutingState
     ) -> String {
-        _ = routingState
-        var lines: [String] = [buildContextPrompt(sessions: sessions)]
-        lines.append("")
-        lines.append(currentUserMessageHeading)
-        lines.append(text)
-
-        return lines.joined(separator: "\n")
+        let context = buildContextPrompt(sessions: sessions)
+        return "\(context)\n\n\(currentUserMessageHeading)\n\(text)"
     }
 
     /// Split a flat routing prompt into its reusable context and dynamic utterance.
-    public static func splitForLocalModel(_ routingPrompt: String) -> (context: String, currentMessage: String)? {
+    public static func splitPrompt(_ routingPrompt: String) -> (context: String, currentMessage: String)? {
         let marker = "\n\n\(currentUserMessageHeading)\n"
         guard let range = routingPrompt.range(of: marker) else {
             return nil
@@ -124,10 +95,5 @@ public enum RoutingPrompt {
             context: String(routingPrompt[..<range.lowerBound]),
             currentMessage: String(routingPrompt[range.upperBound...])
         )
-    }
-
-    /// Build the dynamic user turn appended to a prefetched local-model routing context.
-    public static func buildLocalModelCurrentTurn(_ currentMessage: String) -> String {
-        "\(currentUserMessageHeading)\n\(currentMessage)\n/no_think"
     }
 }

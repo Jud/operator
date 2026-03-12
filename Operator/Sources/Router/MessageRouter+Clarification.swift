@@ -10,6 +10,23 @@ extension MessageRouter {
         (["the third one", "third one", "the third", "third", "number three", "number 3", "3"], 2)
     ]
 
+    /// Patterns indicating the user wants to cancel the clarification.
+    private static let cancelPatterns = [
+        "cancel", "never mind", "nevermind", "forget it", "forget about it", "nah", "nope"
+    ]
+
+    /// Patterns indicating the user wants to send to all candidates.
+    ///
+    /// Checked via `contains` for multi-word phrases, plus exact match for "all".
+    private static let multiPatterns = [
+        "both", "all of them", "all of 'em", "all agents", "everyone"
+    ]
+
+    /// Patterns indicating the user wants the question repeated (exact match only).
+    private static let repeatPatterns: Set<String> = [
+        "repeat", "say that again", "what?", "what", "come again", "huh"
+    ]
+
     /// Process a user's response during the CLARIFYING state.
     ///
     /// - Parameters:
@@ -28,11 +45,14 @@ extension MessageRouter {
         Self.logger.info("Processing clarification response: \"\(trimmed.prefix(80))\"")
 
         let allSessions = await registry.allSessions()
-        let allNames = allSessions.map { $0.name }
+        let allNames = allSessions.map(\.name)
 
-        for name in allNames where lowered == name.lowercased() || lowered.contains(name.lowercased()) {
-            Self.logger.info("Clarification keyword match: '\(name)'")
-            return .resolved(session: name)
+        for name in allNames {
+            let nameLower = name.lowercased()
+            if lowered == nameLower || lowered.contains(nameLower) {
+                Self.logger.info("Clarification keyword match: '\(name)'")
+                return .resolved(session: name)
+            }
         }
 
         if let metaResult = matchMetaIntent(lowered: lowered, candidates: candidates) {
@@ -44,30 +64,24 @@ extension MessageRouter {
             response: trimmed,
             candidates: candidates,
             originalText: originalText,
+            allSessionNames: allNames,
             allSessions: allSessions
         )
     }
 
     /// Match meta-intents in clarification response.
     func matchMetaIntent(lowered: String, candidates: [String]) -> ClarificationResult? {
-        let cancelPatterns = ["cancel", "never mind", "nevermind", "forget it", "forget about it", "nah", "nope"]
-        for pattern in cancelPatterns where lowered.contains(pattern) {
+        for pattern in Self.cancelPatterns where lowered.contains(pattern) {
             Self.logger.info("Clarification cancelled by user")
             return .cancelled
         }
 
-        let multiPatterns = ["both", "all of them", "all of 'em", "all agents", "everyone"]
-        for pattern in multiPatterns where lowered.contains(pattern) {
-            Self.logger.info("Clarification: user wants to send to all")
-            return .sendToAll
-        }
-        if lowered == "all" {
+        if lowered == "all" || Self.multiPatterns.contains(where: { lowered.contains($0) }) {
             Self.logger.info("Clarification: user wants to send to all")
             return .sendToAll
         }
 
-        let repeatPatterns = ["repeat", "say that again", "what?", "what", "come again", "huh"]
-        for pattern in repeatPatterns where lowered == pattern {
+        if Self.repeatPatterns.contains(lowered) {
             Self.logger.info("Clarification: user wants repeat")
             return .repeatQuestion
         }
@@ -83,7 +97,7 @@ extension MessageRouter {
     /// Match ordinal references against candidates.
     func matchOrdinal(lowered: String, candidates: [String]) -> String? {
         for (patterns, index) in Self.ordinalPatterns {
-            for pattern in patterns where lowered == pattern || lowered.contains(pattern) {
+            for pattern in patterns where lowered.contains(pattern) {
                 return candidates.indices.contains(index) ? candidates[index] : nil
             }
         }
@@ -95,32 +109,37 @@ extension MessageRouter {
         response: String,
         candidates: [String],
         originalText: String,
+        allSessionNames: [String],
         allSessions: [SessionState]
     ) async -> ClarificationResult {
-        let allSessionNames = allSessions.map(\.name)
-        let candidateSessions = allSessions.filter { candidates.contains($0.name) }
-
-        var promptLines: [String] = [
-            "A user was asked which Claude Code session a message was for.",
-            "The original message was: \"\(originalText)\"",
-            "The candidates are:"
-        ]
-
-        for session in candidateSessions {
-            var line = "- \"\(session.name)\" (\(session.cwd))"
-            if !session.context.isEmpty {
-                line += " - \(session.context)"
-            }
-            promptLines.append(line)
+        guard let engine else {
+            Self.logger.info("No routing engine; clarification unresolved")
+            return .unresolved
         }
 
-        promptLines.append("")
-        promptLines.append("The user responded: \"\(response)\"")
-        promptLines.append("")
-        promptLines.append("Reply ONLY as JSON: {\"session\": \"name\"} with the session the user meant.")
-        promptLines.append("Or if still unclear: {\"session\": null}")
+        let candidateLines =
+            allSessions
+            .filter { candidates.contains($0.name) }
+            .map { session -> String in
+                var line = "- \"\(session.name)\" (\(session.cwd))"
+                if !session.context.isEmpty {
+                    line += " - \(session.context)"
+                }
+                return line
+            }
+            .joined(separator: "\n")
 
-        let prompt = promptLines.joined(separator: "\n")
+        let prompt = """
+            A user was asked which Claude Code session a message was for.
+            The original message was: "\(originalText)"
+            The candidates are:
+            \(candidateLines)
+
+            The user responded: "\(response)"
+
+            Reply ONLY as JSON: {"session": "name"} with the session the user meant.
+            Or if still unclear: {"session": null}
+            """
 
         do {
             let json = try await engine.run(prompt: prompt)

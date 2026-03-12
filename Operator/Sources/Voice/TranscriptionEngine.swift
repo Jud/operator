@@ -3,7 +3,7 @@ import AVFoundation
 /// Protocol abstracting the speech recognition engine.
 ///
 /// Decouples audio-to-text conversion from audio capture, allowing different
-/// recognition backends (Apple Speech, whisper.cpp) to be swapped via injection.
+/// recognition backends (Apple Speech, local models) to be swapped via injection.
 ///
 /// Lifecycle: prepare() -> append(_:) (called per buffer) -> finishAndTranscribe().
 /// Call cancel() to abort an in-progress session.

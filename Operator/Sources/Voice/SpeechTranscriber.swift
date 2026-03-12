@@ -1,6 +1,5 @@
-import AVFoundation
 import AudioToolbox
-import CoreAudio
+import AVFoundation
 
 /// Wraps a ``TranscriptionEngine`` and AVAudioEngine for on-device speech-to-text.
 ///
@@ -65,20 +64,17 @@ public final class SpeechTranscriber: SpeechTranscribing {
             return nil
         }
 
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
-        isListening = false
+        tearDownAudioCapture()
         Self.logger.info("Audio engine stopped, processing transcription")
 
-        let result = await engine.finishAndTranscribe()
-        return result
+        return await engine.finishAndTranscribe()
     }
 
     /// Perform transcription with a 30-second timeout.
     ///
     /// - Returns: The transcribed text, or nil on timeout/failure/empty transcription.
     public func stopListeningWithTimeout(seconds: TimeInterval = 30) async -> String? {
-        let transcriptionTask = Task { @MainActor () -> String? in
+        let transcriptionTask = Task {
             await self.stopListening()
         }
 
@@ -125,10 +121,15 @@ public final class SpeechTranscriber: SpeechTranscribing {
         engine.cancel()
 
         if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-            isListening = false
+            tearDownAudioCapture()
             Self.logger.debug("Stopped running audio engine from previous cycle")
         }
+    }
+
+    /// Stop the audio engine, remove the input tap, and clear the listening flag.
+    private func tearDownAudioCapture() {
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        isListening = false
     }
 }

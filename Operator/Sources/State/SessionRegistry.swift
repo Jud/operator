@@ -61,7 +61,17 @@ public actor SessionRegistry {
             return false
         }
 
-        let pitch = voiceManager.nextAgentPitchMultiplier()
+        if let existing = sessions[identifier] {
+            var updated = existing
+            updated.name = name
+            updated.cwd = cwd
+            if let context { updated.context = context }
+            updated.lastActivity = Date()
+            sessions[identifier] = updated
+            Self.logger.info("Re-registered session '\(name)' at \(identifier)")
+            return true
+        }
+
         let voice = voiceManager.nextAgentVoice()
 
         let state = SessionState(
@@ -73,18 +83,10 @@ public actor SessionRegistry {
             status: .idle,
             lastActivity: Date(),
             voice: voice,
-            pitchMultiplier: pitch
+            pitchMultiplier: 1.0
         )
-
-        let isReregistration = sessions[identifier] != nil
         sessions[identifier] = state
-
-        if isReregistration {
-            Self.logger.info("Re-registered session '\(name)' at \(identifier)")
-        } else {
-            Self.logger.info("Registered session '\(name)' at \(identifier) (pitch: \(pitch))")
-        }
-
+        Self.logger.info("Registered session '\(name)' at \(identifier)")
         return true
     }
 
@@ -104,9 +106,7 @@ public actor SessionRegistry {
             Self.logger.debug("Deregister called for unknown identifier: \(identifier)")
             return nil
         }
-        if case .ghosttyTerminal(let ghosttyId) = identifier {
-            ttyToGhosttyId = ttyToGhosttyId.filter { $0.value != ghosttyId }
-        }
+        clearGhosttyMapping(for: identifier)
         Self.logger.info("Deregistered session '\(state.name)' from \(identifier)")
         return state.name
     }
@@ -130,13 +130,14 @@ public actor SessionRegistry {
     ///   - recentMessages: Recent conversation messages for routing context.
     public func updateContext(tty: String, summary: String, recentMessages: [SessionMessage]) {
         let id = resolveIdentifier(forTTY: tty)
-        guard sessions[id] != nil else {
+        guard var state = sessions[id] else {
             Self.logger.warning("updateContext called for unregistered TTY: \(tty)")
             return
         }
-        sessions[id]?.context = summary
-        sessions[id]?.recentMessages = recentMessages
-        sessions[id]?.lastActivity = Date()
+        state.context = summary
+        state.recentMessages = recentMessages
+        state.lastActivity = Date()
+        sessions[id] = state
         Self.logger.debug("Updated context for \(id)")
     }
 
@@ -147,11 +148,7 @@ public actor SessionRegistry {
     /// - Parameter session: The session name to look up.
     /// - Returns: The VoiceDescriptor assigned to the session.
     public func voiceFor(session: String?) -> VoiceDescriptor {
-        guard let name = session else {
-            return voiceManager.defaultAgentVoice
-        }
-        let match = sessions.values.first { $0.name == name }
-        return match?.voice ?? voiceManager.defaultAgentVoice
+        session.flatMap(self.session(named:))?.voice ?? voiceManager.defaultAgentVoice
     }
 
     /// Look up the pitch multiplier for a session by name.
@@ -159,11 +156,7 @@ public actor SessionRegistry {
     /// - Parameter session: The session name to look up.
     /// - Returns: The pitch multiplier, defaulting to 1.0 if not found.
     public func pitchFor(session: String?) -> Float {
-        guard let name = session else {
-            return 1.0
-        }
-        let match = sessions.values.first { $0.name == name }
-        return match?.pitchMultiplier ?? 1.0
+        session.flatMap(self.session(named:))?.pitchMultiplier ?? 1.0
     }
 
     // MARK: - Hook Handlers
@@ -196,7 +189,6 @@ public actor SessionRegistry {
             sessions[id] = existing
             Self.logger.info("Hook session-start: updated session ID for \(id)")
         } else {
-            let pitch = voiceManager.nextAgentPitchMultiplier()
             let voice = voiceManager.nextAgentVoice()
             let state = SessionState(
                 name: sessionId,
@@ -207,7 +199,7 @@ public actor SessionRegistry {
                 status: .idle,
                 lastActivity: Date(),
                 voice: voice,
-                pitchMultiplier: pitch,
+                pitchMultiplier: 1.0,
                 sessionId: sessionId
             )
             sessions[id] = state
@@ -229,15 +221,16 @@ public actor SessionRegistry {
     ///   - lastAssistantMessage: The last message from the assistant, if any.
     public func handleStop(sessionId: String, tty: String, lastAssistantMessage: String?) {
         let id = resolveIdentifier(forTTY: tty)
-        guard sessions[id] != nil else {
+        guard var state = sessions[id] else {
             Self.logger.warning("Hook stop: no session found for TTY \(tty)")
             return
         }
-        sessions[id]?.sessionId = sessionId
-        sessions[id]?.lastActivity = Date()
+        state.sessionId = sessionId
+        state.lastActivity = Date()
         if let message = lastAssistantMessage, !message.isEmpty {
-            sessions[id]?.context = message
+            state.context = message
         }
+        sessions[id] = state
         Self.logger.info("Hook stop: updated session at \(id)")
     }
 
@@ -257,9 +250,7 @@ public actor SessionRegistry {
             Self.logger.debug("Hook session-end: no session found for TTY \(tty)")
             return nil
         }
-        if case .ghosttyTerminal(let ghosttyId) = id {
-            ttyToGhosttyId = ttyToGhosttyId.filter { $0.value != ghosttyId }
-        }
+        clearGhosttyMapping(for: id)
         Self.logger.info("Hook session-end: removed session '\(state.name)' from \(id)")
         return state.name
     }
@@ -279,25 +270,13 @@ public actor SessionRegistry {
     @discardableResult
     public func handleTerminalIdResolution(tty: String, ghosttyId: String) -> Bool {
         let ttyKey = TerminalIdentifier.tty(tty)
-        guard var state = sessions.removeValue(forKey: ttyKey) else {
+        guard let state = sessions.removeValue(forKey: ttyKey) else {
             Self.logger.warning("Terminal ID resolution: no session found for TTY \(tty)")
             return false
         }
 
         let ghosttyKey = TerminalIdentifier.ghosttyTerminal(ghosttyId)
-        state = SessionState(
-            name: state.name,
-            identifier: ghosttyKey,
-            cwd: state.cwd,
-            context: state.context,
-            recentMessages: state.recentMessages,
-            status: state.status,
-            lastActivity: state.lastActivity,
-            voice: state.voice,
-            pitchMultiplier: state.pitchMultiplier,
-            sessionId: state.sessionId
-        )
-        sessions[ghosttyKey] = state
+        sessions[ghosttyKey] = state.withIdentifier(ghosttyKey)
         ttyToGhosttyId[tty] = ghosttyId
 
         Self.logger.info(
@@ -310,19 +289,7 @@ public actor SessionRegistry {
 
     /// Get a snapshot of all registered sessions for the HTTP /state endpoint.
     public func getState() -> RegistrySnapshot {
-        let snapshots = sessions.values.map { state in
-            SessionSnapshot(
-                name: state.name,
-                identifier: state.identifier,
-                cwd: state.cwd,
-                context: state.context,
-                recentMessages: state.recentMessages,
-                status: state.status,
-                lastActivity: state.lastActivity,
-                pitchMultiplier: state.pitchMultiplier,
-                sessionId: state.sessionId
-            )
-        }
+        let snapshots = sessions.values.map(SessionSnapshot.init(from:))
         return RegistrySnapshot(sessions: snapshots, sessionCount: snapshots.count)
     }
 
@@ -370,5 +337,12 @@ public actor SessionRegistry {
             return .ghosttyTerminal(ghosttyId)
         }
         return .tty(tty)
+    }
+
+    /// Remove cached TTY-to-Ghostty mapping when a Ghostty session is removed.
+    private func clearGhosttyMapping(for identifier: TerminalIdentifier) {
+        if case .ghosttyTerminal(let ghosttyId) = identifier {
+            ttyToGhosttyId = ttyToGhosttyId.filter { $0.value != ghosttyId }
+        }
     }
 }

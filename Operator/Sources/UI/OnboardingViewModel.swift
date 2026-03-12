@@ -4,17 +4,12 @@ import Speech
 
 /// View model managing the first-launch onboarding flow, including step
 /// navigation, permission tracking, and bootstrap completion signaling.
-///
-/// Follows the same `@MainActor @Observable` singleton pattern as
-/// ``MenuBarModel`` and ``EngineSettingsModel``. Wired during application
-/// bootstrap via ``prepare(completion:)`` and signaled back via
-/// ``completeOnboarding()``.
 @MainActor
 @Observable
 public final class OnboardingViewModel {
     // MARK: - Subtypes
 
-    /// The five sequential steps of the onboarding flow.
+    /// The sequential steps of the onboarding flow.
     public enum Step: Int, CaseIterable, Sendable {
         case welcome = 0
         case permissions = 1
@@ -22,6 +17,11 @@ public final class OnboardingViewModel {
         case howItWorks = 3
         case done = 4
     }
+
+    // MARK: - Constants
+
+    /// UserDefaults key for tracking onboarding completion.
+    private static let completedKey = "hasCompletedOnboarding"
 
     // MARK: - Type Properties
 
@@ -52,7 +52,7 @@ public final class OnboardingViewModel {
 
     private var completionHandler: (() -> Void)?
     private var axPollingTimer: Timer?
-    private var autoAdvanceWorkItem: DispatchWorkItem?
+    private var autoAdvanceTask: Task<Void, Never>?
 
     // MARK: - Initialization
 
@@ -62,12 +62,8 @@ public final class OnboardingViewModel {
     // MARK: - Type Methods
 
     /// Check whether onboarding should be shown.
-    ///
-    /// Returns `true` when `hasCompletedOnboarding` is `false` AND at least
-    /// one of the three permissions is not granted. If all permissions are
-    /// already granted, sets the flag to `true` and returns `false`.
     public static func shouldShowOnboarding() -> Bool {
-        let hasCompleted = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
+        let hasCompleted = UserDefaults.standard.bool(forKey: Self.completedKey)
         if hasCompleted {
             logger.info("Onboarding already completed (flag is true)")
             return false
@@ -78,7 +74,7 @@ public final class OnboardingViewModel {
         let axTrusted = AXIsProcessTrusted()
 
         if micAuthorized && speechAuthorized && axTrusted {
-            UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
+            UserDefaults.standard.set(true, forKey: Self.completedKey)
             logger.info("All permissions already granted, skipping onboarding")
             return false
         }
@@ -92,19 +88,12 @@ public final class OnboardingViewModel {
     // MARK: - Public Methods
 
     /// Store the bootstrap completion handler.
-    ///
-    /// Called by AppDelegate with a `withCheckedContinuation` resume closure
-    /// so the bootstrap can await onboarding completion.
-    ///
-    /// - Parameter completion: Closure invoked when onboarding finishes.
     public func prepare(completion: @escaping () -> Void) {
         completionHandler = completion
         Self.logger.info("Onboarding prepared with completion handler")
     }
 
     /// Advance to the next step.
-    ///
-    /// Does nothing if already on `.done`.
     public func advance() {
         guard let nextRaw = Step(rawValue: currentStep.rawValue + 1) else {
             return
@@ -115,8 +104,6 @@ public final class OnboardingViewModel {
     }
 
     /// Return to the previous step.
-    ///
-    /// Does nothing if already on `.welcome`.
     public func goBack() {
         guard let previousRaw = Step(rawValue: currentStep.rawValue - 1) else {
             return
@@ -126,12 +113,8 @@ public final class OnboardingViewModel {
     }
 
     /// Request Microphone and Speech Recognition permissions sequentially.
-    ///
-    /// Microphone is requested first. Only after it resolves (granted or denied)
-    /// is Speech Recognition requested. Already-granted permissions are skipped
-    /// (no duplicate OS dialogs).
     public func requestPermissions() {
-        Task { @MainActor in
+        Task {
             await self.requestMicrophonePermission()
             await self.requestSpeechRecognitionPermission()
         }
@@ -144,10 +127,6 @@ public final class OnboardingViewModel {
     }
 
     /// Start polling `AXIsProcessTrusted()` every 1 second.
-    ///
-    /// When the permission is detected as granted, sets `accessibilityGranted`
-    /// to `true`, stops polling, and auto-advances to the next step after a
-    /// 1-second visual confirmation delay.
     public func startAccessibilityPolling() {
         stopAccessibilityPolling()
 
@@ -172,17 +151,14 @@ public final class OnboardingViewModel {
     public func stopAccessibilityPolling() {
         axPollingTimer?.invalidate()
         axPollingTimer = nil
-        autoAdvanceWorkItem?.cancel()
-        autoAdvanceWorkItem = nil
+        autoAdvanceTask?.cancel()
+        autoAdvanceTask = nil
     }
 
     /// Complete the onboarding flow.
-    ///
-    /// Sets the `hasCompletedOnboarding` flag in UserDefaults, invokes the
-    /// stored completion handler (resuming bootstrap), and cleans up.
     public func completeOnboarding() {
         stopAccessibilityPolling()
-        UserDefaults.standard.set(true, forKey: "hasCompletedOnboarding")
+        UserDefaults.standard.set(true, forKey: Self.completedKey)
         Self.logger.info("Onboarding completed, flag set in UserDefaults")
 
         let handler = completionHandler
@@ -190,10 +166,7 @@ public final class OnboardingViewModel {
         handler?()
     }
 
-    /// Refresh permission states by reading current OS status without triggering request dialogs.
-    ///
-    /// Used when re-opening onboarding via the "Setup Guide..." menu item
-    /// to show checkmarks for already-granted permissions.
+    /// Refresh permission states by reading current OS status.
     public func refreshPermissionStates() {
         let mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
         let speech = SFSpeechRecognizer.authorizationStatus() == .authorized
@@ -246,23 +219,24 @@ public final class OnboardingViewModel {
             return
         }
 
-        if AXIsProcessTrusted() {
-            accessibilityGranted = true
-            axPollingTimer?.invalidate()
-            axPollingTimer = nil
-            Self.logger.info("Accessibility permission detected as granted")
+        guard AXIsProcessTrusted() else {
+            return
+        }
 
-            let workItem = DispatchWorkItem { [weak self] in
-                Task { @MainActor [weak self] in
-                    guard let self, self.currentStep == .accessibility else {
-                        return
-                    }
-                    self.advance()
-                    Self.logger.info("Auto-advanced from accessibility step")
-                }
-            }
-            autoAdvanceWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+        accessibilityGranted = true
+        // Stop the timer but keep autoAdvanceTask slot free for the delayed advance.
+        axPollingTimer?.invalidate()
+        axPollingTimer = nil
+        Self.logger.info("Accessibility permission detected as granted")
+
+        autoAdvanceTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled,
+                let self,
+                self.currentStep == .accessibility
+            else { return }
+            self.advance()
+            Self.logger.info("Auto-advanced from accessibility step")
         }
     }
 }

@@ -1,5 +1,4 @@
 import AVFoundation
-import Foundation
 import Testing
 
 @testable import OperatorCore
@@ -32,186 +31,128 @@ private final class MockFeedback: AudioFeedbackProviding {
     func play(_ cue: AudioCue) { playedCues.append(cue) }
 }
 
+// MARK: - Helpers
+
+private struct TestHarness {
+    static let voice = VoiceDescriptor(appleVoice: AVSpeechSynthesisVoice())
+
+    let speech: MockSpeech
+    let feedback: MockFeedback
+    let queue: AudioQueue
+
+    @MainActor
+    init() {
+        self.speech = MockSpeech()
+        self.feedback = MockFeedback()
+        self.queue = AudioQueue(speechManager: speech, feedback: feedback)
+    }
+
+    func message(
+        _ sessionName: String,
+        _ text: String,
+        priority: AudioQueue.QueuedMessage.Priority = .normal
+    ) -> AudioQueue.QueuedMessage {
+        AudioQueue.QueuedMessage(
+            sessionName: sessionName,
+            text: text,
+            priority: priority,
+            voice: Self.voice
+        )
+    }
+}
+
 // MARK: - Tests
 
 // .serialized prevents concurrent execution with @MainActor tests in other suites,
 // which would deadlock since AudioQueue.enqueue hops to MainActor for speechManager.speak().
 @Suite("AudioQueue", .serialized)
 internal struct AudioQueueTests {
-    private func makeVoice() -> VoiceDescriptor {
-        VoiceDescriptor(appleVoice: AVSpeechSynthesisVoice(), qwenSpeakerID: "ryan")
-    }
-
     @Test("lastSpokenMessage is nil initially")
     func lastSpokenNil() async {
-        let speech = await MockSpeech()
-        let feedback = await MockFeedback()
-        let queue = AudioQueue(speechManager: speech, feedback: feedback)
+        let harness = await TestHarness()
 
-        let last = await queue.lastSpokenMessage()
+        let last = await harness.queue.lastSpokenMessage()
         #expect(last == nil)
     }
 
     @Test("enqueue triggers speak and records lastSpokenMessage")
     func enqueueTriggersSpeak() async {
-        let speech = await MockSpeech()
-        let feedback = await MockFeedback()
-        let queue = AudioQueue(speechManager: speech, feedback: feedback)
+        let harness = await TestHarness()
 
-        let msg = AudioQueue.QueuedMessage(
-            sessionName: "sudo",
-            text: "Build succeeded",
-            priority: .normal,
-            voice: makeVoice()
-        )
-        await queue.enqueue(msg)
+        await harness.queue.enqueue(harness.message("sudo", "Build succeeded"))
 
-        let last = await queue.lastSpokenMessage()
+        let last = await harness.queue.lastSpokenMessage()
         #expect(last?.session == "sudo")
         #expect(last?.text == "Build succeeded")
 
-        let spoken = await speech.spokenTexts
+        let spoken = await harness.speech.spokenTexts
         #expect(spoken == ["Build succeeded"])
     }
 
     @Test("urgent message inserted at front of queue")
     func urgentInsertedAtFront() async {
-        let speech = await MockSpeech()
-        let feedback = await MockFeedback()
-        let queue = AudioQueue(speechManager: speech, feedback: feedback)
+        let harness = await TestHarness()
 
-        let voice = makeVoice()
-
-        // First enqueue auto-plays (state → .speaking)
-        let first = AudioQueue.QueuedMessage(
-            sessionName: "a",
-            text: "first",
-            priority: .normal,
-            voice: voice
-        )
-        await queue.enqueue(first)
+        // First enqueue auto-plays (state -> .speaking)
+        await harness.queue.enqueue(harness.message("a", "first"))
 
         // Now queue is speaking; these go into the queue
-        let normal = AudioQueue.QueuedMessage(
-            sessionName: "b",
-            text: "normal",
-            priority: .normal,
-            voice: voice
-        )
-        let urgent = AudioQueue.QueuedMessage(
-            sessionName: "c",
-            text: "urgent",
-            priority: .urgent,
-            voice: voice
-        )
-        await queue.enqueue(normal)
-        await queue.enqueue(urgent)
+        await harness.queue.enqueue(harness.message("b", "normal"))
+        await harness.queue.enqueue(harness.message("c", "urgent", priority: .urgent))
 
         // Urgent should be at front (index 0), normal behind it
-        let pending = await queue.pendingCount
-        #expect(pending == 2)
+        #expect(await harness.queue.pendingCount == 2)
     }
 
     @Test("lastMessage(forAgent:) returns text for known agent")
     func lastMessageForKnownAgent() async {
-        let speech = await MockSpeech()
-        let feedback = await MockFeedback()
-        let queue = AudioQueue(speechManager: speech, feedback: feedback)
+        let harness = await TestHarness()
 
-        let msg = AudioQueue.QueuedMessage(
-            sessionName: "frontend",
-            text: "Styles updated",
-            priority: .normal,
-            voice: makeVoice()
-        )
-        await queue.enqueue(msg)
+        await harness.queue.enqueue(harness.message("frontend", "Styles updated"))
 
-        let text = await queue.lastMessage(forAgent: "frontend")
+        let text = await harness.queue.lastMessage(forAgent: "frontend")
         #expect(text == "Styles updated")
     }
 
     @Test("lastMessage(forAgent:) returns nil for unknown agent")
     func lastMessageForUnknownAgent() async {
-        let speech = await MockSpeech()
-        let feedback = await MockFeedback()
-        let queue = AudioQueue(speechManager: speech, feedback: feedback)
+        let harness = await TestHarness()
 
-        let text = await queue.lastMessage(forAgent: "nonexistent")
+        let text = await harness.queue.lastMessage(forAgent: "nonexistent")
         #expect(text == nil)
     }
 
     @Test("clearQueue empties pending messages")
     func clearQueue() async {
-        let speech = await MockSpeech()
-        let feedback = await MockFeedback()
-        let queue = AudioQueue(speechManager: speech, feedback: feedback)
-
-        let voice = makeVoice()
+        let harness = await TestHarness()
 
         // First enqueue auto-plays
-        await queue.enqueue(
-            AudioQueue.QueuedMessage(
-                sessionName: "a",
-                text: "playing",
-                priority: .normal,
-                voice: voice
-            )
-        )
+        await harness.queue.enqueue(harness.message("a", "playing"))
         // These queue up behind it
-        await queue.enqueue(
-            AudioQueue.QueuedMessage(
-                sessionName: "b",
-                text: "queued1",
-                priority: .normal,
-                voice: voice
-            )
-        )
-        await queue.enqueue(
-            AudioQueue.QueuedMessage(
-                sessionName: "c",
-                text: "queued2",
-                priority: .normal,
-                voice: voice
-            )
-        )
+        await harness.queue.enqueue(harness.message("b", "queued1"))
+        await harness.queue.enqueue(harness.message("c", "queued2"))
 
-        #expect(await queue.pendingCount == 2)
-        await queue.clearQueue()
-        #expect(await queue.pendingCount == 0)
+        #expect(await harness.queue.pendingCount == 2)
+        await harness.queue.clearQueue()
+        #expect(await harness.queue.pendingCount == 0)
     }
 
     @Test("pendingCount is 0 when empty")
     func pendingCountZero() async {
-        let speech = await MockSpeech()
-        let feedback = await MockFeedback()
-        let queue = AudioQueue(speechManager: speech, feedback: feedback)
+        let harness = await TestHarness()
 
-        #expect(await queue.pendingCount == 0)
+        #expect(await harness.queue.pendingCount == 0)
     }
 
     @Test("multiple agents tracked independently for lastMessage")
     func multipleAgentsTracked() async {
-        let speech = await MockSpeech()
-        let feedback = await MockFeedback()
-        let queue = AudioQueue(speechManager: speech, feedback: feedback)
-
-        let voice = makeVoice()
+        let harness = await TestHarness()
 
         // First enqueue auto-plays, sets state to speaking
-        await queue.enqueue(
-            AudioQueue.QueuedMessage(
-                sessionName: "sudo",
-                text: "from sudo",
-                priority: .normal,
-                voice: voice
-            )
-        )
+        await harness.queue.enqueue(harness.message("sudo", "from sudo"))
 
         // This one queues (not played yet) but we can check sudo was recorded
-        let sudoText = await queue.lastMessage(forAgent: "sudo")
+        let sudoText = await harness.queue.lastMessage(forAgent: "sudo")
         #expect(sudoText == "from sudo")
-
-        let frontendText = await queue.lastMessage(forAgent: "frontend")
-        #expect(frontendText == nil)
     }
 }

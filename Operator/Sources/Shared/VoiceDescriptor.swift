@@ -1,26 +1,20 @@
 import AVFoundation
 
-/// Engine-agnostic voice identity for speech synthesis.
+/// Voice identity for speech synthesis.
 ///
-/// Stores both Apple and Qwen3-TTS representations so that engine
-/// fallback can occur without voice remapping. VoiceManager assigns
-/// both representations at session registration time.
+/// Wraps an Apple AVSpeechSynthesisVoice. Future engine integrations
+/// can add additional identifiers here without changing call sites.
 public struct VoiceDescriptor: Sendable, Equatable {
-    /// Apple AVSpeechSynthesisVoice for Apple TTS engine.
+    /// Apple AVSpeechSynthesisVoice for TTS.
     public let appleVoice: AVSpeechSynthesisVoice
 
-    /// Qwen3-TTS speaker identifier for local TTS engine.
-    public let qwenSpeakerID: String
-
-    /// Creates a new voice descriptor pairing an Apple voice with a Qwen speaker.
-    public init(appleVoice: AVSpeechSynthesisVoice, qwenSpeakerID: String) {
+    /// Creates a new voice descriptor.
+    public init(appleVoice: AVSpeechSynthesisVoice) {
         self.appleVoice = appleVoice
-        self.qwenSpeakerID = qwenSpeakerID
     }
 
-    /// Equality based on Apple voice identifier and Qwen speaker ID.
+    /// Equality based on Apple voice identifier.
     public static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.appleVoice.identifier == rhs.appleVoice.identifier
-            && lhs.qwenSpeakerID == rhs.qwenSpeakerID
     }
 }

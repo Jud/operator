@@ -98,17 +98,31 @@ public final class MessageRouter: Sendable {
     /// The session registry providing current session state for routing decisions.
     let registry: SessionRegistry
 
-    /// The routing engine used for claude -p smart routing and clarification fallback.
-    let engine: any RoutingEngine
+    /// Optional routing engine for smart routing fallback.
+    ///
+    /// When nil, ambiguous messages go directly to clarification.
+    /// When set, invoked after heuristics fail to attempt classification.
+    let engine: (any RoutingEngine)?
 
-    /// Creates a new message router with the given session registry and routing engine.
+    /// Optional trace store for persisting routing decisions.
+    ///
+    /// When set, every routing decision is captured for offline analysis.
+    let traceStore: RoutingTraceStore?
+
+    /// Creates a new message router with the given session registry.
     ///
     /// - Parameters:
     ///   - registry: The session registry providing current session state.
-    ///   - engine: The routing engine for claude -p invocations. Defaults to `ClaudePipeRoutingEngine`.
-    public init(registry: SessionRegistry, engine: any RoutingEngine = ClaudePipeRoutingEngine()) {
+    ///   - engine: Optional routing engine for smart routing. Defaults to nil (clarification only).
+    ///   - traceStore: Optional store for persisting routing traces. Defaults to nil.
+    public init(
+        registry: SessionRegistry,
+        engine: (any RoutingEngine)? = nil,
+        traceStore: RoutingTraceStore? = nil
+    ) {
         self.registry = registry
         self.engine = engine
+        self.traceStore = traceStore
     }
 }
 
@@ -119,23 +133,13 @@ extension MessageRouter {
     /// `route()` and `routeSkipEngine()`.
     enum DeterministicResult {
         /// A step in the chain produced a confident routing result.
-        case resolved(RoutingResult)
+        case resolved(RoutingResult, step: RoutingTrace.RoutingStep, sessions: [SessionState])
         /// No deterministic step matched; callers decide what to do next.
         case unresolved(trimmed: String, sessions: [SessionState])
     }
 
     /// Run the deterministic routing steps: operator commands, keyword extraction,
     /// single-session bypass, session affinity, and heuristic scoring.
-    ///
-    /// Both `route()` and `routeSkipEngine()` delegate here, diverging only on
-    /// the unresolved path (routing engine vs `.notConfident`).
-    ///
-    /// - Parameters:
-    ///   - text: The transcribed user message.
-    ///   - routingState: Current routing state with affinity and history data.
-    ///   - prefetchedSessions: Pre-fetched sessions to avoid a redundant registry call.
-    ///     When nil, sessions are fetched from the registry.
-    /// - Returns: A resolved routing result or an unresolved state for callers to handle.
     func deterministicChain(
         text: String,
         routingState: RoutingState,
@@ -146,32 +150,58 @@ extension MessageRouter {
 
         if let command = matchOperatorCommand(lowered) {
             Self.logger.info("Matched operator command: \(String(describing: command))")
-            return .resolved(.operatorCommand(command))
+            return .resolved(.operatorCommand(command), step: .operatorCommand, sessions: [])
         }
 
-        let sessions: [SessionState]
-        if let prefetched = prefetchedSessions {
-            sessions = prefetched
-        } else {
-            sessions = await registry.allSessions()
-        }
+        let sessions = prefetchedSessions ?? (await registry.allSessions())
         let sessionNames = sessions.map(\.name)
 
         if let match = AgentNameMatcher.match(in: trimmed, sessionNames: sessionNames) {
             Self.logger.info("Keyword match: routing to '\(match.session)'")
-            return .resolved(.route(session: match.session, message: match.message))
+            return .resolved(
+                .route(session: match.session, message: match.message),
+                step: .keywordExtraction,
+                sessions: sessions
+            )
         }
 
         if sessions.count == 1 {
             let session = sessions[0]
             Self.logger.info("Single session bypass: routing to '\(session.name)'")
-            return .resolved(.route(session: session.name, message: trimmed))
+            return .resolved(
+                .route(session: session.name, message: trimmed),
+                step: .singleSessionBypass,
+                sessions: sessions
+            )
         }
 
+        if let result = checkAffinityAndHeuristic(
+            trimmed: trimmed,
+            sessions: sessions,
+            sessionNames: sessionNames,
+            routingState: routingState
+        ) {
+            return result
+        }
+
+        return .unresolved(trimmed: trimmed, sessions: sessions)
+    }
+
+    /// Check session affinity and heuristic scoring steps.
+    private func checkAffinityAndHeuristic(
+        trimmed: String,
+        sessions: [SessionState],
+        sessionNames: [String],
+        routingState: RoutingState
+    ) -> DeterministicResult? {
         if let affinityTarget = routingState.affinityTarget() {
             if sessionNames.contains(affinityTarget) {
                 Self.logger.info("Session affinity: routing to '\(affinityTarget)'")
-                return .resolved(.route(session: affinityTarget, message: trimmed))
+                return .resolved(
+                    .route(session: affinityTarget, message: trimmed),
+                    step: .sessionAffinity,
+                    sessions: sessions
+                )
             }
             Self.logger.debug(
                 "Affinity target '\(affinityTarget)' no longer registered; falling through"
@@ -180,10 +210,14 @@ extension MessageRouter {
 
         if let heuristicTarget = heuristicRoute(text: trimmed, sessions: sessions) {
             Self.logger.info("Context heuristic: routing to '\(heuristicTarget)'")
-            return .resolved(.route(session: heuristicTarget, message: trimmed))
+            return .resolved(
+                .route(session: heuristicTarget, message: trimmed),
+                step: .heuristicScoring,
+                sessions: sessions
+            )
         }
 
-        return .unresolved(trimmed: trimmed, sessions: sessions)
+        return nil
     }
 }
 
@@ -191,91 +225,49 @@ extension MessageRouter {
 
 extension MessageRouter {
     /// Route a transcribed user message through the full priority chain.
-    ///
-    /// - Parameters:
-    ///   - text: The transcribed user message.
-    ///   - routingState: Current routing state with affinity and history data.
-    /// - Returns: A `RoutingResult` indicating how the message should be handled.
     public func route(text: String, routingState: RoutingState) async -> RoutingResult {
         Self.logger.info("Routing message: \"\(text.prefix(80))\"")
 
+        let result: RoutingResult
+        let step: RoutingTrace.RoutingStep
+        let sessions: [SessionState]
+
         switch await deterministicChain(text: text, routingState: routingState) {
-        case .resolved(let result):
-            return result
+        case .resolved(let routeResult, let resolvedStep, let resolvedSessions):
+            result = routeResult
+            step = resolvedStep
+            sessions = resolvedSessions
 
-        case .unresolved(let trimmed, let sessions):
-            if sessions.isEmpty {
+        case .unresolved(let trimmed, let resolvedSessions):
+            sessions = resolvedSessions
+            if resolvedSessions.isEmpty {
                 Self.logger.warning("No sessions registered; cannot route")
-                return .noSessions
+                result = .noSessions
+                step = .noSessions
+            } else if engine != nil {
+                Self.logger.info("Invoking routing engine for smart routing")
+                result = await claudePipeRoute(
+                    text: trimmed,
+                    sessions: resolvedSessions,
+                    routingState: routingState
+                )
+                step = .engineRouting
+            } else {
+                let sessionNames = resolvedSessions.map(\.name)
+                Self.logger.info("Heuristics not confident; asking for clarification")
+                result = Self.clarifyResult(candidates: sessionNames, originalText: trimmed)
+                step = .clarification
             }
-            Self.logger.info("Invoking routing engine for smart routing")
-            return await claudePipeRoute(
-                text: trimmed,
-                sessions: sessions,
-                routingState: routingState
-            )
         }
-    }
-}
 
-// MARK: - Operator Command Matching
-
-extension MessageRouter {
-    /// Regex pattern for "what did [name] say" operator command.
-    private static let whatDidSayPattern: NSRegularExpression? = {
-        try? NSRegularExpression(
-            pattern: #"what did (\w+) say"#,
-            options: [.caseInsensitive]
+        await postTrace(
+            text: text,
+            sessions: sessions,
+            step: step,
+            result: result,
+            routingState: routingState
         )
-    }()
-
-    /// Operator command patterns matched against the lowercased user utterance.
-    private static let operatorCommandMatchers: [(pattern: String, command: OperatorCommand)] = [
-        ("operator status", .status),
-        ("operator what", .status),
-        ("what's everyone working on", .status),
-        ("whats everyone working on", .status),
-        ("what is everyone working on", .status),
-        ("list agents", .listAgents),
-        ("list sessions", .listAgents),
-        ("who's running", .listAgents),
-        ("whos running", .listAgents),
-        ("who is running", .listAgents),
-        ("operator replay", .replay),
-        ("what did i miss", .whatDidIMiss),
-        ("operator help", .help)
-    ]
-
-    /// Match the user's lowercased utterance against known operator command patterns.
-    func matchOperatorCommand(_ lowered: String) -> OperatorCommand? {
-        let range = NSRange(lowered.startIndex..., in: lowered)
-        if let pattern = Self.whatDidSayPattern,
-            let match = pattern.firstMatch(in: lowered, range: range),
-            let nameRange = Range(match.range(at: 1), in: lowered)
-        {
-            let agentName = String(lowered[nameRange])
-            if agentName != "i" {
-                return .replayAgent(name: agentName)
-            }
-        }
-
-        for matcher in Self.operatorCommandMatchers where lowered.contains(matcher.pattern) {
-            return matcher.command
-        }
-        return nil
-    }
-}
-
-// MARK: - Case-Insensitive Session Lookup
-
-extension MessageRouter {
-    /// Find the canonical session name matching `name` case-insensitively.
-    static func canonicalSession(
-        _ name: String,
-        in sessionNames: [String]
-    ) -> String? {
-        let lowered = name.lowercased()
-        return sessionNames.first { $0.lowercased() == lowered }
+        return result
     }
 }
 
@@ -283,7 +275,7 @@ extension MessageRouter {
 
 extension MessageRouter {
     /// Invoke claude -p for smart routing with session context and routing history.
-    private func claudePipeRoute(
+    func claudePipeRoute(
         text: String,
         sessions: [SessionState],
         routingState: RoutingState
@@ -294,6 +286,10 @@ extension MessageRouter {
             routingState: routingState
         )
         let sessionNames = sessions.map(\.name)
+
+        guard let engine else {
+            return Self.clarifyResult(candidates: sessionNames, originalText: text)
+        }
 
         do {
             let json = try await engine.run(prompt: prompt)
@@ -322,26 +318,12 @@ extension MessageRouter {
 
             return .clarify(candidates: candidates, question: question, originalText: text)
         } catch {
-            return handleRoutingError(error, sessionNames: sessionNames, text: text)
-        }
-    }
-
-    private func handleRoutingError(
-        _ error: any Error,
-        sessionNames: [String],
-        text: String
-    ) -> RoutingResult {
-        if let pipeError = error as? ClaudePipeError {
-            if case .cliNotFound = pipeError {
+            if let pipeError = error as? ClaudePipeError, case .cliNotFound = pipeError {
                 Self.logger.error("claude CLI not found; smart routing unavailable")
                 return .cliNotFound
             }
-            Self.logger.error("claude -p routing failed: \(pipeError.description)")
-        } else {
-            Self.logger.error("Unexpected error in claude -p routing: \(error)")
+            Self.logger.error("claude -p routing failed: \(error)")
+            return Self.clarifyResult(candidates: sessionNames, originalText: text)
         }
-
-        let question = "Which agent is this for? \(sessionNames.joined(separator: " or "))?"
-        return .clarify(candidates: sessionNames, question: question, originalText: text)
     }
 }

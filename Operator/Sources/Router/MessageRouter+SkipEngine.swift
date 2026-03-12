@@ -29,7 +29,7 @@ extension MessageRouter {
             routingState: routingState,
             prefetchedSessions: prefetchedSessions
         ) {
-        case .resolved(let result):
+        case .resolved(let result, _, _):
             return result
 
         case .unresolved(let trimmed, let sessions):
