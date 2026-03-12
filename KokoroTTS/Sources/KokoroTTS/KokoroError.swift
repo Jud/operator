@@ -10,8 +10,6 @@ public enum KokoroError: Error, Sendable {
     case voiceNotFound(String)
     /// Model files not present at expected path.
     case modelsNotAvailable(URL)
-    /// Model download failed.
-    case downloadFailed(String)
     /// Text too long for available model buckets.
     case textTooLong(tokenCount: Int, maxTokens: Int)
 }

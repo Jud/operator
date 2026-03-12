@@ -26,23 +26,14 @@ public final class KokoroEngine: @unchecked Sendable {
     private let phonemizer: Phonemizer
     private let tokenizer: Tokenizer
     private let voiceStore: VoiceStore
-    private let modelDirectory: URL
     private var unifiedModels: [UnifiedBucket: MLModel] = [:]
-
-    /// Maximum tokens that can be processed in a single model call.
-    private var maxTokensPerChunk: Int {
-        UnifiedBucket.allCases.map(\.maxTokens).max() ?? 242
-    }
 
     /// Creates a KokoroEngine from cached models.
     ///
     /// - Parameters:
     ///   - modelDirectory: Path containing `.mlmodelc` model directories and voice embeddings.
-    ///   - allowLowPrecisionGPU: Enable FP16 accumulation on GPU for potentially faster inference.
     /// - Throws: ``KokoroError/modelsNotAvailable(_:)`` if no models found.
-    public init(modelDirectory: URL, allowLowPrecisionGPU: Bool = true) throws {
-        self.modelDirectory = modelDirectory
-
+    public init(modelDirectory: URL) throws {
         guard ModelManager.modelsAvailable(at: modelDirectory) else {
             throw KokoroError.modelsNotAvailable(modelDirectory)
         }
@@ -55,9 +46,6 @@ public final class KokoroEngine: @unchecked Sendable {
             try phonemizer.loadDictionaries(from: modelDirectory)
         } else {
             phonemizer.loadDictionariesFromBundle()
-        }
-        if let g2p = try? G2PModel.load(from: modelDirectory) {
-            phonemizer.attachG2P(g2p)
         }
         self.phonemizer = phonemizer
 
@@ -74,7 +62,6 @@ public final class KokoroEngine: @unchecked Sendable {
         // Load unified models
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine  // ANE: 3.5x faster than GPU (425ms vs 1490ms)
-        config.allowLowPrecisionAccumulationOnGPU = allowLowPrecisionGPU
         for bucket in UnifiedBucket.allCases {
             let url = modelDirectory.appendingPathComponent(bucket.modelName + ".mlmodelc")
             if FileManager.default.fileExists(atPath: url.path) {
@@ -106,7 +93,7 @@ public final class KokoroEngine: @unchecked Sendable {
         let tokenIds = tokenizer.encode(phonemes)
 
         // If it fits in a single model call, synthesize directly
-        if tokenIds.count <= maxTokensPerChunk {
+        if tokenIds.count <= UnifiedBucket.maxTokenCount {
             let (samples, durations) = try synthesizeUnified(
                 tokenIds: tokenIds, styleVector: styleVector, speed: speed)
             let elapsed = CFAbsoluteTimeGetCurrent() - t0
@@ -182,8 +169,7 @@ public final class KokoroEngine: @unchecked Sendable {
         speed: Float
     ) throws -> (samples: [Float], durations: [Int]) {
         guard let bucket = UnifiedBucket.select(forTokenCount: tokenIds.count) else {
-            let maxAvailable = UnifiedBucket.allCases.map(\.maxTokens).max() ?? 0
-            throw KokoroError.textTooLong(tokenCount: tokenIds.count, maxTokens: maxAvailable)
+            throw KokoroError.textTooLong(tokenCount: tokenIds.count, maxTokens: UnifiedBucket.maxTokenCount)
         }
 
         // Find a loaded model: preferred bucket first, then any loaded model that fits

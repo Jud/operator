@@ -183,17 +183,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else {
             Self.logger.info("Kokoro models not downloaded. Using Apple TTS.")
-            Task.detached {
-                let logger = Log.logger(for: "ModelDownload")
-                do {
-                    try await ModelManager.download(to: modelDir) { progress, msg in
-                        logger.info("\(msg) (\(Int(progress * 100))%)")
-                    }
-                    logger.info("Kokoro models downloaded. Restart for Kokoro TTS.")
-                } catch {
-                    logger.warning("Model download failed: \(error)")
-                }
-            }
         }
         return (SpeechManager(), VoiceManager())
     }

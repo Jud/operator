@@ -6,7 +6,7 @@ import NaturalLanguage
 /// Three-tier approach (all Apache-2.0 compatible):
 /// 1. **Dictionary lookup** — gold + silver IPA dictionaries from misaki
 /// 2. **Suffix stemming** — strips -s/-ed/-ing, looks up stem, applies phonological rules
-/// 3. **CoreML BART G2P** — encoder-decoder neural model for OOV words
+/// 3. **Character spell-out** — letter-by-letter fallback for unknown words
 ///
 /// Uses NLTagger for POS-based heteronym resolution.
 final class Phonemizer: @unchecked Sendable {
@@ -14,8 +14,6 @@ final class Phonemizer: @unchecked Sendable {
     private var goldDict: [String: DictEntry] = [:]
     /// Silver dictionary (lower-confidence).
     private var silverDict: [String: DictEntry] = [:]
-    /// G2P model for out-of-vocabulary words.
-    private var g2pModel: G2PModel?
     /// NL tagger for POS tagging (heteronym resolution).
     private let tagger = NLTagger(tagSchemes: [.lexicalClass])
 
@@ -56,11 +54,6 @@ final class Phonemizer: @unchecked Sendable {
         }
     }
 
-    /// Attach a G2P model for OOV fallback.
-    func attachG2P(_ model: G2PModel) {
-        self.g2pModel = model
-    }
-
     // MARK: - Text-to-Phoneme Pipeline
 
     /// Convert text to IPA phoneme string.
@@ -98,7 +91,6 @@ final class Phonemizer: @unchecked Sendable {
         if let stemmed = SuffixRules.stemAndLookup(lower, lookup: { self.lookupDict($0, pos: nil) }) {
             return stemmed
         }
-        if let g2p = g2pModel?.phonemize(lower) { return g2p }
         return spellOutWord(lower)
     }
 

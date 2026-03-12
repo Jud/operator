@@ -12,9 +12,6 @@ final class Tokenizer: Sendable {
     /// End-of-sequence token ID.
     let eosId: Int = 2
 
-    /// Maximum token sequence length.
-    static let maxLength = 510
-
     init(vocab: [String: Int]) {
         self.vocab = vocab
     }
@@ -46,7 +43,7 @@ final class Tokenizer: Sendable {
     }
 
     /// Encode an IPA phoneme string to token IDs with BOS/EOS.
-    func encode(_ phonemes: String, maxLength: Int = Tokenizer.maxLength) -> [Int] {
+    func encode(_ phonemes: String, maxLength: Int = UnifiedBucket.maxTokenCount) -> [Int] {
         var ids = [bosId]
 
         for char in phonemes {

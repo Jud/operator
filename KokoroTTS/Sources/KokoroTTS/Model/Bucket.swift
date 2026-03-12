@@ -9,6 +9,9 @@ enum UnifiedBucket: CaseIterable, Sendable, Hashable {
     case v21_10s
     case v24_10s
 
+    /// Largest token count any bucket accepts.
+    static let maxTokenCount = allCases.map(\.maxTokens).max()!
+
     var modelName: String {
         switch self {
         case .v21_5s:  return "kokoro_21_5s"
@@ -22,14 +25,6 @@ enum UnifiedBucket: CaseIterable, Sendable, Hashable {
         case .v21_5s:  return 124
         case .v21_10s: return 168
         case .v24_10s: return 242
-        }
-    }
-
-    var maxSamples: Int {
-        switch self {
-        case .v21_5s:  return 175_800
-        case .v21_10s: return 253_200
-        case .v24_10s: return 240_000
         }
     }
 
