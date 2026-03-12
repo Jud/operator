@@ -76,7 +76,7 @@ public final class KokoroEngine: @unchecked Sendable {
 
         // Try unified models first (primary path)
         let config = MLModelConfiguration()
-        config.computeUnits = .cpuAndGPU  // ANE compilation takes 18s+ and doesn't cache
+        config.computeUnits = .cpuAndNeuralEngine  // ANE: 3.5x faster than GPU (425ms vs 1490ms)
         config.allowLowPrecisionAccumulationOnGPU = allowLowPrecisionGPU
         for bucket in UnifiedBucket.allCases {
             let url = modelDirectory.appendingPathComponent(bucket.modelName + ".mlmodelc")
