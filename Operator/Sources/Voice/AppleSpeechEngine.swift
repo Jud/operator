@@ -149,14 +149,14 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Tear down the current recognition session and release all resources.
     private func resetSession() {
-        eventContinuation?.finish()
-        eventContinuation = nil
-        eventStream = nil
         if let task = recognitionTask {
             task.cancel()
             recognitionTask = nil
             Self.logger.debug("Cancelled recognition task")
         }
+        eventContinuation?.finish()
+        eventContinuation = nil
+        eventStream = nil
         recognitionRequest = nil
     }
 
