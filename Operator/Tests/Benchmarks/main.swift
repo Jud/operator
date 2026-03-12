@@ -29,7 +29,7 @@ private func makeBenchmarkVoice() -> VoiceDescriptor? {
     guard let appleVoice = AVSpeechSynthesisVoice(language: "en-US") else {
         return nil
     }
-    return VoiceDescriptor(appleVoice: appleVoice)
+    return .system(appleVoice)
 }
 
 private func makeRoutingBenchmarkSessions(voice: VoiceDescriptor) -> [SessionState] {

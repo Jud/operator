@@ -90,6 +90,15 @@ public final class SessionDiscoveryService: Sendable {
         let registeredSessions = await registry.allSessions()
 
         for session in registeredSessions {
+            // Skip sessions with unresolvable TTYs (e.g. /dev/?? from MCP
+            // server subprocesses). These are managed by heartbeat, not
+            // terminal tab discovery.
+            if case .tty(let path) = session.identifier,
+                path == "/dev/??" || path == "unknown"
+            {
+                continue
+            }
+
             let sessionType = session.identifier.terminalType
             guard polledTypes.contains(sessionType) else { continue }
 

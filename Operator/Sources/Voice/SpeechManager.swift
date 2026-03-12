@@ -74,7 +74,7 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
         lastSpokenCharIndex = 0
 
         let utterance = AVSpeechUtterance(string: fullText)
-        utterance.voice = voice.appleVoice
+        utterance.voice = voice.appleVoice ?? AVSpeechSynthesisVoice()
         let scaledRate = Self.baseAppleRate * speechRate
         utterance.rate = min(max(scaledRate, AVSpeechUtteranceMinimumSpeechRate), AVSpeechUtteranceMaximumSpeechRate)
         utterance.pitchMultiplier = pitchMultiplier

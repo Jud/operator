@@ -61,21 +61,23 @@ public actor SessionRegistry {
             return false
         }
 
+        let uniqueName = deduplicatedName(name, forIdentifier: identifier)
+
         if let existing = sessions[identifier] {
             var updated = existing
-            updated.name = name
+            updated.name = uniqueName
             updated.cwd = cwd
             if let context { updated.context = context }
             updated.lastActivity = Date()
             sessions[identifier] = updated
-            Self.logger.info("Re-registered session '\(name)' at \(identifier)")
+            Self.logger.info("Re-registered session '\(uniqueName)' at \(identifier)")
             return true
         }
 
         let voice = voiceManager.nextAgentVoice()
 
         let state = SessionState(
-            name: name,
+            name: uniqueName,
             identifier: identifier,
             cwd: cwd,
             context: context ?? "",
@@ -86,7 +88,7 @@ public actor SessionRegistry {
             pitchMultiplier: 1.0
         )
         sessions[identifier] = state
-        Self.logger.info("Registered session '\(name)' at \(identifier)")
+        Self.logger.info("Registered session '\(uniqueName)' at \(identifier)")
         return true
     }
 
@@ -181,17 +183,25 @@ public actor SessionRegistry {
         cwd: String,
         terminalType: TerminalType = .iterm
     ) -> (ok: Bool, needsTerminalId: Bool) {
+        // Avoid collision with the reserved "operator" name used for system speech.
+        let baseName = sessionId.lowercased() == "operator" ? "op-agent" : sessionId
+
         let id = resolveIdentifier(forTTY: tty)
+        let displayName = deduplicatedName(baseName, forIdentifier: id)
 
         if var existing = sessions[id] {
             existing.sessionId = sessionId
+            // Only override display name if it collides with the reserved "operator" name.
+            if existing.name.lowercased() == "operator" {
+                existing.name = displayName
+            }
             existing.lastActivity = Date()
             sessions[id] = existing
             Self.logger.info("Hook session-start: updated session ID for \(id)")
         } else {
             let voice = voiceManager.nextAgentVoice()
             let state = SessionState(
-                name: sessionId,
+                name: displayName,
                 identifier: id,
                 cwd: cwd,
                 context: "",
@@ -203,7 +213,7 @@ public actor SessionRegistry {
                 sessionId: sessionId
             )
             sessions[id] = state
-            Self.logger.info("Hook session-start: registered new session \(sessionId) at \(id)")
+            Self.logger.info("Hook session-start: registered new session \(displayName) at \(id)")
         }
 
         let needsTerminalId = terminalType == .ghostty && ttyToGhosttyId[tty] == nil
@@ -337,6 +347,18 @@ public actor SessionRegistry {
             return .ghosttyTerminal(ghosttyId)
         }
         return .tty(tty)
+    }
+
+    /// Return a unique display name by appending "-2", "-3", etc. if `name`
+    /// is already used by a different terminal identifier.
+    private func deduplicatedName(_ name: String, forIdentifier id: TerminalIdentifier) -> String {
+        let taken = sessions.filter { $0.key != id }.values.map(\.name)
+        guard taken.contains(name) else {
+            return name
+        }
+        var suffix = 2
+        while taken.contains("\(name)-\(suffix)") { suffix += 1 }
+        return "\(name)-\(suffix)"
     }
 
     /// Remove cached TTY-to-Ghostty mapping when a Ghostty session is removed.

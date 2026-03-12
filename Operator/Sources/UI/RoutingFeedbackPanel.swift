@@ -268,15 +268,23 @@ public final class RoutingFeedbackPanel: NSPanel {
         feedbackModel.sessionNames = sessionNames
         feedbackModel.showingCorrection = false
 
-        // Resize to fit content
-        if let contentView = self.contentView {
-            let fitting = contentView.fittingSize
-            self.setContentSize(fitting)
-        }
-
+        // Use a fixed width; SwiftUI sizes vertically to fit.
+        self.setContentSize(NSSize(width: 280, height: 120))
         positionTopLeft()
         self.alphaValue = 1.0
         orderFront(nil)
+
+        // Re-fit after SwiftUI has laid out the new content
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let contentView = self.contentView else {
+                return
+            }
+            let fitting = contentView.fittingSize
+            if fitting.width > 0, fitting.height > 0 {
+                self.setContentSize(fitting)
+                self.positionTopLeft()
+            }
+        }
 
         // Auto-dismiss after 5 seconds
         let workItem = DispatchWorkItem { [weak self] in

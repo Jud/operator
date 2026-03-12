@@ -7,6 +7,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(path: "../../harness"),
+        .package(path: "../KokoroTTS"),
     ],
     targets: [
         .target(
@@ -17,6 +18,7 @@ let package = Package(
             name: "OperatorCore",
             dependencies: [
                 "OperatorShared",
+                "KokoroTTS",
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HarnessCore", package: "Harness"),
             ],

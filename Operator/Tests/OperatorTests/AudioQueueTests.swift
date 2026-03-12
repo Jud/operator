@@ -34,7 +34,7 @@ private final class MockFeedback: AudioFeedbackProviding {
 // MARK: - Helpers
 
 private struct TestHarness {
-    static let voice = VoiceDescriptor(appleVoice: AVSpeechSynthesisVoice())
+    static let voice = VoiceDescriptor.system(AVSpeechSynthesisVoice())
 
     let speech: MockSpeech
     let feedback: MockFeedback

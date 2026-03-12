@@ -153,7 +153,12 @@ extension MessageRouter {
             return .resolved(.operatorCommand(command), step: .operatorCommand, sessions: [])
         }
 
-        let sessions = prefetchedSessions ?? (await registry.allSessions())
+        let sessions: [SessionState]
+        if let prefetched = prefetchedSessions {
+            sessions = prefetched
+        } else {
+            sessions = await registry.allSessions()
+        }
         let sessionNames = sessions.map(\.name)
 
         if let match = AgentNameMatcher.match(in: trimmed, sessionNames: sessionNames) {

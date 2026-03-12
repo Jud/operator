@@ -328,20 +328,27 @@ extension StateMachine {
             return
         }
 
+        await dispatchBimodalDecision(decision, text: text)
+    }
+
+    private func dispatchBimodalDecision(_ decision: BimodalDecision, text: String) async {
         switch decision {
         case .routeToAgent:
             await processTranscription(text)
 
         case .dictate(let dictText):
             let trimmed = dictText.trimmingCharacters(in: .whitespacesAndNewlines)
+            await postBimodalTrace(text: text, result: .notConfident(text))
             await performDictation(trimmed)
 
         case .noTextField:
+            await postBimodalTrace(text: text, result: .noSessions)
             speakOperator("No text field detected. Move your cursor to a text input.")
             feedback.play(.error)
             enterIdle()
 
         case .permissionRequired:
+            await postBimodalTrace(text: text, result: .noSessions)
             speakOperator(
                 "Operator needs Accessibility permission for dictation. Check System Settings."
             )
@@ -381,6 +388,23 @@ extension StateMachine {
         }
 
         await performRouting(text)
+    }
+
+    /// Post a routing trace for bimodal decisions that skip the full routing chain.
+    private func postBimodalTrace(text: String, result: RoutingResult) async {
+        let sessions = await registry.allSessions()
+        let step: RoutingTrace.RoutingStep =
+            switch result {
+            case .noSessions: .noSessions
+            default: .heuristicScoring
+            }
+        await router.postTrace(
+            text: text,
+            sessions: sessions,
+            step: step,
+            result: result,
+            routingState: routingState
+        )
     }
 
     /// Run the message through the routing priority chain.

@@ -134,7 +134,7 @@ internal struct SessionRegistryTests {
         let registry = SessionRegistry(voiceManager: voiceManager)
 
         let voice = await registry.voiceFor(session: "unknown")
-        #expect(voice.appleVoice.identifier == voiceManager.defaultAgentVoice.appleVoice.identifier)
+        #expect(voice == voiceManager.defaultAgentVoice)
     }
 
     @Test("pitchFor returns 1.0 for unknown session")

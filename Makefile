@@ -33,15 +33,23 @@ app: swift-build
 	# Entitlements (for reference; used at signing time)
 	cp Operator/Operator.entitlements $(CONTENTS)/
 
-	# Codesign the main binary with a stable identity so macOS preserves TCC
-	# permissions (mic, accessibility) across rebuilds. Sign outside the .app
-	# then copy back — codesign refuses to sign inside an .app with unsealed
-	# root contents (the SPM resource bundle at the .app root).
+	# Codesign binaries outside the .app then copy back — codesign refuses
+	# to sign inside an .app with unsealed root contents (the SPM resource
+	# bundle at the .app root).
+
+	# Main daemon binary: signed with stable identity so macOS preserves TCC
+	# permissions (mic, accessibility) across rebuilds.
 	cp $(MACOS)/Operator $(MACOS)/Operator.signing
 	codesign --force --sign "Apple Development: Jud Stephenson (3SZVREW2PR)" \
 		--entitlements Operator/Operator.entitlements \
 		$(MACOS)/Operator.signing
 	mv $(MACOS)/Operator.signing $(MACOS)/Operator
+
+	# MCP server binary: ad-hoc signed to satisfy macOS code signature
+	# validation (unsigned binaries get SIGKILL).
+	cp $(MACOS)/operator-mcp $(MACOS)/operator-mcp.signing
+	codesign --force --sign - $(MACOS)/operator-mcp.signing
+	mv $(MACOS)/operator-mcp.signing $(MACOS)/operator-mcp
 
 	@echo "==> $(APP_BUNDLE) assembled (signed)"
 

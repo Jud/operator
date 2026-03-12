@@ -7,7 +7,7 @@ import Foundation
 public struct DaemonClient: Sendable {
     /// Base URL of the daemon (e.g., "http://localhost:7420").
     public let baseURL: String
-    /// Bearer token for daemon authentication.
+    /// Bearer token for daemon authentication (from environment).
     public let token: String
 
     private let encoder = JSONEncoder()
@@ -17,6 +17,20 @@ public struct DaemonClient: Sendable {
     public init(baseURL: String, token: String) {
         self.baseURL = baseURL
         self.token = token
+    }
+
+    /// Read the current bearer token, preferring the token file over the cached value.
+    private func currentToken() -> String {
+        let tokenPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".operator/token").path
+        if let data = FileManager.default.contents(atPath: tokenPath),
+            let fileToken = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !fileToken.isEmpty
+        {
+            return fileToken
+        }
+        return token
     }
 
     /// POST a JSON-encoded body to the daemon and return the raw response data.
@@ -32,7 +46,7 @@ public struct DaemonClient: Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(currentToken())", forHTTPHeaderField: "Authorization")
 
         do {
             request.httpBody = try encoder.encode(body)

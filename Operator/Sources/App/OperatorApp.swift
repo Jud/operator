@@ -1,5 +1,7 @@
+// swiftlint:disable file_length
 import AVFoundation
 import AppKit
+import KokoroTTS
 import OperatorCore
 import Speech
 import SwiftUI
@@ -124,19 +126,18 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         Self.logger.info("Operator launching")
         bootstrapPrerequisites()
 
-        let vm = VoiceManager()
+        let (ttsManager, vm) = bootstrapTTS()
         voiceManager = vm
         let fb = AudioFeedback()
-        let sm = SpeechManager()
-        speechManager = sm
+        speechManager = ttsManager as? SpeechManager
 
         if OnboardingViewModel.shouldShowOnboarding() {
             await showOnboardingAndWait()
         } else {
-            await checkPermissions(speechManager: sm, voiceManager: vm)
+            await checkPermissions(speechManager: ttsManager, voiceManager: vm)
         }
 
-        let aq = AudioQueue(speechManager: sm, feedback: fb)
+        let aq = AudioQueue(speechManager: ttsManager, feedback: fb)
         audioQueue = aq
         await aq.startListening()
 
@@ -150,10 +151,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let router = MessageRouter(registry: reg, traceStore: traceStore)
 
         bootstrapFeedbackPanel(traceStore: traceStore)
-        bootstrapHTTPServer(reg: reg, aq: aq, sm: sm, vm: vm)
+        bootstrapHTTPServer(reg: reg, aq: aq, tts: ttsManager, vm: vm)
         bootstrapStateMachine(
             stt: AppleSpeechEngine(),
-            tts: sm,
+            tts: ttsManager,
             aq: aq,
             router: router,
             fb: fb,
@@ -164,8 +165,37 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         bootstrapTrigger()
         bootstrapDiscovery(terminalBridge: terminalBridge, reg: reg, aq: aq, vm: vm)
         wireVoicePreview()
-        sm.speak("Operator is ready.", voice: vm.operatorVoice, prefix: "Operator")
+        ttsManager.speak("Operator is ready.", voice: vm.operatorVoice, prefix: "Operator")
         Self.logger.info("Operator startup complete")
+    }
+
+    private func bootstrapTTS() -> (any SpeechManaging, VoiceManager) {
+        let modelDir = ModelManager.defaultDirectory
+        if ModelManager.modelsAvailable(at: modelDir) {
+            do {
+                let engine = try KokoroEngine(modelDirectory: modelDir)
+                try engine.warmUp()
+                let mgr = KokoroSpeechManager(engine: engine)
+                Self.logger.info("Using Kokoro TTS (\(engine.availableVoices.count) voices)")
+                return (mgr, VoiceManager(kokoroVoices: engine.availableVoices))
+            } catch {
+                Self.logger.warning("Kokoro TTS init failed: \(error). Falling back to Apple TTS.")
+            }
+        } else {
+            Self.logger.info("Kokoro models not downloaded. Using Apple TTS.")
+            Task.detached {
+                let logger = Log.logger(for: "ModelDownload")
+                do {
+                    try await ModelManager.download(to: modelDir) { progress, msg in
+                        logger.info("\(msg) (\(Int(progress * 100))%)")
+                    }
+                    logger.info("Kokoro models downloaded. Restart for Kokoro TTS.")
+                } catch {
+                    logger.warning("Model download failed: \(error)")
+                }
+            }
+        }
+        return (SpeechManager(), VoiceManager())
     }
 
     private func bootstrapPrerequisites() {
@@ -178,7 +208,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private func bootstrapHTTPServer(
         reg: SessionRegistry,
         aq: AudioQueue,
-        sm: SpeechManager,
+        tts: any SpeechManaging,
         vm: VoiceManager
     ) {
         let server = OperatorHTTPServer(
@@ -197,11 +227,13 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 try await server.start()
             } catch {
                 Self.logger.error("HTTP server failed to start: \(error)")
-                sm.speak(
-                    "Port 7420 is already in use. Another Operator instance may be running.",
-                    voice: vm.operatorVoice,
-                    prefix: "Operator"
-                )
+                await MainActor.run {
+                    tts.speak(
+                        "Port 7420 is already in use. Another Operator instance may be running.",
+                        voice: vm.operatorVoice,
+                        prefix: "Operator"
+                    )
+                }
             }
         }
     }
@@ -209,7 +241,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// Create the state machine, waveform panel, and menu bar model.
     private func bootstrapStateMachine(  // swiftlint:disable:this function_parameter_count
         stt: AppleSpeechEngine,
-        tts: SpeechManager,
+        tts: any SpeechManaging,
         aq: AudioQueue,
         router: MessageRouter,
         fb: AudioFeedback,
