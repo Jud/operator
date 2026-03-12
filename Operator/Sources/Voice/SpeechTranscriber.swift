@@ -124,11 +124,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
     /// Stop capturing audio and return the final transcription.
     ///
-    /// If the first transcription attempt fails (returns nil) and captured audio
-    /// buffers are available, retries once with a fresh recognition session by
-    /// re-feeding the buffered audio. This handles SFSpeechRecognizer stalls
-    /// without a long timeout.
-    ///
     /// - Returns: The transcribed text, or nil if transcription failed or was empty.
     public func stopListening() async -> String? {
         guard isListening else {
@@ -139,46 +134,9 @@ public final class SpeechTranscriber: SpeechTranscribing {
         tearDownAudioCapture()
         Self.logger.info("Audio engine stopped, processing transcription")
 
-        // First attempt.
         let result = await engine.finishAndTranscribe()
-
-        if let result {
-            writeAudioFile()
-            return result
-        }
-
-        // First attempt returned nil — retry with a fresh session if we have buffers.
-        let buffers = capturedBuffers.withLock { Array($0) }
-        guard !buffers.isEmpty else {
-            Self.logger.warning("Transcription failed and no captured buffers for retry")
-            writeAudioFile()
-            return nil
-        }
-
-        Self.logger.info("Retrying transcription with \(buffers.count) captured buffers")
-
-        do {
-            try engine.prepare()
-        } catch {
-            Self.logger.error("Failed to prepare engine for retry: \(error)")
-            writeAudioFile()
-            return nil
-        }
-
-        for buffer in buffers {
-            engine.append(buffer)
-        }
-
-        let retryResult = await engine.finishAndTranscribe()
         writeAudioFile()
-
-        if retryResult != nil {
-            Self.logger.info("Retry transcription succeeded")
-        } else {
-            Self.logger.warning("Retry transcription also returned nil")
-        }
-
-        return retryResult
+        return result
     }
 
     /// Perform transcription with a 30-second timeout.

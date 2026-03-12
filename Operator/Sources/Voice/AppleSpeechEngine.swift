@@ -134,20 +134,21 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
             Self.logger.info("No partials during listening — likely no speech detected")
         }
 
-        let result = await consumeWithTimeout(stream: stream, timeout: timeout, hadPartials: hadPartials)
-
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        recognitionRequest = nil
-        eventContinuation?.finish()
-        eventContinuation = nil
-        eventStream = nil
-
+        let result = await consumeWithTimeout(stream: stream, timeout: timeout)
+        resetSession()
         return result
     }
 
     /// Cancel any in-progress recognition task and release resources.
     public func cancel() {
+        resetSession()
+        partialCount.withLock { $0 = 0 }
+    }
+
+    // MARK: - Private
+
+    /// Tear down the current recognition session and release all resources.
+    private func resetSession() {
         eventContinuation?.finish()
         eventContinuation = nil
         eventStream = nil
@@ -157,10 +158,7 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
             Self.logger.debug("Cancelled recognition task")
         }
         recognitionRequest = nil
-        partialCount.withLock { $0 = 0 }
     }
-
-    // MARK: - Private
 
     /// Start the recognition task and wire its callback to the AsyncStream.
     private func startRecognitionTask(
@@ -203,8 +201,7 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
     /// the best partial result seen so far is returned.
     private func consumeWithTimeout(
         stream: AsyncStream<RecognitionEvent>,
-        timeout: TimeInterval,
-        hadPartials: Bool
+        timeout: TimeInterval
     ) async -> String? {
         let consumeTask = Task { () -> String? in
             var bestPartial: String?
@@ -227,14 +224,19 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
         let timeoutTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
             consumeTask.cancel()
-            Self.logger.warning(
-                "Recognition timed out after \(timeout)s (hadPartials: \(hadPartials))"
-            )
+            Self.logger.warning("Recognition timed out after \(timeout)s")
         }
 
         let result = await consumeTask.value
         timeoutTask.cancel()
         return result
+    }
+
+    // MARK: - Deinitialization
+
+    deinit {
+        eventContinuation?.finish()
+        recognitionTask?.cancel()
     }
 }
 
