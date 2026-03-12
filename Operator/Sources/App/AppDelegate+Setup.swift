@@ -97,7 +97,7 @@ extension AppDelegate {
     private static func runProcess(
         _ path: String,
         _ arguments: [String]
-    ) -> (status: Int32, output: String, error: String) { // swiftlint:disable:this large_tuple
+    ) -> (status: Int32, output: String, error: String) {  // swiftlint:disable:this large_tuple
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
