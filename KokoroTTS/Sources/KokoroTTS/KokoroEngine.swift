@@ -195,16 +195,20 @@ public final class KokoroEngine: @unchecked Sendable {
             throw KokoroError.textTooLong(tokenCount: tokenIds.count, maxTokens: 249)
         }
 
-        // Find a loaded model: preferred bucket first, then any that fits
-        let model = unifiedModels[bucket]
-            ?? unifiedModels.sorted(by: { $0.key.maxTokens < $1.key.maxTokens })
-                .first(where: { $0.key.maxTokens >= tokenIds.count })?.value
-
-        guard let model else {
+        // Find a loaded model: preferred bucket first, then any loaded model that fits
+        let resolved: (bucket: UnifiedBucket, model: MLModel)
+        if let m = unifiedModels[bucket] {
+            resolved = (bucket, m)
+        } else if let fallback = unifiedModels.sorted(by: { $0.key.maxTokens < $1.key.maxTokens })
+            .first(where: { $0.key.maxTokens >= tokenIds.count })
+        {
+            resolved = (fallback.key, fallback.value)
+        } else {
             throw KokoroError.inferenceFailed("No suitable model loaded")
         }
 
-        let maxTokens = bucket.maxTokens
+        let model = resolved.model
+        let maxTokens = resolved.bucket.maxTokens
         let (inputIds, maskArray) = try MLArrayHelpers.makeTokenInputs(
             tokenIds: tokenizer.pad(tokenIds, to: maxTokens), maxLength: maxTokens)
         // Fix mask: pad() fills with pad tokens, but mask should reflect real token count

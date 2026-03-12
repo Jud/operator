@@ -10,7 +10,7 @@ struct KokoroTwoStageSpike: AsyncParsableCommand {
         abstract: "Kokoro two-stage pipeline hypothesis tests",
         subcommands: [
             H1ModelLoad.self, H2Alignment.self, H3Performance.self, H4Caching.self,
-            E2EValidation.self,
+            E2EValidation.self, BucketBenchmark.self,
         ]
     )
 }
@@ -83,8 +83,36 @@ struct E2EValidation: AsyncParsableCommand {
         print("WAV written to \(wavPath) (\(String(format: "%.2f", qualityResult.duration))s)")
         print("Listen: open \(wavPath)")
 
-        // Phase 5: Benchmark
-        print("\n--- Phase 5: Benchmark (\(iterations) iterations) ---")
+        // Phase 5: Bucket comparison
+        print("\n--- Phase 5: Bucket Comparison ---")
+        let bucketCases: [(label: String, text: String)] = [
+            ("1-word v21", "Hello."),
+            ("1-sentence v21", "The quick brown fox jumps over the lazy dog."),
+            ("2-sentence v21", "Operator uses neural speech. Each agent gets a distinct voice."),
+            ("long v24", "Operator is a voice orchestration layer that manages concurrent Claude Code sessions and provides natural speech for each agent."),
+        ]
+
+        for (label, text) in bucketCases {
+            // Warm-up
+            _ = try engine.synthesize(text: text, voice: "af_heart")
+            _ = try engine.synthesize(text: text, voice: "af_heart")
+
+            var synthTimes = [Double]()
+            var lastResult: SynthesisResult?
+            for _ in 0..<iterations {
+                let r = try engine.synthesize(text: text, voice: "af_heart")
+                synthTimes.append(r.synthesisTime)
+                lastResult = r
+            }
+            guard let result = lastResult else { continue }
+            let avgSynth = synthTimes.reduce(0, +) / Double(synthTimes.count)
+            let rtfx = result.duration / avgSynth
+            print(String(format: "  %-20s  %7.0fms synth, %5.2fs audio, %5.1fx RTFx, %d tokens",
+                         label, avgSynth * 1000, result.duration, rtfx, result.tokenCount))
+        }
+
+        // Phase 6: Full benchmark with 10s model
+        print("\n--- Phase 6: Benchmark (\(iterations) iterations) ---")
         let benchText = "Operator uses neural speech synthesis for natural voice output. Each agent gets a distinct voice."
         let benchVoice = "af_heart"
 
@@ -151,6 +179,89 @@ struct E2EValidation: AsyncParsableCommand {
         }
 
         try data.write(to: URL(fileURLWithPath: path))
+    }
+}
+
+// MARK: - Bucket Benchmark: Compare v21_5s vs v24_10s
+
+struct BucketBenchmark: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "bucket-bench",
+        abstract: "Compare synthesis speed across unified model buckets (v21_5s vs v24_10s)"
+    )
+
+    @Option(name: .long, help: "Number of benchmark iterations per case")
+    var iterations: Int = 10
+
+    func run() async throws {
+        print("=== Bucket Benchmark: v21_5s vs v24_10s ===\n")
+
+        let modelDir = ModelManager.defaultDirectory
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+        try engine.warmUp()
+
+        let voice = "af_heart"
+
+        let testCases: [(label: String, text: String)] = [
+            ("1-word", "Hello."),
+            ("short-sentence", "The quick brown fox jumps over the lazy dog."),
+            ("2-sentences", "Operator uses neural speech synthesis. Each agent gets a distinct voice."),
+            ("3-sentences", "Operator uses neural speech. Each agent gets a distinct voice. Messages are queued and played in order."),
+        ]
+
+        print(String(format: "%-16s  %8s  %8s  %6s  %6s  %s",
+                      "Case", "Synth", "Audio", "RTFx", "Tokens", "Bucket"))
+        print(String(repeating: "-", count: 72))
+
+        for (label, text) in testCases {
+            // Run warm-up iterations
+            for _ in 0..<2 {
+                _ = try engine.synthesize(text: text, voice: voice)
+            }
+
+            // Benchmark iterations
+            var synthTimes = [Double]()
+            var lastResult: SynthesisResult?
+            for _ in 0..<iterations {
+                let result = try engine.synthesize(text: text, voice: voice)
+                synthTimes.append(result.synthesisTime)
+                lastResult = result
+            }
+
+            guard let result = lastResult else { continue }
+            let avgSynth = synthTimes.reduce(0, +) / Double(synthTimes.count)
+            let rtfx = result.duration / avgSynth
+
+            print(String(format: "%-16s  %7.0fms  %6.2fs  %5.1fx  %5d  %s",
+                         label,
+                         avgSynth * 1000,
+                         result.duration,
+                         rtfx,
+                         result.tokenCount,
+                         result.tokenCount <= 124 ? "v21_5s" : "v24_10s"))
+        }
+
+        // WAV quality comparison: write both short and long
+        print("\n--- Audio Quality Comparison ---")
+        let shortText = "Hello, this is a short test."
+        let longText = "This is a longer test sentence to verify that the ten second model still produces natural sounding speech output."
+
+        let shortResult = try engine.synthesize(text: shortText, voice: voice)
+        let longResult = try engine.synthesize(text: longText, voice: voice)
+
+        try E2EValidation().writeWAV(
+            samples: shortResult.samples,
+            sampleRate: KokoroEngine.sampleRate,
+            to: "/tmp/kokoro_bucket_short.wav"
+        )
+        try E2EValidation().writeWAV(
+            samples: longResult.samples,
+            sampleRate: KokoroEngine.sampleRate,
+            to: "/tmp/kokoro_bucket_long.wav"
+        )
+        print("Short (v21_5s): /tmp/kokoro_bucket_short.wav (\(String(format: "%.2f", shortResult.duration))s)")
+        print("Long  (v24_10s): /tmp/kokoro_bucket_long.wav (\(String(format: "%.2f", longResult.duration))s)")
+        print("\nListen to both to verify quality parity.")
     }
 }
 

@@ -82,14 +82,12 @@ enum UnifiedBucket: CaseIterable, Sendable, Hashable {
         }
     }
 
-    /// Select the best bucket for the given token count.
+    /// Select the smallest bucket that fits the given token count.
     ///
-    /// Prefers v2.4 for quality. Falls back to v2.1 buckets only if v2.4 can't fit.
+    /// Prefers smaller models for speed — v21_5s for short utterances,
+    /// v24_10s for longer text. Falls back to the largest available model.
     static func select(forTokenCount tokens: Int) -> UnifiedBucket? {
-        if tokens <= UnifiedBucket.v24_10s.maxTokens { return .v24_10s }
-        // v2.1 buckets have smaller maxTokens than v2.4 (124, 168 < 242),
-        // so this path is only reachable if a future bucket exceeds v2.4 capacity.
-        return allCases.sorted(by: { $0.maxTokens < $1.maxTokens })
+        allCases.sorted(by: { $0.maxTokens < $1.maxTokens })
             .first { tokens <= $0.maxTokens }
     }
 }
