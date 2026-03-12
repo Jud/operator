@@ -223,6 +223,8 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
 
         let timeoutTask = Task {
             try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            guard !Task.isCancelled
+            else { return }
             consumeTask.cancel()
             Self.logger.warning("Recognition timed out after \(timeout)s")
         }
