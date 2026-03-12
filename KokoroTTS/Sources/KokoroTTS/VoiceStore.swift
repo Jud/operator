@@ -56,8 +56,10 @@ final class VoiceStore: Sendable {
     private static func loadEmbedding(from url: URL) throws -> [Float] {
         let data = try Data(contentsOf: url)
         guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let embedding = json["embedding"] as? [Double] else {
-            return []
+              let embedding = json["embedding"] as? [Double],
+              !embedding.isEmpty else {
+            throw KokoroError.modelLoadFailed(
+                "Invalid voice embedding: \(url.lastPathComponent)")
         }
         return embedding.prefix(styleDim).map { Float($0) }
     }

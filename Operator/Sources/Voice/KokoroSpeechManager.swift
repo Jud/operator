@@ -92,7 +92,7 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     }
 
     private func scheduleAndPlay(result: SynthesisResult, prefix: String, text: String) {
-        currentDurations = result.phonemeDurations
+        currentDurations = result.tokenDurations
         currentSampleCount = result.samples.count
 
         let frameCount = AVAudioFrameCount(result.samples.count)

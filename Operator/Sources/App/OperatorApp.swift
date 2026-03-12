@@ -170,11 +170,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func bootstrapTTS() -> (any SpeechManaging, VoiceManager) {
-        let modelDir = ModelManager.defaultDirectory
+        let modelDir = ModelManager.defaultDirectory(for: "com.operator")
         if ModelManager.modelsAvailable(at: modelDir) {
             do {
                 let engine = try KokoroEngine(modelDirectory: modelDir)
-                try engine.warmUp()
+                engine.warmUp()
                 let mgr = KokoroSpeechManager(engine: engine)
                 Self.logger.info("Using Kokoro TTS (\(engine.availableVoices.count) voices)")
                 return (mgr, VoiceManager(kokoroVoices: engine.availableVoices))

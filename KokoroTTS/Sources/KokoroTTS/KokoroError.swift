@@ -1,15 +1,30 @@
 import Foundation
 
 /// Errors thrown by the KokoroTTS framework.
-public enum KokoroError: Error, Sendable {
-    /// CoreML model failed to load.
+public enum KokoroError: Error, LocalizedError, Sendable {
+    /// CoreML model file exists but failed to load.
     case modelLoadFailed(String)
     /// CoreML inference returned unexpected output.
     case inferenceFailed(String)
-    /// Requested voice not found.
+    /// Requested voice preset not found.
     case voiceNotFound(String)
     /// Model files not present at expected path.
     case modelsNotAvailable(URL)
-    /// Text too long for available model buckets.
+    /// Text exceeds the maximum token count for all available models.
     case textTooLong(tokenCount: Int, maxTokens: Int)
+
+    public var errorDescription: String? {
+        switch self {
+        case .modelLoadFailed(let reason):
+            "Failed to load Kokoro model: \(reason)"
+        case .inferenceFailed(let reason):
+            "Kokoro inference failed: \(reason)"
+        case .voiceNotFound(let detail):
+            "Voice not found: \(detail)"
+        case .modelsNotAvailable(let url):
+            "No Kokoro models found at \(url.path)"
+        case .textTooLong(let count, let max):
+            "Text too long: \(count) tokens exceeds maximum of \(max)"
+        }
+    }
 }

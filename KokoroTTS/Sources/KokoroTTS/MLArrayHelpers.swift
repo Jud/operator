@@ -1,6 +1,6 @@
 import CoreML
 
-/// Shared helpers for MLMultiArray operations used by the synthesis pipeline.
+/// Helpers for MLMultiArray operations used by the synthesis pipeline.
 enum MLArrayHelpers {
     /// Extract float samples from an MLMultiArray, handling both float16 and float32 data types.
     static func extractFloats(from array: MLMultiArray, maxCount: Int? = nil) -> [Float] {
