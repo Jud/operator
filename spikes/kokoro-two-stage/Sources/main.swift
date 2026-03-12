@@ -14,6 +14,8 @@ struct KokoroTwoStageSpike: AsyncParsableCommand {
             Say.self, Voices.self, Phonemize.self, Profile.self,
             H1ModelLoad.self, H2Alignment.self, H3Performance.self, H4Caching.self,
             E2EValidation.self, BucketBenchmark.self, ConfigBench.self,
+            VocosLoad.self,
+            VocosRun.self,
         ]
     )
 }
@@ -1127,4 +1129,575 @@ struct ConfigBench: AsyncParsableCommand {
 
         print("\nNote: 'lowPrecision' uses FP16 accumulation on GPU — may slightly affect audio quality.")
     }
+}
+
+// MARK: - VocosLoad: Load FluidInference CoreML models and inspect tensor specs
+
+struct VocosLoad: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "vocos-load",
+        abstract: "Load FluidInference .mlmodelc files, test compute unit configs, print tensor specs"
+    )
+
+    func run() async throws {
+        let modelDir = ModelManager.defaultDirectory
+
+        // FluidInference model files to test
+        let modelFiles: [(name: String, description: String)] = [
+            ("kokoro_21_5s.mlmodelc", "Kokoro v0.21 (5s capacity, spec v7 / iOS 16+)"),
+            ("kokoro_24_10s.mlmodelc", "Kokoro v0.24 (10s capacity, spec v8 / iOS 17+)"),
+        ]
+
+        let computeConfigs: [(units: MLComputeUnits, label: String)] = [
+            (.cpuAndGPU, "cpuAndGPU"),
+            (.cpuAndNeuralEngine, "cpuAndNeuralEngine"),
+            (.all, "all"),
+        ]
+
+        print("=" * 80)
+        print("FluidInference Kokoro CoreML Model Loader")
+        print("Model directory: \(modelDir.path)")
+        print("=" * 80)
+
+        var results: [(model: String, config: String, loadTime: Double, success: Bool)] = []
+
+        for modelFile in modelFiles {
+            let modelURL = modelDir.appendingPathComponent(modelFile.name)
+
+            print("\n" + "-" * 80)
+            print("MODEL: \(modelFile.name)")
+            print("Description: \(modelFile.description)")
+            print("Path: \(modelURL.path)")
+
+            // Check file exists
+            guard FileManager.default.fileExists(atPath: modelURL.path) else {
+                print("ERROR: Model file not found at \(modelURL.path)")
+                continue
+            }
+
+            // Print file size
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: modelURL.path),
+               let size = attrs[.size] as? UInt64 {
+                print("Size: \(size / 1_000_000) MB")
+            }
+
+            // Test each compute unit configuration
+            for config in computeConfigs {
+                let mlConfig = MLModelConfiguration()
+                mlConfig.computeUnits = config.units
+
+                print("\n  --- Compute Units: \(config.label) ---")
+                let startTime = CFAbsoluteTimeGetCurrent()
+
+                do {
+                    let model = try MLModel(contentsOf: modelURL, configuration: mlConfig)
+                    let loadTime = CFAbsoluteTimeGetCurrent() - startTime
+
+                    results.append((modelFile.name, config.label, loadTime, true))
+                    print("  Load time: \(String(format: "%.3f", loadTime))s")
+
+                    // Print input feature descriptions
+                    let inputDesc = model.modelDescription.inputDescriptionsByName
+                    print("  INPUTS (\(inputDesc.count)):")
+                    for (name, desc) in inputDesc.sorted(by: { $0.key < $1.key }) {
+                        print("    - \(name): \(formatFeatureDescription(desc))")
+                    }
+
+                    // Print output feature descriptions
+                    let outputDesc = model.modelDescription.outputDescriptionsByName
+                    print("  OUTPUTS (\(outputDesc.count)):")
+                    for (name, desc) in outputDesc.sorted(by: { $0.key < $1.key }) {
+                        print("    - \(name): \(formatFeatureDescription(desc))")
+                    }
+
+                    // Print metadata if available
+                    if let metadata = model.modelDescription.metadata[.description] as? String,
+                       !metadata.isEmpty {
+                        print("  Metadata description: \(metadata)")
+                    }
+                    if let author = model.modelDescription.metadata[.author] as? String,
+                       !author.isEmpty {
+                        print("  Metadata author: \(author)")
+                    }
+
+                } catch {
+                    let loadTime = CFAbsoluteTimeGetCurrent() - startTime
+                    results.append((modelFile.name, config.label, loadTime, false))
+                    print("  FAILED after \(String(format: "%.3f", loadTime))s")
+                    print("  Error: \(error)")
+                }
+            }
+        }
+
+        // Build summary using string interpolation (String(format: %s) crashes with Swift Strings)
+        func pad(_ s: String, _ width: Int) -> String {
+            s.count >= width ? s : s + String(repeating: " ", count: width - s.count)
+        }
+
+        print("\n" + String(repeating: "=", count: 80))
+        print("SUMMARY")
+        print(String(repeating: "=", count: 80))
+        print("\(pad("Model", 30))  \(pad("Compute Units", 22))  \(pad("Load (s)", 10))  Status")
+        print(String(repeating: "-", count: 80))
+
+        for r in results {
+            let status = r.success ? "OK" : "FAILED"
+            let loadStr = String(format: "%10.3f", r.loadTime)
+            print("\(pad(r.model, 30))  \(pad(r.config, 22))  \(loadStr)  \(status)")
+        }
+
+        // Find fastest config per model
+        let grouped = Dictionary(grouping: results.filter(\.success), by: \.model)
+        print("")
+        for (model, configs) in grouped.sorted(by: { $0.key < $1.key }) {
+            if let fastest = configs.min(by: { $0.loadTime < $1.loadTime }) {
+                print("Fastest for \(model): \(fastest.config) (\(String(format: "%.3f", fastest.loadTime))s)")
+            }
+        }
+
+        // ANE availability check
+        let aneConfigs = results.filter { ($0.config == "cpuAndNeuralEngine" || $0.config == "all") && $0.success }
+        if aneConfigs.isEmpty {
+            print("\nWARNING: No ANE-capable configurations loaded successfully!")
+        } else {
+            print("\nANE-capable configs loaded: \(aneConfigs.count) / \(results.filter { $0.config == "cpuAndNeuralEngine" || $0.config == "all" }.count)")
+        }
+        print("\n[Done]")
+        fflush(stdout)
+    }
+
+    private func formatFeatureDescription(_ desc: MLFeatureDescription) -> String {
+        var parts: [String] = []
+        parts.append("type=\(featureTypeName(desc.type))")
+
+        if let constraint = desc.multiArrayConstraint {
+            let shape = constraint.shape.map { $0.intValue }
+            parts.append("shape=\(shape)")
+            parts.append("dtype=\(multiArrayDataTypeName(constraint.dataType))")
+        }
+
+        if desc.isOptional {
+            parts.append("optional")
+        }
+
+        return parts.joined(separator: ", ")
+    }
+
+    private func featureTypeName(_ type: MLFeatureType) -> String {
+        switch type {
+        case .multiArray: return "MultiArray"
+        case .double: return "Double"
+        case .int64: return "Int64"
+        case .string: return "String"
+        case .image: return "Image"
+        case .dictionary: return "Dictionary"
+        case .sequence: return "Sequence"
+        @unknown default: return "Unknown(\(type.rawValue))"
+        }
+    }
+
+    private func multiArrayDataTypeName(_ type: MLMultiArrayDataType) -> String {
+        switch type {
+        case .float16: return "Float16"
+        case .float32: return "Float32"
+        case .float64: return "Float64"
+        case .int32: return "Int32"
+        @unknown default: return "Unknown(\(type.rawValue))"
+        }
+    }
+}
+
+// MARK: - VocosRun: End-to-end two-stage pipeline benchmark
+
+struct VocosRun: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "vocos-run",
+        abstract: "Run FluidInference unified models end-to-end, measure per-stage timing and RTFx"
+    )
+
+    @Option(name: .shortAndLong, help: "Voice preset name")
+    var voice: String = "af_heart"
+
+    @Option(name: .long, help: "Number of benchmark iterations (after warmup)")
+    var iterations: Int = 5
+
+    @Flag(name: .long, help: "Skip audio output")
+    var noAudio: Bool = false
+
+    func run() async throws {
+        let modelDir = ModelManager.defaultDirectory
+        let sampleRate = KokoroEngine.sampleRate
+
+        print(String(repeating: "=", count: 80))
+        print("Vocos/FluidInference Two-Stage Pipeline Benchmark")
+        print(String(repeating: "=", count: 80))
+        print("Model directory: \(modelDir.path)")
+        print("Voice: \(voice)")
+        print("Iterations: \(iterations)")
+        print()
+
+        // -- Step 1: Load both FluidInference CoreML models --
+        print("--- Step 1: Load FluidInference CoreML models ---")
+
+        let modelFiles: [(name: String, label: String)] = [
+            ("kokoro_21_5s.mlmodelc", "v0.21-5s"),
+            ("kokoro_24_10s.mlmodelc", "v0.24-10s"),
+        ]
+
+        var loadedModels: [(label: String, model: MLModel, loadTime: Double)] = []
+
+        for (name, label) in modelFiles {
+            let url = modelDir.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                print("  SKIP \(name) -- not found")
+                continue
+            }
+
+            let config = MLModelConfiguration()
+            config.computeUnits = .cpuAndNeuralEngine
+
+            let t0 = CFAbsoluteTimeGetCurrent()
+            do {
+                let model = try MLModel(contentsOf: url, configuration: config)
+                let elapsed = CFAbsoluteTimeGetCurrent() - t0
+                loadedModels.append((label, model, elapsed))
+                print("  Loaded \(label): \(String(format: "%.3f", elapsed))s")
+
+                let inputs = model.modelDescription.inputDescriptionsByName
+                print("    Inputs:")
+                for (iname, desc) in inputs.sorted(by: { $0.key < $1.key }) {
+                    if let c = desc.multiArrayConstraint {
+                        let shape = c.shape.map { $0.intValue }
+                        print("      \(iname): \(shape) \(vocosTypeName(c.dataType))")
+                    }
+                }
+                let outputs = model.modelDescription.outputDescriptionsByName
+                print("    Outputs:")
+                for (oname, desc) in outputs.sorted(by: { $0.key < $1.key }) {
+                    if let c = desc.multiArrayConstraint {
+                        let shape = c.shape.map { $0.intValue }
+                        print("      \(oname): \(shape) \(vocosTypeName(c.dataType))")
+                    }
+                }
+            } catch {
+                let elapsed = CFAbsoluteTimeGetCurrent() - t0
+                print("  FAILED \(label) after \(String(format: "%.3f", elapsed))s: \(error)")
+            }
+        }
+
+        guard let primary = loadedModels.first else {
+            print("\nERROR: No models loaded.")
+            return
+        }
+        print()
+
+        // -- Step 2: Phonemize test text --
+        print("--- Step 2: Phonemize test text ---")
+
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+        let testText = "The quick brown fox jumps over the lazy dog."
+
+        let t1 = CFAbsoluteTimeGetCurrent()
+        let (phonemes, tokenIds) = engine.phonemize(testText)
+        let phonemizeTime = CFAbsoluteTimeGetCurrent() - t1
+
+        print("  Text: \"\(testText)\"")
+        print("  Phonemes: \(phonemes)")
+        print("  Token IDs (\(tokenIds.count)): \(tokenIds.prefix(20))...")
+        print("  Phonemize time: \(String(format: "%.2f", phonemizeTime * 1000))ms")
+        print()
+
+        // -- Step 3: Prepare MLMultiArray inputs --
+        print("--- Step 3: Prepare model inputs ---")
+
+        let model = primary.model
+        let inputSpecs = model.modelDescription.inputDescriptionsByName
+
+        var maxTokens = 124
+        if let inputIdSpec = inputSpecs["input_ids"],
+           let constraint = inputIdSpec.multiArrayConstraint
+        {
+            let shape = constraint.shape.map { $0.intValue }
+            if shape.count >= 2 {
+                maxTokens = shape[1]
+            }
+        }
+        print("  Max tokens for model: \(maxTokens)")
+
+        let realTokenCount = min(tokenIds.count, maxTokens)
+
+        let inputIds = try MLMultiArray(shape: [1, maxTokens as NSNumber], dataType: .int32)
+        let maskArray = try MLMultiArray(shape: [1, maxTokens as NSNumber], dataType: .int32)
+        let idPtr = inputIds.dataPointer.assumingMemoryBound(to: Int32.self)
+        let mskPtr = maskArray.dataPointer.assumingMemoryBound(to: Int32.self)
+        for i in 0..<maxTokens {
+            idPtr[i] = i < tokenIds.count ? Int32(tokenIds[i]) : 0
+            mskPtr[i] = i < realTokenCount ? 1 : 0
+        }
+
+        // Load voice embedding directly from JSON
+        let voiceURL = modelDir
+            .appendingPathComponent("voices")
+            .appendingPathComponent("\(voice).json")
+        let voiceData = try Data(contentsOf: voiceURL)
+        guard let voiceJSON = try JSONSerialization.jsonObject(with: voiceData) as? [String: Any],
+              let embeddingArray = voiceJSON["embedding"] as? [Double]
+        else {
+            print("  ERROR: Could not load voice embedding from \(voiceURL.path)")
+            return
+        }
+        let styleVector = embeddingArray.prefix(256).map { Float($0) }
+        let refS = try MLMultiArray(shape: [1, 256], dataType: .float32)
+        let refPtr = refS.dataPointer.assumingMemoryBound(to: Float.self)
+        for i in 0..<min(styleVector.count, 256) {
+            refPtr[i] = styleVector[i]
+        }
+
+        let needsPhases = inputSpecs["random_phases"] != nil
+        var randomPhases: MLMultiArray?
+        if needsPhases {
+            let numPhases = 9
+            randomPhases = try MLMultiArray(shape: [1, numPhases as NSNumber], dataType: .float32)
+            let phasePtr = randomPhases!.dataPointer.assumingMemoryBound(to: Float.self)
+            for i in 0..<numPhases {
+                phasePtr[i] = Float.random(in: 0..<(2 * .pi))
+            }
+        }
+
+        print("  input_ids: [1, \(maxTokens)] int32 (real tokens: \(realTokenCount))")
+        print("  attention_mask: [1, \(maxTokens)] int32")
+        print("  ref_s: [1, 256] float32")
+        if needsPhases { print("  random_phases: [1, 9] float32") }
+        print()
+
+        // -- Step 4: Run inference --
+        print("--- Step 4: Run inference ---")
+
+        var inputDict: [String: MLFeatureValue] = [
+            "input_ids": MLFeatureValue(multiArray: inputIds),
+            "attention_mask": MLFeatureValue(multiArray: maskArray),
+            "ref_s": MLFeatureValue(multiArray: refS),
+        ]
+        if let phases = randomPhases {
+            inputDict["random_phases"] = MLFeatureValue(multiArray: phases)
+        }
+
+        for (name, _) in inputSpecs where !inputDict.keys.contains(name) {
+            print("  WARNING: Model expects input '\(name)' which is not provided")
+        }
+
+        let input = try MLDictionaryFeatureProvider(dictionary: inputDict)
+
+        print("  Running 2 warmup iterations...")
+        for _ in 0..<2 {
+            if let phases = randomPhases {
+                let phasePtr = phases.dataPointer.assumingMemoryBound(to: Float.self)
+                for i in 0..<9 { phasePtr[i] = Float.random(in: 0..<(2 * .pi)) }
+            }
+            _ = try await model.prediction(from: input)
+        }
+        print("  Warmup done.")
+
+        var inferTimes: [Double] = []
+        var lastOutput: MLFeatureProvider?
+
+        print("  Running \(iterations) benchmark iterations...")
+        for i in 0..<iterations {
+            if let phases = randomPhases {
+                let phasePtr = phases.dataPointer.assumingMemoryBound(to: Float.self)
+                for j in 0..<9 { phasePtr[j] = Float.random(in: 0..<(2 * .pi)) }
+            }
+
+            let t = CFAbsoluteTimeGetCurrent()
+            let out = try await model.prediction(from: input)
+            let elapsed = CFAbsoluteTimeGetCurrent() - t
+            inferTimes.append(elapsed)
+            lastOutput = out
+
+            print("    iter \(i + 1): \(String(format: "%.1f", elapsed * 1000))ms")
+        }
+
+        print()
+
+        // -- Step 5: Extract output --
+        print("--- Step 5: Extract and validate output ---")
+
+        guard let finalOutput = lastOutput else {
+            print("  ERROR: No output from inference")
+            return
+        }
+
+        let outputNames = model.modelDescription.outputDescriptionsByName.keys.sorted()
+        print("  Output feature names: \(outputNames)")
+
+        var samples: [Float] = []
+        if let audioArray = finalOutput.featureValue(for: "audio")?.multiArrayValue {
+            var validCount = audioArray.count
+            if let lengthArray = finalOutput.featureValue(for: "audio_length_samples")?.multiArrayValue {
+                validCount = lengthArray[0].intValue
+                print("  audio_length_samples: \(validCount)")
+            }
+            samples = extractFloatsVocos(from: audioArray, maxCount: validCount)
+            print("  Audio array shape: \(audioArray.shape.map { $0.intValue })")
+            print("  Valid samples: \(samples.count)")
+        } else if let waveArray = finalOutput.featureValue(for: "waveform")?.multiArrayValue {
+            samples = extractFloatsVocos(from: waveArray)
+            print("  Waveform array shape: \(waveArray.shape.map { $0.intValue })")
+            print("  Samples: \(samples.count)")
+        } else {
+            print("  ERROR: No 'audio' or 'waveform' output found")
+            for name in outputNames {
+                if let arr = finalOutput.featureValue(for: name)?.multiArrayValue {
+                    print("    \(name): shape=\(arr.shape.map { $0.intValue })")
+                }
+            }
+            return
+        }
+
+        if let predDur = finalOutput.featureValue(for: "pred_dur")?.multiArrayValue {
+            let durCount = min(predDur.count, realTokenCount)
+            var totalFrames: Float = 0
+            for i in 0..<durCount {
+                totalFrames += predDur[i].floatValue
+            }
+            print("  pred_dur: \(durCount) values, total frames: \(String(format: "%.0f", totalFrames))")
+        }
+
+        let audioDuration = Double(samples.count) / Double(sampleRate)
+        print("  Audio duration: \(String(format: "%.2f", audioDuration))s")
+
+        var rms: Float = 0
+        for s in samples { rms += s * s }
+        rms = sqrt(rms / Float(max(samples.count, 1)))
+        print("  RMS: \(String(format: "%.6f", rms))")
+        print("  RMS > 0.001: \(rms > 0.001 ? "PASS" : "FAIL")")
+        print()
+
+        // -- Step 6: Write WAV --
+        if !noAudio {
+            print("--- Step 6: Write WAV output ---")
+            let wavPath = "/tmp/kokoro_vocos_test.wav"
+            try E2EValidation().writeWAV(samples: samples, sampleRate: sampleRate, to: wavPath)
+            print("  Written: \(wavPath) (\(String(format: "%.2f", audioDuration))s)")
+            print()
+        }
+
+        // -- Step 7: Compute RTFx --
+        print("--- Step 7: Performance summary ---")
+
+        let sortedTimes = inferTimes.sorted()
+        let medianTime = sortedTimes[sortedTimes.count / 2]
+        let meanTime = inferTimes.reduce(0, +) / Double(inferTimes.count)
+        let minTime = sortedTimes.first!
+        let maxTime = sortedTimes.last!
+
+        let medianRTFx = audioDuration / medianTime
+        let meanRTFx = audioDuration / meanTime
+        let bestRTFx = audioDuration / minTime
+
+        print("  Model: \(primary.label)")
+        print("  Compute units: cpuAndNeuralEngine")
+        print("  Audio duration: \(String(format: "%.2f", audioDuration))s")
+        print()
+        print("  Inference timing (\(iterations) iterations):")
+        print("    Median: \(String(format: "%.1f", medianTime * 1000))ms -> \(String(format: "%.1f", medianRTFx))x RTFx")
+        print("    Mean:   \(String(format: "%.1f", meanTime * 1000))ms -> \(String(format: "%.1f", meanRTFx))x RTFx")
+        print("    Min:    \(String(format: "%.1f", minTime * 1000))ms -> \(String(format: "%.1f", bestRTFx))x RTFx")
+        print("    Max:    \(String(format: "%.1f", maxTime * 1000))ms")
+        print()
+
+        // -- Step 8: Compare with KokoroEngine --
+        print("--- Step 8: Compare with KokoroEngine ---")
+
+        _ = try engine.synthesize(text: "warmup", voice: voice)
+        _ = try engine.synthesize(text: "warmup", voice: voice)
+
+        var engineTimes: [Double] = []
+        var engineResult: SynthesisResult?
+
+        for i in 0..<iterations {
+            let t = CFAbsoluteTimeGetCurrent()
+            let result = try engine.synthesize(text: testText, voice: voice)
+            let elapsed = CFAbsoluteTimeGetCurrent() - t
+            engineTimes.append(elapsed)
+            engineResult = result
+            print("    iter \(i + 1): \(String(format: "%.1f", elapsed * 1000))ms")
+        }
+
+        if let result = engineResult {
+            let eSorted = engineTimes.sorted()
+            let eMedian = eSorted[eSorted.count / 2]
+            let eMean = engineTimes.reduce(0, +) / Double(engineTimes.count)
+            let eAudioDur = result.duration
+            let eMedianRTFx = eAudioDur / eMedian
+            let eMeanRTFx = eAudioDur / eMean
+
+            print()
+            print("  KokoroEngine (unified, cpuAndGPU):")
+            print("    Audio duration: \(String(format: "%.2f", eAudioDur))s")
+            print("    Median: \(String(format: "%.1f", eMedian * 1000))ms -> \(String(format: "%.1f", eMedianRTFx))x RTFx")
+            print("    Mean:   \(String(format: "%.1f", eMean * 1000))ms -> \(String(format: "%.1f", eMeanRTFx))x RTFx")
+
+            print()
+            print(String(repeating: "=", count: 80))
+            print("RESULT SUMMARY")
+            print(String(repeating: "=", count: 80))
+            print()
+            print("  Direct ANE inference (cpuAndNeuralEngine):")
+            print("    Median RTFx: \(String(format: "%.1f", medianRTFx))x")
+            print("    Target (>10x): \(medianRTFx > 10 ? "PASS" : "FAIL")")
+            print()
+            print("  KokoroEngine comparison:")
+            print("    Median RTFx: \(String(format: "%.1f", eMedianRTFx))x")
+            let speedup = medianRTFx / eMedianRTFx
+            print("    ANE speedup: \(String(format: "%.2f", speedup))x \(speedup > 1 ? "faster" : "slower")")
+        }
+
+        print()
+        print("  Audio quality:")
+        print("    RMS: \(String(format: "%.6f", rms))")
+        print("    RMS > 0.001: \(rms > 0.001 ? "PASS (audible speech)" : "FAIL (silence/garbage)")")
+        print()
+        print("  NOTE: FluidInference unified models include iSTFTNet vocoder internally.")
+        print("  A separate Vocos CoreML model cannot be created because Vocos uses")
+        print("  complex-valued iSTFT operations (1j) which coremltools does not support.")
+        print("  The HAR (Harmonic-phase) architecture used by mattmireles/kokoro-coreml")
+        print("  works around this by separating harmonic and phase components.")
+        print()
+
+        fflush(stdout)
+    }
+}
+
+private func vocosTypeName(_ type: MLMultiArrayDataType) -> String {
+    switch type {
+    case .float16: return "Float16"
+    case .float32: return "Float32"
+    case .float64: return "Float64"
+    case .int32: return "Int32"
+    case .double: return "Float64"
+    @unknown default: return "Unknown(\(type.rawValue))"
+    }
+}
+
+/// Extract float samples from an MLMultiArray, handling both float16 and float32.
+private func extractFloatsVocos(from array: MLMultiArray, maxCount: Int? = nil) -> [Float] {
+    let count = min(array.count, max(0, maxCount ?? array.count))
+    guard count > 0 else { return [] }
+    var samples = [Float](repeating: 0, count: count)
+    if array.dataType == .float16 {
+        let ptr = array.dataPointer.assumingMemoryBound(to: Float16.self)
+        for i in 0..<count { samples[i] = Float(ptr[i]) }
+    } else {
+        let ptr = array.dataPointer.assumingMemoryBound(to: Float.self)
+        samples.withUnsafeMutableBufferPointer { dst in
+            dst.baseAddress!.update(from: ptr, count: count)
+        }
+    }
+    return samples
+}
+
+// Helper: String repetition operator
+private func * (lhs: String, rhs: Int) -> String {
+    String(repeating: lhs, count: rhs)
 }

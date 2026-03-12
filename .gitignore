@@ -42,3 +42,4 @@ plugin/
 # Scratch files
 .claude-say.sh
 test-harness-type.sh
+spikes/kokoro-coreml/
