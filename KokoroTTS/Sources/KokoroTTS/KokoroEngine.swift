@@ -107,7 +107,11 @@ public final class KokoroEngine: @unchecked Sendable {
             totalTokens += tokenIds.count
             let (samples, durations) = try synthesizeUnified(
                 tokenIds: tokenIds, styleVector: styleVector, speed: clampedSpeed)
-            allSamples.append(contentsOf: samples)
+            if allSamples.isEmpty {
+                allSamples = samples
+            } else {
+                allSamples.append(contentsOf: samples)
+            }
             allDurations.append(contentsOf: durations)
         }
 
@@ -249,55 +253,53 @@ public final class KokoroEngine: @unchecked Sendable {
         return (samples, durations)
     }
 
-    /// Trim trailing click + artifacts and apply short fades (in-place).
+    /// Trim trailing click + artifacts in-place.
     ///
     /// The end-to-end model often produces a click (sharp transient) after
     /// speech, followed by repeating low-level artifacts. Two passes:
     /// 1. Find the click (highest delta window followed by amplitude drop)
     /// 2. Find the first post-speech silence gap preceded by real speech
     private func trimTrailingArtifacts(_ samples: inout [Float]) {
-        guard samples.count > 480 else { return }
-
         let windowSize = 2400  // 100ms at 24kHz
         var validCount = samples.count
 
         // --- Pass 1: Click detection (scan back third of audio) ---
         let searchFrom = validCount / 3
         let windowCount = (validCount - searchFrom) / windowSize
-        guard windowCount > 2 else { return }
+        if windowCount > 2 {
+            struct WindowStats {
+                let start: Int
+                var maxDelta: Float = 0
+                var maxAmp: Float = 0
+            }
+            let windows = (0..<windowCount).map { w -> WindowStats in
+                let wStart = searchFrom + w * windowSize
+                var stats = WindowStats(start: wStart)
+                for j in wStart..<(wStart + windowSize) {
+                    stats.maxAmp = max(stats.maxAmp, abs(samples[j]))
+                    if j > wStart {
+                        stats.maxDelta = max(stats.maxDelta, abs(samples[j] - samples[j - 1]))
+                    }
+                }
+                return stats
+            }
 
-        struct WindowStats {
-            let start: Int
-            var maxDelta: Float = 0
-            var maxAmp: Float = 0
-        }
-        let windows = (0..<windowCount).map { w -> WindowStats in
-            let wStart = searchFrom + w * windowSize
-            var stats = WindowStats(start: wStart)
-            for j in wStart..<(wStart + windowSize) {
-                stats.maxAmp = max(stats.maxAmp, abs(samples[j]))
-                if j > wStart {
-                    stats.maxDelta = max(stats.maxDelta, abs(samples[j] - samples[j - 1]))
+            var bestClickIdx = -1
+            var bestDelta: Float = 0
+            for w in 0..<(windowCount - 2) {
+                let delta = windows[w].maxDelta
+                guard delta > 0.2 else { continue }
+                let amp = windows[w].maxAmp
+                let nextAmp = max(windows[w + 1].maxAmp, windows[w + 2].maxAmp)
+                if nextAmp < amp * 0.5 && delta > bestDelta {
+                    bestDelta = delta
+                    bestClickIdx = w
                 }
             }
-            return stats
-        }
 
-        var bestClickIdx = -1
-        var bestDelta: Float = 0
-        for w in 0..<(windowCount - 2) {
-            let delta = windows[w].maxDelta
-            guard delta > 0.2 else { continue }
-            let amp = windows[w].maxAmp
-            let nextAmp = max(windows[w + 1].maxAmp, windows[w + 2].maxAmp)
-            if nextAmp < amp * 0.5 && delta > bestDelta {
-                bestDelta = delta
-                bestClickIdx = w
+            if bestClickIdx >= 0 {
+                validCount = windows[bestClickIdx].start
             }
-        }
-
-        if bestClickIdx >= 0 {
-            validCount = windows[bestClickIdx].start
         }
 
         // --- Pass 2: End-of-speech silence gap ---
@@ -323,9 +325,11 @@ public final class KokoroEngine: @unchecked Sendable {
             }
         }
 
-        samples.removeSubrange(validCount..<samples.count)
+        if validCount < samples.count {
+            samples.removeSubrange(validCount..<samples.count)
+        }
 
-        // Fade-in: 5ms / Fade-out: 20ms
+        // Fade-in: 5ms / Fade-out: 20ms (always applied)
         let fadeIn = min(120, samples.count)
         for i in 0..<fadeIn { samples[i] *= Float(i) / Float(fadeIn) }
         let fadeOut = min(480, samples.count)
