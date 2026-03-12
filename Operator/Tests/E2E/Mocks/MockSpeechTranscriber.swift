@@ -9,6 +9,7 @@ import OperatorCore
 @MainActor
 internal final class MockSpeechTranscriber: SpeechTranscribing {
     private(set) var isListening = false
+    private(set) var lastAudioFileURL: URL?
 
     /// The text to return from the next stopListening() / stopListeningWithTimeout() call.
     ///

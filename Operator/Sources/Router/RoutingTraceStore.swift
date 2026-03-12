@@ -141,6 +141,8 @@ public actor RoutingTraceStore {
     }
 
     /// Prune old traces if the file exceeds maxTraces.
+    ///
+    /// Also deletes WAV files associated with pruned traces.
     public func pruneIfNeeded() {
         do {
             var traces = try loadAll()
@@ -148,11 +150,31 @@ public actor RoutingTraceStore {
                 return
             }
             let excess = traces.count - maxTraces
+            let pruned = Array(traces.prefix(excess))
             traces.removeFirst(excess)
             try writeAll(traces)
+            deleteAudioFiles(for: pruned)
             Self.logger.info("Pruned \(excess) old traces, \(traces.count) remaining")
         } catch {
             Self.logger.error("Failed to prune traces: \(error)")
+        }
+    }
+
+    /// Delete audio files referenced by the given traces.
+    private func deleteAudioFiles(for traces: [RoutingTrace]) {
+        let audioDir =
+            directory
+            .deletingLastPathComponent()
+            .appendingPathComponent("audio-traces", isDirectory: true)
+        let fm = FileManager.default
+        for trace in traces {
+            guard let filename = trace.audioFile else { continue }
+            let path = audioDir.appendingPathComponent(filename)
+            do {
+                try fm.removeItem(at: path)
+            } catch {
+                Self.logger.debug("Could not remove audio file \(filename): \(error)")
+            }
         }
     }
 

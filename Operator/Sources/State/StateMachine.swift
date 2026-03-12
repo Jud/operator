@@ -309,8 +309,17 @@ extension StateMachine {
 
         cancelTimeout()
 
+        // Capture the audio filename before any async work clears it.
+        let audioFile = transcriber.lastAudioFileURL?.lastPathComponent
+
         guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             Self.logger.info("Empty transcription; returning to IDLE")
+            await postActivationTrace(
+                text: "",
+                step: .emptyTranscription,
+                result: .notConfident(""),
+                audioFile: audioFile
+            )
             speakOperator("I didn't catch that. Try again?")
             enterIdle()
             return
@@ -328,27 +337,31 @@ extension StateMachine {
             return
         }
 
-        await dispatchBimodalDecision(decision, text: text)
+        await dispatchBimodalDecision(decision, text: text, audioFile: audioFile)
     }
 
-    private func dispatchBimodalDecision(_ decision: BimodalDecision, text: String) async {
+    private func dispatchBimodalDecision(
+        _ decision: BimodalDecision,
+        text: String,
+        audioFile: String? = nil
+    ) async {
         switch decision {
         case .routeToAgent:
-            await processTranscription(text)
+            await processTranscription(text, audioFile: audioFile)
 
         case .dictate(let dictText):
             let trimmed = dictText.trimmingCharacters(in: .whitespacesAndNewlines)
-            await postBimodalTrace(text: text, result: .notConfident(text))
+            await postBimodalTrace(text: text, result: .notConfident(text), audioFile: audioFile)
             await performDictation(trimmed)
 
         case .noTextField:
-            await postBimodalTrace(text: text, result: .noSessions)
+            await postBimodalTrace(text: text, result: .noSessions, audioFile: audioFile)
             speakOperator("No text field detected. Move your cursor to a text input.")
             feedback.play(.error)
             enterIdle()
 
         case .permissionRequired:
-            await postBimodalTrace(text: text, result: .noSessions)
+            await postBimodalTrace(text: text, result: .noSessions, audioFile: audioFile)
             speakOperator(
                 "Operator needs Accessibility permission for dictation. Check System Settings."
             )
@@ -375,7 +388,7 @@ extension StateMachine {
     /// Process a successful transcription by routing through the message router.
     ///
     /// Checks for pending interruptions and clarifications before normal routing.
-    private func processTranscription(_ text: String) async {
+    private func processTranscription(_ text: String, audioFile: String? = nil) async {
         if let interruption = routingState.pendingInterruption {
             routingState.clearInterruption()
             await handleInterruption(userUtterance: text, context: interruption)
@@ -387,32 +400,47 @@ extension StateMachine {
             return
         }
 
-        await performRouting(text)
+        await performRouting(text, audioFile: audioFile)
     }
 
     /// Post a routing trace for bimodal decisions that skip the full routing chain.
-    private func postBimodalTrace(text: String, result: RoutingResult) async {
-        let sessions = await registry.allSessions()
+    private func postBimodalTrace(
+        text: String,
+        result: RoutingResult,
+        audioFile: String? = nil
+    ) async {
         let step: RoutingTrace.RoutingStep =
             switch result {
             case .noSessions: .noSessions
             default: .heuristicScoring
             }
+        await postActivationTrace(text: text, step: step, result: result, audioFile: audioFile)
+    }
+
+    /// Post a trace for any activation (routing, bimodal, error, empty transcription).
+    private func postActivationTrace(
+        text: String,
+        step: RoutingTrace.RoutingStep,
+        result: RoutingResult,
+        audioFile: String? = nil
+    ) async {
+        let sessions = await registry.allSessions()
         await router.postTrace(
             text: text,
             sessions: sessions,
             step: step,
             result: result,
-            routingState: routingState
+            routingState: routingState,
+            audioFile: audioFile
         )
     }
 
     /// Run the message through the routing priority chain.
-    private func performRouting(_ text: String) async {
+    private func performRouting(_ text: String, audioFile: String? = nil) async {
         transition(to: .routing)
         startTimeout(seconds: 15)
 
-        let result = await router.route(text: text, routingState: routingState)
+        let result = await router.route(text: text, routingState: routingState, audioFile: audioFile)
 
         guard !Task.isCancelled else {
             return
@@ -743,6 +771,18 @@ extension StateMachine {
         }
 
         Self.logger.error("Timeout (\(seconds)s) in state \(state)")
+
+        // Capture audio file before it's cleared by the next activation.
+        let audioFile = transcriber.lastAudioFileURL?.lastPathComponent
+
+        Task {
+            await postActivationTrace(
+                text: "[timeout]",
+                step: .error,
+                result: .notConfident("[timeout in \(state.rawValue) after \(Int(seconds))s]"),
+                audioFile: audioFile
+            )
+        }
 
         if state == .clarifying {
             routingState.clearClarification()

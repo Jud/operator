@@ -230,7 +230,11 @@ extension MessageRouter {
 
 extension MessageRouter {
     /// Route a transcribed user message through the full priority chain.
-    public func route(text: String, routingState: RoutingState) async -> RoutingResult {
+    public func route(
+        text: String,
+        routingState: RoutingState,
+        audioFile: String? = nil
+    ) async -> RoutingResult {
         Self.logger.info("Routing message: \"\(text.prefix(80))\"")
 
         let result: RoutingResult
@@ -270,7 +274,8 @@ extension MessageRouter {
             sessions: sessions,
             step: step,
             result: result,
-            routingState: routingState
+            routingState: routingState,
+            audioFile: audioFile
         )
         return result
     }

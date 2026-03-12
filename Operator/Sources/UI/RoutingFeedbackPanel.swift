@@ -173,6 +173,8 @@ private struct RoutingFeedbackView: View {
         case .engineRouting: ("ENGINE", .indigo)
         case .clarification: ("CLARIFY", .yellow)
         case .noSessions: ("NONE", .red)
+        case .emptyTranscription: ("EMPTY", .gray)
+        case .error: ("ERROR", .red)
         }
     }
 
@@ -184,6 +186,7 @@ private struct RoutingFeedbackView: View {
         case .noSessions: "no sessions"
         case .notConfident: "not confident"
         case .cliNotFound: "CLI not found"
+        case .error(let state, let seconds): "timeout: \(state) (\(Int(seconds))s)"
         }
     }
 

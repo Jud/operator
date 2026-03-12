@@ -43,6 +43,10 @@ public struct RoutingTrace: Codable, Sendable {
         case engineRouting = "engine_routing"
         case clarification
         case noSessions = "no_sessions"
+        /// Transcription produced empty/nil text.
+        case emptyTranscription = "empty_transcription"
+        /// A timeout or error occurred before routing could complete.
+        case error
     }
 
     /// Heuristic score for a single session candidate.
@@ -63,6 +67,8 @@ public struct RoutingTrace: Codable, Sendable {
         case noSessions
         case notConfident
         case cliNotFound
+        /// A timeout or error terminated the activation.
+        case error(state: String, seconds: Double)
     }
 
     /// User-provided feedback on routing quality.
@@ -104,6 +110,8 @@ public struct RoutingTrace: Codable, Sendable {
     public let affinityTarget: String?
     /// User annotation: was the routing correct?
     public var annotation: Annotation?
+    /// Filename of the WAV recording for this activation (relative to audio-traces dir).
+    public var audioFile: String?
 
     /// Creates a new routing trace with an auto-generated ID and timestamp.
     public init(
@@ -114,7 +122,8 @@ public struct RoutingTrace: Codable, Sendable {
         result: RoutingTraceResult,
         affinityActive: Bool,
         affinityTarget: String?,
-        annotation: Annotation? = nil
+        annotation: Annotation? = nil,
+        audioFile: String? = nil
     ) {
         self.id = UUID()
         self.timestamp = Date()
@@ -126,5 +135,6 @@ public struct RoutingTrace: Codable, Sendable {
         self.affinityActive = affinityActive
         self.affinityTarget = affinityTarget
         self.annotation = annotation
+        self.audioFile = audioFile
     }
 }

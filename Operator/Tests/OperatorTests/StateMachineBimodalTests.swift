@@ -12,6 +12,7 @@ private enum StateMachineBimodalTests {}
 @MainActor
 private final class TestSpeechTranscriber: SpeechTranscribing {
     private(set) var isListening = false
+    private(set) var lastAudioFileURL: URL?
     var nextTranscription: String?
 
     func startListening() throws {

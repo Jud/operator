@@ -11,6 +11,10 @@ public protocol SpeechTranscribing: AnyObject, Sendable {
     /// Whether the transcriber is currently listening for speech.
     var isListening: Bool { get }
 
+    /// URL of the WAV file saved from the most recent recording session, or nil
+    /// if no audio was captured. Reset on each `startListening()` call.
+    var lastAudioFileURL: URL? { get }
+
     func startListening() throws
     func stopListening() async -> String?
     func stopListeningWithTimeout(seconds: TimeInterval) async -> String?

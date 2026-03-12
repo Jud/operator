@@ -34,7 +34,8 @@ extension MessageRouter {
         sessions: [SessionState],
         step: RoutingTrace.RoutingStep,
         result: RoutingResult,
-        routingState: RoutingState
+        routingState: RoutingState,
+        audioFile: String? = nil
     ) -> RoutingTrace {
         let snapshots = sessions.map { session in
             RoutingTrace.SessionSnapshot(
@@ -67,7 +68,8 @@ extension MessageRouter {
             heuristicScores: scores,
             result: result.traceResult,
             affinityActive: routingState.isAffinityActive(),
-            affinityTarget: routingState.affinityTarget()
+            affinityTarget: routingState.affinityTarget(),
+            audioFile: audioFile
         )
     }
 
@@ -77,7 +79,8 @@ extension MessageRouter {
         sessions: [SessionState],
         step: RoutingTrace.RoutingStep,
         result: RoutingResult,
-        routingState: RoutingState
+        routingState: RoutingState,
+        audioFile: String? = nil
     ) async {
         guard let traceStore else {
             return
@@ -87,7 +90,8 @@ extension MessageRouter {
             sessions: sessions,
             step: step,
             result: result,
-            routingState: routingState
+            routingState: routingState,
+            audioFile: audioFile
         )
         await traceStore.append(trace)
         let names = sessions.map(\.name)
