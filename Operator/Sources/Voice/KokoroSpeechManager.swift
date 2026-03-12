@@ -19,8 +19,10 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
 
     /// Speech rate multiplier (0.5 = half speed, 2.0 = double speed).
     ///
-    /// Default 1.0.
-    public var speechRate: Float = 1.0
+    /// Clamped to 0.5...2.0. Default 1.0.
+    public var speechRate: Float = 1.0 {
+        didSet { speechRate = min(max(speechRate, 0.5), 2.0) }
+    }
 
     /// The full text of the currently playing utterance.
     private var currentText: String = ""

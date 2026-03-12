@@ -30,6 +30,13 @@ enum MLArrayHelpers {
         return array
     }
 
+    /// Create a scalar speed MLMultiArray.
+    static func makeSpeedArray(_ speed: Float) throws -> MLMultiArray {
+        let array = try MLMultiArray(shape: [1], dataType: .float32)
+        array[0] = speed as NSNumber
+        return array
+    }
+
     /// Create paired input_ids and attention_mask MLMultiArrays from token IDs.
     ///
     /// Token IDs are padded to `maxLength` with zeros. The attention mask is 1

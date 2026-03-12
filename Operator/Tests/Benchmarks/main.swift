@@ -7,6 +7,7 @@ private enum BenchmarkTarget: String, CaseIterable {
     case routingAccuracy = "routing-accuracy"
     case routingLatency = "routing-latency"
     case tts
+    case play
 }
 
 private let benchmarkRunnerEnvKey = "OPERATOR_BENCHMARK_RUNNER"
@@ -19,6 +20,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  routing-accuracy  Run only routing accuracy benchmark")
     print("  routing-latency   Run only routing latency benchmark")
     print("  tts               Run TTS synthesis and speed control verification")
+    print("  play              Synthesize and play example phrases through speakers")
     if listOnly {
         return
     }
@@ -325,23 +327,94 @@ private func benchmarkTTS() {
         ]
 
         for phrase in phrases {
-            var times: [Double] = []
+            var lastResult: SynthesisResult?
             for _ in 0..<3 {
-                let result = try engine.synthesize(text: phrase, voice: voice)
-                times.append(result.synthesisTime * 1000)
+                lastResult = try engine.synthesize(text: phrase, voice: voice)
             }
-            let avg = times.reduce(0, +) / Double(times.count)
-            let rtfx = try engine.synthesize(text: phrase, voice: voice).realTimeFactor
+            guard let result = lastResult else { continue }
+            let avg = result.synthesisTime * 1000
             let line = String(
-                format: "  %.0fms avg (%.1fx RT) | \"%@\"",
+                format: "  %.0fms (%.1fx RT) | \"%@\"",
                 avg,
-                rtfx,
+                result.realTimeFactor,
                 String(phrase.prefix(60))
             )
             print(line)
         }
 
         print(allPass ? "\nSpeed control: ALL PASS" : "\nSpeed control: SOME FAILURES")
+    } catch {
+        print("ERROR: \(error)")
+    }
+}
+
+// MARK: - Play
+
+private func playExamples() async {
+    print("\n=== KOKORO TTS PLAYBACK ===\n")
+
+    let modelDir = ModelManager.defaultDirectory(for: "com.operator")
+    guard ModelManager.modelsAvailable(at: modelDir) else {
+        print("SKIP: Models not found at \(modelDir.path)")
+        return
+    }
+
+    do {
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+        engine.warmUp()
+        let voices = ["af_heart", "af_bella", "am_adam", "bf_emma"]
+            .filter { engine.availableVoices.contains($0) }
+        let phrase =
+            "I've updated the configuration and restarted the service."
+            + " The deployment should be live within a few minutes."
+
+        print("Available: \(engine.availableVoices.prefix(10).joined(separator: ", "))...\n")
+
+        let audioEngine = AVAudioEngine()
+        let playerNode = AVAudioPlayerNode()
+        guard
+            let format = AVAudioFormat(
+                standardFormatWithSampleRate: Double(KokoroEngine.sampleRate),
+                channels: 1
+            )
+        else {
+            print("FAIL: Could not create AVAudioFormat")
+            return
+        }
+        audioEngine.attach(playerNode)
+        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
+        try audioEngine.start()
+
+        for voice in voices {
+            print("  [\(voice)] \"\(phrase)\"")
+            let result = try engine.synthesize(text: phrase, voice: voice)
+            let synthMs = String(format: "%.0f", result.synthesisTime * 1000)
+            let dur = String(format: "%.1f", result.duration)
+            print("  synth: \(synthMs)ms, audio: \(dur)s")
+
+            let frameCount = AVAudioFrameCount(result.samples.count)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+                continue
+            }
+            buffer.frameLength = frameCount
+            result.samples.withUnsafeBufferPointer { src in
+                guard let channelData = buffer.floatChannelData,
+                    let baseAddr = src.baseAddress
+                else { return }
+                channelData[0].update(from: baseAddr, count: result.samples.count)
+            }
+
+            playerNode.stop()
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                playerNode.scheduleBuffer(buffer) {
+                    cont.resume()
+                }
+                playerNode.play()
+            }
+            print()
+        }
+
+        audioEngine.stop()
     } catch {
         print("ERROR: \(error)")
     }
@@ -383,6 +456,10 @@ enum BenchmarkRunner {
 
         if targets.contains(.tts) {
             benchmarkTTS()
+        }
+
+        if targets.contains(.play) {
+            await playExamples()
         }
 
         print("\nDone.")

@@ -35,5 +35,5 @@ public enum ModelManager {
         return hasModel && hasVoices
     }
 
-    private static let modelFiles = UnifiedBucket.allCases.map { $0.modelName + ".mlmodelc" }
+    private static let modelFiles = [UnifiedBucket.modelName + ".mlmodelc"]
 }

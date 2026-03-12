@@ -1,3 +1,4 @@
+import Accelerate
 import CoreML
 import Foundation
 import MisakiSwift
@@ -66,8 +67,7 @@ public final class KokoroEngine: @unchecked Sendable {
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
-        let bucket = UnifiedBucket.v24_10s
-        let url = modelDirectory.appendingPathComponent(bucket.modelName + ".mlmodelc")
+        let url = modelDirectory.appendingPathComponent(UnifiedBucket.modelName + ".mlmodelc")
         self.model = try MLModel(contentsOf: url, configuration: config)
     }
 
@@ -141,8 +141,7 @@ public final class KokoroEngine: @unchecked Sendable {
                 [Float](repeating: 0, count: VoiceStore.styleDim))
             let phases = try MLMultiArray(
                 shape: [1, Self.numPhases as NSNumber], dataType: .float32)
-            let speed = try MLMultiArray(shape: [1], dataType: .float32)
-            speed[0] = 1.0 as NSNumber
+            let speed = try MLArrayHelpers.makeSpeedArray(1.0)
             let input = try MLDictionaryFeatureProvider(dictionary: [
                 Feature.inputIds: MLFeatureValue(multiArray: inputIds),
                 Feature.attentionMask: MLFeatureValue(multiArray: mask),
@@ -200,8 +199,7 @@ public final class KokoroEngine: @unchecked Sendable {
             phasePtr[i] = Float.random(in: 0..<(2 * .pi))
         }
 
-        let speedArray = try MLMultiArray(shape: [1], dataType: .float32)
-        speedArray[0] = speed as NSNumber
+        let speedArray = try MLArrayHelpers.makeSpeedArray(speed)
 
         let input = try MLDictionaryFeatureProvider(dictionary: [
             Feature.inputIds: MLFeatureValue(multiArray: inputIds),
@@ -217,15 +215,6 @@ public final class KokoroEngine: @unchecked Sendable {
             throw KokoroError.inferenceFailed("Missing audio output")
         }
 
-        let validSamples: Int
-        if let lengthArray = output.featureValue(for: Feature.audioLength)?.multiArrayValue {
-            validSamples = lengthArray[0].intValue
-        } else {
-            validSamples = audio.count
-        }
-
-        let samples = MLArrayHelpers.extractFloats(from: audio, maxCount: validSamples)
-
         let durations: [Int]
         if let predDur = output.featureValue(for: Feature.predDur)?.multiArrayValue {
             durations = (0..<min(predDur.count, tokenIds.count)).map { predDur[$0].intValue }
@@ -233,7 +222,169 @@ public final class KokoroEngine: @unchecked Sendable {
             durations = []
         }
 
+        // Use pred_dur to compute expected audio length.
+        // Each duration unit = sampleRate/24 audio samples (hop size).
+        let validSamples: Int
+        if !durations.isEmpty {
+            let totalFrames = durations.reduce(0, +)
+            let hopSize = Self.sampleRate / 24  // 1000 samples per frame
+            validSamples = min(totalFrames * hopSize, audio.count)
+        } else if let lengthArray = output.featureValue(for: Feature.audioLength)?.multiArrayValue,
+            lengthArray[0].intValue > 0, lengthArray[0].intValue < audio.count
+        {
+            validSamples = lengthArray[0].intValue
+        } else {
+            validSamples = audio.count
+        }
+
+        var samples = MLArrayHelpers.extractFloats(from: audio, maxCount: validSamples)
+        samples = trimTrailingArtifacts(samples)
+        samples = postProcess(samples)
         return (samples, durations)
+    }
+
+    /// Trim trailing click + artifacts and apply short fades.
+    ///
+    /// The end-to-end model often produces a click (sharp transient) after
+    /// speech, followed by repeating low-level artifacts. Two passes:
+    /// 1. Find the click (highest delta window followed by amplitude drop)
+    /// 2. Find the first post-speech silence gap preceded by real speech
+    private func trimTrailingArtifacts(_ samples: [Float]) -> [Float] {
+        guard samples.count > 480 else { return samples }
+        var out = samples
+
+        // --- Pass 1: Click detection ---
+        let windowSize = 2400  // 100ms at 24kHz
+        let searchFrom = out.count / 3
+        let windowCount = (out.count - searchFrom) / windowSize
+        guard windowCount > 2 else { return out }
+
+        struct WindowStats {
+            let start: Int
+            var maxDelta: Float = 0
+            var maxAmp: Float = 0
+        }
+        let windows = (0..<windowCount).map { w -> WindowStats in
+            let wStart = searchFrom + w * windowSize
+            var stats = WindowStats(start: wStart)
+            for j in wStart..<(wStart + windowSize) {
+                stats.maxAmp = max(stats.maxAmp, abs(out[j]))
+                if j > wStart {
+                    stats.maxDelta = max(stats.maxDelta, abs(out[j] - out[j - 1]))
+                }
+            }
+            return stats
+        }
+
+        var bestClickIdx = -1
+        var bestDelta: Float = 0
+        for w in 0..<(windowCount - 2) {
+            let delta = windows[w].maxDelta
+            guard delta > 0.2 else { continue }
+            let amp = windows[w].maxAmp
+            let nextAmp = max(windows[w + 1].maxAmp, windows[w + 2].maxAmp)
+            if nextAmp < amp * 0.5 && delta > bestDelta {
+                bestDelta = delta
+                bestClickIdx = w
+            }
+        }
+
+        if bestClickIdx >= 0 {
+            out = Array(out.prefix(windows[bestClickIdx].start))
+        }
+
+        // --- Pass 2: End-of-speech silence gap ---
+        let lookback = max(5, 12000 / windowSize)
+        let pass2Count = out.count / windowSize
+        if pass2Count > lookback {
+            let pass2Stats = (0..<pass2Count).map { w -> (start: Int, maxAmp: Float) in
+                let wStart = w * windowSize
+                var ma: Float = 0
+                for j in wStart..<min(wStart + windowSize, out.count) {
+                    ma = max(ma, abs(out[j]))
+                }
+                return (wStart, ma)
+            }
+            for w in lookback..<pass2Count {
+                if pass2Stats[w].maxAmp < 0.01 {
+                    let hasSpeech = (max(0, w - lookback)..<w).contains { pass2Stats[$0].maxAmp > 0.3 }
+                    if hasSpeech {
+                        out = Array(out.prefix(pass2Stats[w].start))
+                        break
+                    }
+                }
+            }
+        }
+
+        // Fade-in: 5ms / Fade-out: 20ms
+        let fadeIn = min(120, out.count)
+        for i in 0..<fadeIn { out[i] *= Float(i) / Float(fadeIn) }
+        let fadeOut = min(480, out.count)
+        let fadeStart = out.count - fadeOut
+        for i in 0..<fadeOut { out[fadeStart + i] *= Float(fadeOut - i) / Float(fadeOut) }
+
+        return out
+    }
+
+    /// Post-process audio: high-pass filter, presence boost, peak normalize.
+    private func postProcess(_ samples: [Float]) -> [Float] {
+        guard samples.count > 1 else { return samples }
+        var out = samples
+
+        // 1. DC offset removal + high-pass at ~80Hz (single-pole IIR)
+        // y[n] = x[n] - x[n-1] + alpha * y[n-1]
+        // alpha = 1 - (2π * cutoff / sampleRate)
+        let alpha: Float = 1.0 - (2.0 * .pi * 80.0 / Float(Self.sampleRate))
+        var prev: Float = 0
+        var prevOut: Float = 0
+        for i in 0..<out.count {
+            let x = out[i]
+            prevOut = (x - prev) + alpha * prevOut
+            prev = x
+            out[i] = prevOut
+        }
+
+        // 2. Presence boost: gentle peak at 2.5kHz using a biquad
+        // Peaking EQ: center=2.5kHz, Q=0.8, gain=+2dB
+        let fc: Float = 2500.0
+        let fs = Float(Self.sampleRate)
+        let gainDB: Float = 2.0
+        let Q: Float = 0.8
+        let A = powf(10.0, gainDB / 40.0)
+        let w0 = 2.0 * Float.pi * fc / fs
+        let sinW0 = sinf(w0)
+        let cosW0 = cosf(w0)
+        let alphaEQ = sinW0 / (2.0 * Q)
+
+        let b0 = 1.0 + alphaEQ * A
+        let b1 = -2.0 * cosW0
+        let b2 = 1.0 - alphaEQ * A
+        let a0 = 1.0 + alphaEQ / A
+        let a1 = -2.0 * cosW0
+        let a2 = 1.0 - alphaEQ / A
+
+        // Normalize coefficients
+        let nb0 = b0 / a0, nb1 = b1 / a0, nb2 = b2 / a0
+        let na1 = a1 / a0, na2 = a2 / a0
+
+        var x1: Float = 0, x2: Float = 0, y1: Float = 0, y2: Float = 0
+        for i in 0..<out.count {
+            let x = out[i]
+            let y = nb0 * x + nb1 * x1 + nb2 * x2 - na1 * y1 - na2 * y2
+            x2 = x1; x1 = x
+            y2 = y1; y1 = y
+            out[i] = y
+        }
+
+        // 3. Peak normalize to 0.95 (-0.5dBFS)
+        var peak: Float = 0
+        vDSP_maxmgv(out, 1, &peak, vDSP_Length(out.count))
+        if peak > 0.001 {
+            var scale = Float(0.95) / peak
+            vDSP_vsmul(out, 1, &scale, &out, 1, vDSP_Length(out.count))
+        }
+
+        return out
     }
 }
 
