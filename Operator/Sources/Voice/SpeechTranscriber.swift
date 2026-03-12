@@ -81,6 +81,52 @@ public final class SpeechTranscriber: SpeechTranscribing {
         return copy
     }
 
+    /// Write captured buffers to a timestamped WAV file off the main actor.
+    ///
+    /// - Returns: The URL of the written file, or nil if nothing was written.
+    nonisolated private static func writeAudioFile(
+        buffers: [AVAudioPCMBuffer],
+        format: AVAudioFormat?,
+        directory: URL
+    ) async -> URL? {
+        guard !buffers.isEmpty, let format
+        else { return nil }
+
+        let log = Log.logger(for: "SpeechTranscriber")
+
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            log.error("Failed to create audio trace directory: \(error)")
+            return nil
+        }
+
+        let timestamp = ISO8601DateFormatter.string(
+            from: Date(),
+            timeZone: .current,
+            formatOptions: [.withFullDate, .withFullTime, .withColonSeparatorInTime]
+        )
+        let safeTimestamp = timestamp.replacingOccurrences(of: ":", with: "-")
+        let fileURL = directory.appendingPathComponent("\(safeTimestamp).wav")
+
+        do {
+            let audioFile = try AVAudioFile(
+                forWriting: fileURL,
+                settings: format.settings,
+                commonFormat: format.commonFormat,
+                interleaved: format.isInterleaved
+            )
+            for buffer in buffers {
+                try audioFile.write(from: buffer)
+            }
+            log.info("Saved audio trace: \(fileURL.lastPathComponent)")
+            return fileURL
+        } catch {
+            log.error("Failed to write audio trace: \(error)")
+            return nil
+        }
+    }
+
     // MARK: - Public Methods
 
     /// Begin capturing audio from the microphone and feeding it to the engine.
@@ -135,8 +181,20 @@ public final class SpeechTranscriber: SpeechTranscribing {
         Self.logger.info("Audio engine stopped, processing transcription")
 
         let result = await engine.finishAndTranscribe()
-        writeAudioFile()
+
+        let buffers = capturedBuffers.withLock { bufs -> [AVAudioPCMBuffer] in
+            let snapshot = bufs
+            bufs.removeAll()
+            return snapshot
+        }
+        let format = capturedFormat
         capturedFormat = nil
+
+        lastAudioFileURL = await Self.writeAudioFile(
+            buffers: buffers,
+            format: format,
+            directory: Self.audioTraceDir
+        )
         return result
     }
 
@@ -149,54 +207,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
     /// - Returns: The transcribed text, or nil on timeout/failure/empty transcription.
     public func stopListeningWithTimeout(seconds _: TimeInterval = 30) async -> String? {
         await stopListening()
-    }
-
-    // MARK: - Audio File Writing
-
-    /// Write captured buffers to a timestamped WAV file.
-    private func writeAudioFile() {
-        let buffers = capturedBuffers.withLock { bufs -> [AVAudioPCMBuffer] in
-            let copy = bufs
-            bufs.removeAll()
-            return copy
-        }
-
-        guard !buffers.isEmpty, let format = capturedFormat else {
-            Self.logger.debug("No audio buffers to save")
-            return
-        }
-
-        let dir = Self.audioTraceDir
-        do {
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        } catch {
-            Self.logger.error("Failed to create audio trace directory: \(error)")
-            return
-        }
-
-        let timestamp = ISO8601DateFormatter.string(
-            from: Date(),
-            timeZone: .current,
-            formatOptions: [.withFullDate, .withFullTime, .withColonSeparatorInTime]
-        )
-        let safeTimestamp = timestamp.replacingOccurrences(of: ":", with: "-")
-        let fileURL = dir.appendingPathComponent("\(safeTimestamp).wav")
-
-        do {
-            let audioFile = try AVAudioFile(
-                forWriting: fileURL,
-                settings: format.settings,
-                commonFormat: format.commonFormat,
-                interleaved: format.isInterleaved
-            )
-            for buffer in buffers {
-                try audioFile.write(from: buffer)
-            }
-            lastAudioFileURL = fileURL
-            Self.logger.info("Saved audio trace: \(fileURL.lastPathComponent)")
-        } catch {
-            Self.logger.error("Failed to write audio trace: \(error)")
-        }
     }
 
     // MARK: - Private
