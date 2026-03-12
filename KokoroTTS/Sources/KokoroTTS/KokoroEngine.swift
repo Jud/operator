@@ -39,9 +39,11 @@ public final class KokoroEngine: @unchecked Sendable {
 
     /// Creates a KokoroEngine from cached models.
     ///
-    /// - Parameter modelDirectory: Path containing `.mlmodelc` model directories and voice embeddings.
+    /// - Parameters:
+    ///   - modelDirectory: Path containing `.mlmodelc` model directories and voice embeddings.
+    ///   - allowLowPrecisionGPU: Enable FP16 accumulation on GPU for potentially faster inference.
     /// - Throws: ``KokoroError/modelsNotAvailable(_:)`` if no models found.
-    public init(modelDirectory: URL) throws {
+    public init(modelDirectory: URL, allowLowPrecisionGPU: Bool = true) throws {
         self.modelDirectory = modelDirectory
 
         guard ModelManager.modelsAvailable(at: modelDirectory) else {
@@ -75,6 +77,7 @@ public final class KokoroEngine: @unchecked Sendable {
         // Try unified models first (primary path)
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndGPU  // ANE compilation takes 18s+ and doesn't cache
+        config.allowLowPrecisionAccumulationOnGPU = allowLowPrecisionGPU
         for bucket in UnifiedBucket.allCases {
             let url = modelDirectory.appendingPathComponent(bucket.modelName + ".mlmodelc")
             if FileManager.default.fileExists(atPath: url.path) {
@@ -113,12 +116,17 @@ public final class KokoroEngine: @unchecked Sendable {
     ///   - voice: Voice preset name (e.g. "af_heart", "am_adam").
     ///   - speed: Playback speed multiplier (0.5–2.0). Native duration scaling, not post-processing.
     /// - Returns: Synthesis result with PCM samples and metadata.
-    public func synthesize(text: String, voice: String, speed: Float = 1.0) throws -> SynthesisResult {
+    public func synthesize(text: String, voice: String, speed: Float = 1.0, verbose: Bool = false) throws -> SynthesisResult {
         let t0 = CFAbsoluteTimeGetCurrent()
 
         let styleVector = try voiceStore.embedding(for: voice)
+        let tVoice = CFAbsoluteTimeGetCurrent()
+
         let phonemes = phonemizer.textToPhonemes(text)
+        let tPhonemes = CFAbsoluteTimeGetCurrent()
+
         let tokenIds = tokenizer.encode(phonemes)
+        let tTokens = CFAbsoluteTimeGetCurrent()
 
         let samples: [Float]
         let phonemeDurations: [Int]
@@ -135,12 +143,28 @@ public final class KokoroEngine: @unchecked Sendable {
 
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
 
+        if verbose {
+            let ms = { (t: Double) in String(format: "%.2f", t * 1_000) }
+            print("  voice lookup:  \(ms(tVoice - t0))ms")
+            print("  phonemize:     \(ms(tPhonemes - tVoice))ms")
+            print("  tokenize:      \(ms(tTokens - tPhonemes))ms")
+            print("  inference:     \(ms(elapsed - (tTokens - t0)))ms")
+            print("  total:         \(ms(elapsed))ms")
+        }
+
         return SynthesisResult(
             samples: samples,
             phonemeDurations: phonemeDurations,
             tokenCount: tokenIds.count,
             synthesisTime: elapsed
         )
+    }
+
+    /// Convert text to IPA phonemes and token IDs (for debugging).
+    public func phonemize(_ text: String) -> (phonemes: String, tokenIds: [Int]) {
+        let phonemes = phonemizer.textToPhonemes(text)
+        let tokenIds = tokenizer.encode(phonemes)
+        return (phonemes, tokenIds)
     }
 
     /// Pre-warm CoreML compilation cache. Call once at daemon startup.

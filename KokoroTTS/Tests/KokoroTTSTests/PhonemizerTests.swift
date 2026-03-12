@@ -7,17 +7,20 @@ struct PhonemizerTests {
     func specialCases() {
         let phonemizer = Phonemizer()
         #expect(phonemizer.textToPhonemes("the").contains("ð"))
-        #expect(phonemizer.textToPhonemes("a") == "ɐ")
+        // Standalone "a" without context → letter name "eɪ"; in "a cat" → determiner "ɐ"
+        #expect(phonemizer.textToPhonemes("a") == "eɪ")
         #expect(phonemizer.textToPhonemes("I") == "aɪ")
     }
 
-    @Test("Contraction expansion")
-    func contractions() {
+    @Test("Number expansion")
+    func numberExpansion() {
         let phonemizer = Phonemizer()
-        // "don't" should be expanded to "do not" — result should not contain apostrophe
-        let result = phonemizer.textToPhonemes("don't")
-        // After expansion: "do not" → phonemes for "do" + " " + phonemes for "not"
-        #expect(result.contains(" "))
+        // "42" should be expanded to "forty-two" before phonemization
+        let result = phonemizer.textToPhonemes("42")
+        // Should contain phonemes, not raw digits
+        #expect(!result.contains("4"))
+        #expect(!result.contains("2"))
+        #expect(!result.isEmpty)
     }
 
     @Test("Punctuation preserved as phoneme tokens")

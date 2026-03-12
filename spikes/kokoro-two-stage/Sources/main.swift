@@ -1,7 +1,9 @@
 import ArgumentParser
+import AVFoundation
 import CoreML
 import Foundation
 import KokoroTTS
+import NaturalLanguage
 
 @main
 struct KokoroTwoStageSpike: AsyncParsableCommand {
@@ -9,10 +11,342 @@ struct KokoroTwoStageSpike: AsyncParsableCommand {
         commandName: "spike",
         abstract: "Kokoro two-stage pipeline hypothesis tests",
         subcommands: [
+            Say.self, Voices.self, Phonemize.self, Profile.self,
             H1ModelLoad.self, H2Alignment.self, H3Performance.self, H4Caching.self,
-            E2EValidation.self, BucketBenchmark.self,
+            E2EValidation.self, BucketBenchmark.self, ConfigBench.self,
         ]
     )
+}
+
+// MARK: - Say: Synthesize and play text
+
+struct Say: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "say",
+        abstract: "Speak text using Kokoro TTS (streams sentence-by-sentence)"
+    )
+
+    @Argument(help: "Text to speak")
+    var text: String
+
+    @Option(name: .shortAndLong, help: "Voice preset name")
+    var voice: String = "af_heart"
+
+    @Option(name: .shortAndLong, help: "Speech speed (0.5–2.0)")
+    var speed: Float = 1.0
+
+    @Option(name: .shortAndLong, help: "Output WAV path (skips streaming playback)")
+    var output: String?
+
+    @Flag(name: .long, help: "Don't play audio, just write WAV")
+    var noPlay: Bool = false
+
+    @Flag(name: .long, help: "Disable streaming (synthesize all at once)")
+    var noStream: Bool = false
+
+    @Flag(name: .long, help: "Print per-stage timing breakdown")
+    var verbose: Bool = false
+
+    func run() async throws {
+        let modelDir = ModelManager.defaultDirectory
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+
+        if noStream || output != nil {
+            try runBatch(engine: engine)
+        } else {
+            try await runStreaming(engine: engine)
+        }
+    }
+
+    private func runBatch(engine: KokoroEngine) throws {
+        let result = try engine.synthesize(text: text, voice: voice, speed: speed, verbose: verbose)
+        let synthMs = String(format: "%.0f", result.synthesisTime * 1_000)
+        let audioDur = String(format: "%.2f", result.duration)
+        let rtfx = String(format: "%.1f", result.duration / result.synthesisTime)
+        print("\(synthMs)ms synth | \(audioDur)s audio | \(rtfx)x RTFx | \(result.tokenCount) tokens | voice: \(voice)")
+
+        let wavPath = output ?? "/tmp/kokoro_say.wav"
+        try E2EValidation().writeWAV(
+            samples: result.samples, sampleRate: KokoroEngine.sampleRate, to: wavPath)
+
+        if noPlay {
+            print(wavPath)
+        } else {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/afplay")
+            process.arguments = [wavPath]
+            try process.run()
+            process.waitUntilExit()
+        }
+    }
+
+    private func runStreaming(engine: KokoroEngine) async throws {
+        let sentences = splitSentences(text)
+        if sentences.count <= 1 {
+            try runBatch(engine: engine)
+            return
+        }
+
+        let format = AVAudioFormat(
+            standardFormatWithSampleRate: Double(KokoroEngine.sampleRate), channels: 1)!
+        let audioEngine = AVAudioEngine()
+        let playerNode = AVAudioPlayerNode()
+        audioEngine.attach(playerNode)
+        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: format)
+        try audioEngine.start()
+        playerNode.play()
+
+        let overallStart = CFAbsoluteTimeGetCurrent()
+        var totalAudioDuration = 0.0
+        let completionStream = AsyncStream<Void> { continuation in
+            var scheduled = 0
+
+            for (i, sentence) in sentences.enumerated() {
+                let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty { continue }
+
+                guard let result = try? engine.synthesize(text: trimmed, voice: voice, speed: speed) else {
+                    continue
+                }
+                totalAudioDuration += result.duration
+
+                let synthMs = String(format: "%.0f", result.synthesisTime * 1_000)
+                let elapsed = String(format: "%.0f", (CFAbsoluteTimeGetCurrent() - overallStart) * 1_000)
+                print("[\(elapsed)ms] chunk \(i + 1)/\(sentences.count): \(synthMs)ms synth → \(String(format: "%.1f", result.duration))s audio | \"\(trimmed.prefix(50))\"")
+
+                let frameCount = AVAudioFrameCount(result.samples.count)
+                guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount),
+                      let channelData = buffer.floatChannelData?[0] else { continue }
+                buffer.frameLength = frameCount
+                result.samples.withUnsafeBufferPointer { src in
+                    guard let base = src.baseAddress else { return }
+                    channelData.update(from: base, count: result.samples.count)
+                }
+
+                scheduled += 1
+                let isLast = (i == sentences.count - 1)
+                playerNode.scheduleBuffer(buffer) {
+                    if isLast { continuation.finish() }
+                }
+            }
+
+            if scheduled == 0 { continuation.finish() }
+        }
+
+        let totalSynth = CFAbsoluteTimeGetCurrent() - overallStart
+        print(String(format: "\nTotal: %.0fms synth for %.1fs audio (%.1fx RTFx) | %d chunks | voice: %@",
+                     totalSynth * 1_000, totalAudioDuration,
+                     totalAudioDuration / totalSynth, sentences.count, voice))
+
+        // Wait for all buffers to finish playing
+        for await _ in completionStream {}
+
+        playerNode.stop()
+        audioEngine.stop()
+    }
+
+    private func splitSentences(_ text: String) -> [String] {
+        var sentences: [String] = []
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            sentences.append(String(text[range]))
+            return true
+        }
+        return sentences.isEmpty ? [text] : sentences
+    }
+}
+
+// MARK: - Profile: Instrument synthesis pipeline stages
+
+struct Profile: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "profile",
+        abstract: "Profile synthesis pipeline — time each stage"
+    )
+
+    @Option(name: .shortAndLong, help: "Voice preset name")
+    var voice: String = "af_heart"
+
+    @Option(name: .long, help: "Number of iterations")
+    var iterations: Int = 10
+
+    func run() async throws {
+        let modelDir = ModelManager.defaultDirectory
+        print("=== Synthesis Pipeline Profile ===\n")
+
+        // Phase 0: Engine init (one-time)
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+        print(String(format: "Engine init: %.1fms", (CFAbsoluteTimeGetCurrent() - t0) * 1_000))
+
+        // Warm up
+        _ = try engine.synthesize(text: "warmup", voice: voice)
+        _ = try engine.synthesize(text: "warmup", voice: voice)
+        print("Warm-up done.\n")
+
+        let testCases: [(label: String, text: String)] = [
+            ("1-word", "Hello."),
+            ("short", "The quick brown fox jumps over the lazy dog."),
+            ("medium", "Operator uses neural speech synthesis for natural voice output. Each agent gets a distinct voice."),
+            ("long", "Here's the thing about streaming synthesis. The first sentence starts playing while I'm still working on the next one. So you hear audio much sooner. That means lower latency for the user."),
+        ]
+
+        // Phase 1: Phonemizer + Tokenizer timing (isolated)
+        print("--- Phase 1: Phonemizer + Tokenizer ---")
+        for (label, text) in testCases {
+            var phonemizeTimes = [Double]()
+            for _ in 0..<iterations {
+                let tp = CFAbsoluteTimeGetCurrent()
+                let (_, _) = engine.phonemize(text)
+                phonemizeTimes.append(CFAbsoluteTimeGetCurrent() - tp)
+            }
+            let avg = phonemizeTimes.reduce(0, +) / Double(phonemizeTimes.count) * 1_000
+            let min_ = phonemizeTimes.min()! * 1_000
+            print(String(format: "  %-8s  avg: %6.2fms  min: %6.2fms", label, avg, min_))
+        }
+
+        // Phase 2: Input preparation timing (MLMultiArray creation)
+        print("\n--- Phase 2: MLMultiArray Input Prep ---")
+        let (_, tokenIds) = engine.phonemize(testCases[2].text)
+        let styleVector = try getStyleVector(modelDir: modelDir, voice: voice)
+        let maxTokens = 124  // v21_5s bucket
+        var prepTimes = [Double]()
+        for _ in 0..<iterations {
+            let tp = CFAbsoluteTimeGetCurrent()
+            let padded = tokenIds + [Int](repeating: 0, count: max(0, maxTokens - tokenIds.count))
+            let _ = try makeTokenInputs(tokenIds: padded, maxLength: maxTokens)
+            let _ = try makeStyleArray(styleVector)
+            let randomPhases = try MLMultiArray(shape: [1, 9], dataType: .float32)
+            let phasePtr = randomPhases.dataPointer.assumingMemoryBound(to: Float.self)
+            for i in 0..<9 { phasePtr[i] = Float.random(in: 0..<(2 * .pi)) }
+            prepTimes.append(CFAbsoluteTimeGetCurrent() - tp)
+        }
+        let avgPrep = prepTimes.reduce(0, +) / Double(prepTimes.count) * 1_000
+        print(String(format: "  avg: %.3fms  min: %.3fms", avgPrep, prepTimes.min()! * 1_000))
+
+        // Phase 3: CoreML prediction timing (the big one)
+        print("\n--- Phase 3: CoreML model.prediction() ---")
+        for (label, text) in testCases {
+            var predTimes = [Double]()
+            for _ in 0..<iterations {
+                // Full synthesize call — but we already know phases 1+2 are negligible
+                let tp = CFAbsoluteTimeGetCurrent()
+                let _ = try engine.synthesize(text: text, voice: voice)
+                predTimes.append(CFAbsoluteTimeGetCurrent() - tp)
+            }
+            let avg = predTimes.reduce(0, +) / Double(predTimes.count) * 1_000
+            let min_ = predTimes.min()! * 1_000
+            let max_ = predTimes.max()! * 1_000
+            print(String(format: "  %-8s  avg: %7.1fms  min: %7.1fms  max: %7.1fms", label, avg, min_, max_))
+        }
+
+        // Phase 4: Output extraction timing
+        print("\n--- Phase 4: Audio Sample Extraction ---")
+        // Simulate extracting ~120000 samples (5s audio)
+        let dummyArray = try MLMultiArray(shape: [1, 1, 120000], dataType: .float32)
+        let dPtr = dummyArray.dataPointer.assumingMemoryBound(to: Float.self)
+        for i in 0..<120000 { dPtr[i] = Float.random(in: -1...1) }
+        var extractTimes = [Double]()
+        for _ in 0..<iterations {
+            let tp = CFAbsoluteTimeGetCurrent()
+            let _ = extractFloats(from: dummyArray, maxCount: 120000)
+            extractTimes.append(CFAbsoluteTimeGetCurrent() - tp)
+        }
+        let avgExtract = extractTimes.reduce(0, +) / Double(extractTimes.count) * 1_000
+        print(String(format: "  120k samples: avg: %.3fms  min: %.3fms", avgExtract, extractTimes.min()! * 1_000))
+
+        // Phase 5: Summary
+        print("\n--- Phase 5: Summary ---")
+        print("If prediction dominates (>95%), the only levers are:")
+        print("  1. Quantized model (INT8/FP16 weights) — re-export via coremltools")
+        print("  2. Smaller bucket (v21_5s vs v24_10s) for short text")
+        print("  3. Different compute unit (ANE vs GPU)")
+        print("  4. Pre-allocated MLMultiArray reuse (avoids alloc per call)")
+        print("  5. Async prediction pipeline (predict next while playing current)")
+    }
+
+    private func makeTokenInputs(tokenIds: [Int], maxLength: Int) throws -> (MLMultiArray, MLMultiArray) {
+        let inputIds = try MLMultiArray(shape: [1, maxLength as NSNumber], dataType: .int32)
+        let mask = try MLMultiArray(shape: [1, maxLength as NSNumber], dataType: .int32)
+        let iPtr = inputIds.dataPointer.assumingMemoryBound(to: Int32.self)
+        let mPtr = mask.dataPointer.assumingMemoryBound(to: Int32.self)
+        for i in 0..<maxLength {
+            if i < tokenIds.count {
+                iPtr[i] = Int32(tokenIds[i]); mPtr[i] = 1
+            } else {
+                iPtr[i] = 0; mPtr[i] = 0
+            }
+        }
+        return (inputIds, mask)
+    }
+
+    private func makeStyleArray(_ sv: [Float]) throws -> MLMultiArray {
+        let arr = try MLMultiArray(shape: [1, 256], dataType: .float32)
+        let ptr = arr.dataPointer.assumingMemoryBound(to: Float.self)
+        for i in 0..<min(sv.count, 256) { ptr[i] = sv[i] }
+        return arr
+    }
+
+    private func extractFloats(from array: MLMultiArray, maxCount: Int) -> [Float] {
+        let count = min(array.count, maxCount)
+        let ptr = array.dataPointer.assumingMemoryBound(to: Float.self)
+        return [Float](UnsafeBufferPointer(start: ptr, count: count))
+    }
+
+    private func getStyleVector(modelDir: URL, voice: String) throws -> [Float] {
+        let voiceURL = modelDir.appendingPathComponent("voices/\(voice).json")
+        let data = try Data(contentsOf: voiceURL)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let embedding = json["embedding"] as? [Double] else {
+            throw KokoroError.voiceNotFound(voice)
+        }
+        return embedding.prefix(256).map { Float($0) }
+    }
+}
+
+// MARK: - Voices: List available voices
+
+struct Voices: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "voices",
+        abstract: "List available Kokoro voice presets"
+    )
+
+    func run() async throws {
+        let modelDir = ModelManager.defaultDirectory
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+        let voices = engine.availableVoices.sorted()
+
+        print("\(voices.count) voices available:\n")
+        for voice in voices {
+            print("  \(voice)")
+        }
+        print("\nUsage: spike say \"Hello world\" --voice \(voices.first ?? "af_heart")")
+    }
+}
+
+// MARK: - Phonemize: Debug phoneme output
+
+struct Phonemize: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "phonemize",
+        abstract: "Show IPA phonemes and token IDs for text (debug)"
+    )
+
+    @Argument(help: "Text to phonemize")
+    var text: String
+
+    func run() async throws {
+        let modelDir = ModelManager.defaultDirectory
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+
+        let (phonemes, tokenIds) = engine.phonemize(text)
+        print("Text:     \(text)")
+        print("IPA:      \(phonemes)")
+        print("Tokens:   \(tokenIds.count) IDs")
+        print("Token IDs: \(tokenIds)")
+    }
 }
 
 // MARK: - E2E: Full KokoroTTS engine validation
@@ -720,5 +1054,77 @@ struct H4Caching: AsyncParsableCommand {
         } else {
             print("FAIL: Cached load (\(String(format: "%.2f", fastest))s) > 5s")
         }
+    }
+}
+
+// MARK: - ConfigBench: A/B test MLModelConfiguration options
+
+struct ConfigBench: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "config-bench",
+        abstract: "A/B test MLModelConfiguration options (low-precision GPU, compute units)"
+    )
+
+    @Option(name: .shortAndLong, help: "Voice preset name")
+    var voice: String = "af_heart"
+
+    @Option(name: .long, help: "Iterations per config (after 2 warmup)")
+    var iterations: Int = 10
+
+    func run() async throws {
+        print("=== MLModelConfiguration A/B Benchmark ===\n")
+
+        let modelDir = ModelManager.defaultDirectory
+
+        // Test each config sequentially — load model, benchmark, release before next
+        let testText = "Operator uses neural speech synthesis for natural voice output. Each agent gets a distinct voice."
+
+        // Configs to test (sequentially — only one model loaded at a time)
+        let configSpecs: [(label: String, lowPrec: Bool, units: MLComputeUnits)] = [
+            ("cpuAndGPU (baseline)", false, .cpuAndGPU),
+            ("cpuAndGPU + lowPrecision", true, .cpuAndGPU),
+            ("cpuOnly", false, .cpuOnly),
+        ]
+
+        print("Text: \"\(testText.prefix(60))...\"")
+        print("Iterations: \(iterations) (+ 2 warmup)\n")
+
+        print(String(format: "%-30s  %8s  %8s  %8s  %6s",
+                      "Config", "Avg(ms)", "Min(ms)", "Max(ms)", "RTFx"))
+        print(String(repeating: "-", count: 72))
+
+        for (label, lowPrec, _) in configSpecs {
+            // Fresh engine per config to avoid multi-model SIGSEGV
+            do {
+                let engine = try KokoroEngine(
+                    modelDirectory: modelDir, allowLowPrecisionGPU: lowPrec)
+
+                // Warmup
+                _ = try engine.synthesize(text: "warmup", voice: voice)
+                _ = try engine.synthesize(text: "warmup", voice: voice)
+
+                // Benchmark
+                var times = [Double]()
+                var audioDur = 0.0
+                for _ in 0..<iterations {
+                    let t = CFAbsoluteTimeGetCurrent()
+                    let result = try engine.synthesize(text: testText, voice: voice)
+                    times.append(CFAbsoluteTimeGetCurrent() - t)
+                    if audioDur == 0 { audioDur = result.duration }
+                }
+
+                let avg = times.reduce(0, +) / Double(times.count)
+                let minT = times.min()!
+                let maxT = times.max()!
+                let rtfx = audioDur / avg
+
+                print(String(format: "%-30s  %7.0f  %7.0f  %7.0f  %5.1fx",
+                             label, avg * 1000, minT * 1000, maxT * 1000, rtfx))
+            } catch {
+                print(String(format: "%-30s  FAILED: %@", label, "\(error)"))
+            }
+        }
+
+        print("\nNote: 'lowPrecision' uses FP16 accumulation on GPU — may slightly affect audio quality.")
     }
 }

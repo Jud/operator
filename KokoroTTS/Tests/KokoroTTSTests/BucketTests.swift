@@ -27,10 +27,12 @@ struct BucketTests {
         #expect(bucket == .tenSecond)
     }
 
-    @Test("Unified bucket selection prefers v24")
-    func unifiedPreferV24() {
+    @Test("Unified bucket selection prefers smallest fit")
+    func unifiedPreferSmallest() {
         let bucket = UnifiedBucket.select(forTokenCount: 100)
-        #expect(bucket == .v24_10s)
+        #expect(bucket == .v21_5s)
+        let large = UnifiedBucket.select(forTokenCount: 200)
+        #expect(large == .v24_10s)
     }
 
     @Test("Unified bucket handles overflow")
