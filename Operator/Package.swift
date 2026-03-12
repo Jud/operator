@@ -65,7 +65,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Benchmarks",
-            dependencies: ["OperatorCore"],
+            dependencies: ["OperatorCore", "KokoroTTS"],
             path: "Tests/Benchmarks"
         ),
     ]

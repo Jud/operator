@@ -6,11 +6,11 @@ final class Tokenizer: Sendable {
     private let vocab: [String: Int]
 
     /// Pad token ID.
-    let padId: Int = 0
+    static let padId: Int = 0
     /// Start-of-sequence token ID.
-    let bosId: Int = 1
+    static let bosId: Int = 1
     /// End-of-sequence token ID.
-    let eosId: Int = 2
+    static let eosId: Int = 2
 
     init(vocab: [String: Int]) {
         self.vocab = vocab
@@ -44,20 +44,19 @@ final class Tokenizer: Sendable {
 
     /// Encode an IPA phoneme string to token IDs with BOS/EOS.
     func encode(_ phonemes: String, maxLength: Int = UnifiedBucket.maxTokenCount) -> [Int] {
-        var ids = [bosId]
+        var ids = [Self.bosId]
 
         for char in phonemes {
             let s = String(char)
             if let id = vocab[s] {
                 ids.append(id)
             }
-            // Unknown chars silently dropped
         }
 
-        ids.append(eosId)
+        ids.append(Self.eosId)
 
         if ids.count > maxLength {
-            ids = Array(ids.prefix(maxLength - 1)) + [eosId]
+            ids = Array(ids.prefix(maxLength - 1)) + [Self.eosId]
         }
 
         return ids
@@ -66,9 +65,6 @@ final class Tokenizer: Sendable {
     /// Pad token IDs to a fixed length.
     func pad(_ ids: [Int], to length: Int) -> [Int] {
         if ids.count >= length { return Array(ids.prefix(length)) }
-        return ids + [Int](repeating: padId, count: length - ids.count)
+        return ids + [Int](repeating: Self.padId, count: length - ids.count)
     }
-
-    /// Vocabulary size.
-    var vocabSize: Int { vocab.count }
 }

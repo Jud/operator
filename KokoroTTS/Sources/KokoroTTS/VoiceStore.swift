@@ -5,6 +5,9 @@ final class VoiceStore: Sendable {
     /// Voice name → 256-dim float embedding.
     private let embeddings: [String: [Float]]
 
+    /// Cached sorted voice names (computed once at init).
+    private let sortedVoiceNames: [String]
+
     /// Style embedding dimension.
     static let styleDim = 256
 
@@ -31,25 +34,23 @@ final class VoiceStore: Sendable {
         }
 
         self.embeddings = loaded
+        self.sortedVoiceNames = loaded.keys.sorted()
     }
 
     /// Get the embedding for a specific voice.
     func embedding(for voice: String) throws -> [Float] {
         guard let emb = embeddings[voice] else {
-            let available = Array(embeddings.keys).sorted().prefix(5)
+            let available = sortedVoiceNames.prefix(5).joined(separator: ", ")
             throw KokoroError.voiceNotFound(
-                "\(voice) — available: \(available.joined(separator: ", "))...")
+                "\(voice) — available: \(available)...")
         }
         return emb
     }
 
     /// Available voice preset names.
     var availableVoices: [String] {
-        Array(embeddings.keys).sorted()
+        sortedVoiceNames
     }
-
-    /// Number of loaded voices.
-    var count: Int { embeddings.count }
 
     // MARK: - Private
 

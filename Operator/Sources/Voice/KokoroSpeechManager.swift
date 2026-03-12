@@ -17,6 +17,11 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     /// Whether the player node is currently playing.
     public var isSpeaking: Bool { playerNode.isPlaying }
 
+    /// Speech rate multiplier (0.5 = half speed, 2.0 = double speed).
+    ///
+    /// Default 1.0.
+    public var speechRate: Float = 1.0
+
     /// The full text of the currently playing utterance.
     private var currentText: String = ""
 
@@ -28,9 +33,6 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
 
     /// Total sample count of the current buffer.
     private var currentSampleCount: Int = 0
-
-    /// Playback speed multiplier.
-    public var speechRate: Float = 1.0
 
     /// Stream that yields each time an utterance finishes playing.
     public let finishedSpeaking: AsyncStream<Void>

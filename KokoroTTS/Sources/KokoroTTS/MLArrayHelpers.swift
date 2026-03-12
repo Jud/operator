@@ -31,6 +31,9 @@ enum MLArrayHelpers {
     }
 
     /// Create paired input_ids and attention_mask MLMultiArrays from token IDs.
+    ///
+    /// Token IDs are padded to `maxLength` with zeros. The attention mask is 1
+    /// for real tokens and 0 for padding positions.
     static func makeTokenInputs(
         tokenIds: [Int], maxLength: Int
     ) throws -> (inputIds: MLMultiArray, mask: MLMultiArray) {

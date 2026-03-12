@@ -11,8 +11,8 @@ struct TokenizerTests {
     func encodeAddsBosEos() throws {
         let tok = try makeTokenizer()
         let ids = tok.encode("a")
-        #expect(ids.first == tok.bosId)
-        #expect(ids.last == tok.eosId)
+        #expect(ids.first == Tokenizer.bosId)
+        #expect(ids.last == Tokenizer.eosId)
         #expect(ids.count >= 3) // BOS + at least 1 token + EOS
     }
 
@@ -31,7 +31,7 @@ struct TokenizerTests {
         let ids = tok.encode("a")
         let padded = tok.pad(ids, to: 20)
         #expect(padded.count == 20)
-        #expect(padded.last == tok.padId)
+        #expect(padded.last == Tokenizer.padId)
     }
 
     @Test("Padding truncates if too long")
@@ -48,13 +48,13 @@ struct TokenizerTests {
         let longIPA = String(repeating: "a", count: 1000)
         let ids = tok.encode(longIPA, maxLength: 100)
         #expect(ids.count <= 100)
-        #expect(ids.last == tok.eosId)
+        #expect(ids.last == Tokenizer.eosId)
     }
 
     @Test("Empty string produces BOS + EOS only")
     func emptyString() throws {
         let tok = try makeTokenizer()
         let ids = tok.encode("")
-        #expect(ids == [tok.bosId, tok.eosId])
+        #expect(ids == [Tokenizer.bosId, Tokenizer.eosId])
     }
 }

@@ -1,10 +1,12 @@
 import AVFoundation
+import KokoroTTS
 import OperatorCore
 
 private enum BenchmarkTarget: String, CaseIterable {
     case routing
     case routingAccuracy = "routing-accuracy"
     case routingLatency = "routing-latency"
+    case tts
 }
 
 private let benchmarkRunnerEnvKey = "OPERATOR_BENCHMARK_RUNNER"
@@ -16,6 +18,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  routing           Run routing accuracy and latency benchmarks (heuristic only)")
     print("  routing-accuracy  Run only routing accuracy benchmark")
     print("  routing-latency   Run only routing latency benchmark")
+    print("  tts               Run TTS synthesis and speed control verification")
     if listOnly {
         return
     }
@@ -252,6 +255,98 @@ private func runAccuracyBenchmark(sessions: [SessionState]) async {
     print("Overall: \(totalCorrect)/\(totalCases) (\(String(format: "%.0f", overall))%)")
 }
 
+// MARK: - TTS Benchmark
+
+private func benchmarkTTS() {
+    print("\n=== TTS BENCHMARK ===\n")
+
+    let modelDir = ModelManager.defaultDirectory(for: "com.operator")
+    guard ModelManager.modelsAvailable(at: modelDir) else {
+        print("SKIP: Models not found at \(modelDir.path)")
+        return
+    }
+
+    do {
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+        guard let voice = engine.availableVoices.first else {
+            print("SKIP: No voices found")
+            return
+        }
+        print("Engine loaded, voice: \(voice)")
+
+        // --- Speed verification ---
+        print("\n--- Speed Control Verification ---\n")
+
+        let text = "The quick brown fox jumps over the lazy dog."
+        let speeds: [Float] = [0.5, 1.0, 1.5, 2.0]
+        var results: [(speed: Float, samples: Int, duration: Double, synthMs: Double)] = []
+
+        for speed in speeds {
+            let result = try engine.synthesize(text: text, voice: voice, speed: speed)
+            let synthMs = result.synthesisTime * 1000
+            results.append((speed, result.samples.count, result.duration, synthMs))
+            let line = String(
+                format: "  speed=%.1f: %6d samples, %.2fs audio, %.0fms synth",
+                speed,
+                result.samples.count,
+                result.duration,
+                synthMs
+            )
+            print(line)
+        }
+
+        guard let normal = results.first(where: { $0.speed == 1.0 }) else { return }
+        var allPass = true
+
+        for r in results where r.speed != 1.0 {
+            let ratio = Double(r.samples) / Double(normal.samples)
+            let expectedRatio = 1.0 / Double(r.speed)
+            let tolerance = 0.3
+            let pass = abs(ratio - expectedRatio) < tolerance
+            let marker = pass ? "PASS" : "FAIL"
+            if !pass { allPass = false }
+            let line = String(
+                format: "  [%s] speed=%.1f ratio=%.2f (expected ~%.2f)",
+                marker,
+                r.speed,
+                ratio,
+                expectedRatio
+            )
+            print(line)
+        }
+
+        // --- Latency benchmark ---
+        print("\n--- Synthesis Latency ---\n")
+
+        let phrases = [
+            "Hello.",
+            "The quick brown fox jumps over the lazy dog.",
+            "I've updated the configuration file and restarted the service. The deployment should be live within a few minutes."
+        ]
+
+        for phrase in phrases {
+            var times: [Double] = []
+            for _ in 0..<3 {
+                let result = try engine.synthesize(text: phrase, voice: voice)
+                times.append(result.synthesisTime * 1000)
+            }
+            let avg = times.reduce(0, +) / Double(times.count)
+            let rtfx = try engine.synthesize(text: phrase, voice: voice).realTimeFactor
+            let line = String(
+                format: "  %.0fms avg (%.1fx RT) | \"%@\"",
+                avg,
+                rtfx,
+                String(phrase.prefix(60))
+            )
+            print(line)
+        }
+
+        print(allPass ? "\nSpeed control: ALL PASS" : "\nSpeed control: SOME FAILURES")
+    } catch {
+        print("ERROR: \(error)")
+    }
+}
+
 // MARK: - Main
 
 @main
@@ -284,6 +379,10 @@ enum BenchmarkRunner {
                 runLatency: includesRouting || targets.contains(.routingLatency),
                 runAccuracy: includesRouting || targets.contains(.routingAccuracy)
             )
+        }
+
+        if targets.contains(.tts) {
+            benchmarkTTS()
         }
 
         print("\nDone.")
