@@ -1,7 +1,6 @@
 import Accelerate
 import CoreML
 import Foundation
-import MisakiSwift
 import NaturalLanguage
 
 /// High-quality text-to-speech engine using Kokoro-82M CoreML models.
@@ -19,6 +18,12 @@ import NaturalLanguage
 public final class KokoroEngine: @unchecked Sendable {
     // Immutable after init. EnglishG2P has internal mutable state,
     // so all phonemize calls are serialized through g2pLock.
+
+    /// Maximum token count for the unified model.
+    private static let maxTokenCount = 242
+
+    /// CoreML model bundle name (without .mlmodelc extension).
+    private static let modelName = "kokoro_24_10s"
 
     /// Output sample rate in Hz (24kHz).
     public static let sampleRate = 24_000
@@ -73,7 +78,7 @@ public final class KokoroEngine: @unchecked Sendable {
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
-        let url = modelDirectory.appendingPathComponent(UnifiedBucket.modelName + ".mlmodelc")
+        let url = modelDirectory.appendingPathComponent(Self.modelName + ".mlmodelc")
         self.model = try MLModel(contentsOf: url, configuration: config)
     }
 
@@ -124,13 +129,6 @@ public final class KokoroEngine: @unchecked Sendable {
             tokenCount: totalTokens, synthesisTime: elapsed)
     }
 
-    /// Convert text to IPA phonemes using the built-in G2P pipeline.
-    ///
-    /// Useful for debugging pronunciation or inspecting the phonemization output.
-    public func phonemize(_ text: String) -> String {
-        lockedPhonemize(text)
-    }
-
     // MARK: - Voices
 
     /// Available voice preset names.
@@ -146,7 +144,7 @@ public final class KokoroEngine: @unchecked Sendable {
     /// at app startup to avoid a cold-start delay on the first synthesis call.
     /// Safe to skip — the first real synthesis will just be slower.
     public func warmUp() {
-        let maxTokens = UnifiedBucket.maxTokenCount
+        let maxTokens = Self.maxTokenCount
         do {
             let (inputIds, mask) = try MLArrayHelpers.makeTokenInputs(
                 tokenIds: [Int](repeating: 0, count: maxTokens), maxLength: maxTokens)
@@ -194,12 +192,12 @@ public final class KokoroEngine: @unchecked Sendable {
         styleVector: [Float],
         speed: Float
     ) throws -> (samples: [Float], durations: [Int]) {
-        guard tokenIds.count <= UnifiedBucket.maxTokenCount else {
+        guard tokenIds.count <= Self.maxTokenCount else {
             throw KokoroError.textTooLong(
-                tokenCount: tokenIds.count, maxTokens: UnifiedBucket.maxTokenCount)
+                tokenCount: tokenIds.count, maxTokens: Self.maxTokenCount)
         }
 
-        let maxTokens = UnifiedBucket.maxTokenCount
+        let maxTokens = Self.maxTokenCount
         let (inputIds, maskArray) = try MLArrayHelpers.makeTokenInputs(
             tokenIds: tokenIds, maxLength: maxTokens)
 

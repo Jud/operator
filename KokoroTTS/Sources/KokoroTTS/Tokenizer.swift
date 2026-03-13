@@ -43,7 +43,7 @@ final class Tokenizer: Sendable {
     }
 
     /// Encode an IPA phoneme string to token IDs with BOS/EOS.
-    func encode(_ phonemes: String, maxLength: Int = UnifiedBucket.maxTokenCount) -> [Int] {
+    func encode(_ phonemes: String, maxLength: Int = 242) -> [Int] {
         var ids = [Self.bosId]
 
         for char in phonemes {

@@ -7,13 +7,9 @@ let package = Package(
     products: [
         .library(name: "KokoroTTS", targets: ["KokoroTTS"]),
     ],
-    dependencies: [
-        .package(url: "https://github.com/mlalma/MisakiSwift", from: "1.0.1"),
-    ],
     targets: [
         .target(
             name: "KokoroTTS",
-            dependencies: ["MisakiSwift"],
             path: "Sources/KokoroTTS",
             resources: [
                 .process("Resources"),
