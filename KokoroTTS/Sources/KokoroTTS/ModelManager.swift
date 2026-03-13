@@ -35,5 +35,5 @@ public enum ModelManager {
         return hasModel && hasVoices
     }
 
-    private static let modelFiles = ["kokoro_24_10s.mlmodelc"]
+    private static let modelFiles = [KokoroEngine.modelName + ".mlmodelc"]
 }

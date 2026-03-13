@@ -41,6 +41,11 @@ final class EnglishG2P {
     private static let camelSplitRegex = try! NSRegularExpression(
         pattern: #"[A-Z]{2,}(?=[A-Z][a-z])|[A-Z]{2,}$|[A-Z][a-z]*|[a-z]+"#, options: [])
 
+    private static let linkRegex = try! NSRegularExpression(
+        pattern: #"\[([^\]]+)\]\(([^\)]*)\)"#, options: [])
+
+    private static let dipthongs: Set<Character> = Set("AIOQWYʤʧ")
+
     struct PreprocessFeature {
         enum Value {
             case int(Int)
@@ -87,10 +92,9 @@ final class EnglishG2P {
     }
 
     func stressWeight(_ phonemes: String?) -> Int {
-        let dipthongs = Set("AIOQWYʤʧ")
         guard let phonemes else { return 0 }
         return phonemes.reduce(0) { sum, character in
-            sum + (dipthongs.contains(character) ? 2 : 1)
+            sum + (Self.dipthongs.contains(character) ? 2 : 1)
         }
     }
 
@@ -157,9 +161,6 @@ final class EnglishG2P {
     typealias PreprocessTuple = (text: String, tokens: [String], features: [PreprocessFeature])
 
     private func preprocess(text: String) -> PreprocessTuple {
-        let linkRegex = try! NSRegularExpression(
-            pattern: #"\[([^\]]+)\]\(([^\)]*)\)"#, options: [])
-
         var result = ""
         var tokens: [String] = []
         var features: [PreprocessFeature] = []
@@ -169,7 +170,7 @@ final class EnglishG2P {
         let ns = input as NSString
         let fullRange = NSRange(location: 0, length: ns.length)
 
-        linkRegex.enumerateMatches(in: input, options: [], range: fullRange) { match, _, _ in
+        Self.linkRegex.enumerateMatches(in: input, options: [], range: fullRange) { match, _, _ in
             guard let m = match else { return }
 
             let range = m.range

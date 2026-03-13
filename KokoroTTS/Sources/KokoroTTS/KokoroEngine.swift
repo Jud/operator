@@ -20,10 +20,10 @@ public final class KokoroEngine: @unchecked Sendable {
     // so all phonemize calls are serialized through g2pLock.
 
     /// Maximum token count for the unified model.
-    private static let maxTokenCount = 242
+    static let maxTokenCount = 242
 
     /// CoreML model bundle name (without .mlmodelc extension).
-    private static let modelName = "kokoro_24_10s"
+    static let modelName = "kokoro_24_10s"
 
     /// Output sample rate in Hz (24kHz).
     public static let sampleRate = 24_000
