@@ -212,9 +212,10 @@ public final class KokoroEngine: @unchecked Sendable {
             }
             selectedBucket = useBucket
 
-            let (samples, durations) = try synthesizeUnified(
+            var (samples, durations) = try synthesizeUnified(
                 tokenIds: tokenIds, styleVector: styleVector, speed: clampedSpeed,
                 bucket: useBucket)
+            trimTrailingArtifacts(&samples)
             if allSamples.isEmpty {
                 allSamples = samples
             } else {
@@ -223,7 +224,6 @@ public final class KokoroEngine: @unchecked Sendable {
             allDurations.append(contentsOf: durations)
         }
 
-        trimTrailingArtifacts(&allSamples)
         postProcess(&allSamples)
 
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
@@ -362,15 +362,23 @@ public final class KokoroEngine: @unchecked Sendable {
         return (samples, durations)
     }
 
-    /// Trim trailing click + artifacts in-place.
+    /// Trim trailing silence and artifacts in-place.
     ///
-    /// The end-to-end model often produces a click (sharp transient) after
-    /// speech, followed by repeating low-level artifacts. Two passes:
+    /// Uses relative thresholds (percentage of peak amplitude) so it works
+    /// on raw model output before normalization. Two passes:
     /// 1. Find the click (highest delta window followed by amplitude drop)
     /// 2. Find the first post-speech silence gap preceded by real speech
     private func trimTrailingArtifacts(_ samples: inout [Float]) {
         let windowSize = 2400  // 100ms at 24kHz
         var validCount = samples.count
+        guard validCount > windowSize * 3 else { return }
+
+        // Compute peak amplitude for relative thresholds.
+        var peak: Float = 0
+        for s in samples { peak = max(peak, abs(s)) }
+        guard peak > 1e-6 else { return }
+        let silenceThreshold = peak * 0.02  // 2% of peak = silence
+        let speechThreshold = peak * 0.15   // 15% of peak = speech
 
         // --- Pass 1: Click detection (scan back third of audio) ---
         let searchFrom = validCount / 3
@@ -397,7 +405,7 @@ public final class KokoroEngine: @unchecked Sendable {
             var bestDelta: Float = 0
             for w in 0..<(windowCount - 2) {
                 let delta = windows[w].maxDelta
-                guard delta > 0.2 else { continue }
+                guard delta > peak * 0.1 else { continue }
                 let amp = windows[w].maxAmp
                 let nextAmp = max(windows[w + 1].maxAmp, windows[w + 2].maxAmp)
                 if nextAmp < amp * 0.5 && delta > bestDelta {
@@ -412,7 +420,8 @@ public final class KokoroEngine: @unchecked Sendable {
         }
 
         // --- Pass 2: End-of-speech silence gap ---
-        let lookback = max(5, 12000 / windowSize)
+        let baseLookback = max(5, 12000 / windowSize)
+        let lookback = min(baseLookback, validCount / windowSize / 3)
         let pass2Count = validCount / windowSize
         if pass2Count > lookback {
             let pass2Stats = (0..<pass2Count).map { w -> (start: Int, maxAmp: Float) in
@@ -424,8 +433,10 @@ public final class KokoroEngine: @unchecked Sendable {
                 return (wStart, ma)
             }
             for w in lookback..<pass2Count {
-                if pass2Stats[w].maxAmp < 0.01 {
-                    let hasSpeech = (max(0, w - lookback)..<w).contains { pass2Stats[$0].maxAmp > 0.3 }
+                if pass2Stats[w].maxAmp < silenceThreshold {
+                    let hasSpeech = (max(0, w - lookback)..<w).contains {
+                        pass2Stats[$0].maxAmp > speechThreshold
+                    }
                     if hasSpeech {
                         validCount = pass2Stats[w].start
                         break
