@@ -2,107 +2,72 @@ import AppKit
 import SwiftUI
 import os
 
-/// Thread-safe audio level ring buffer shared between the audio capture thread and the UI.
+/// Thread-safe frequency band levels shared between the audio capture thread and the UI.
 ///
-/// Written from the audio tap callback, read from the WaveformModel's display timer.
+/// The audio tap pushes spectrum band magnitudes; the WaveformModel reads them at 30 Hz.
 public final class AudioLevelMonitor: @unchecked Sendable {
-    struct RingState: Sendable {
-        private var buffer = [Float](repeating: 0, count: AudioLevelMonitor.bufferSize)
-        private var writeIndex = 0
+    static let bandCount = 40
 
-        mutating func push(_ value: Float) {
-            buffer[writeIndex % buffer.count] = value
-            writeIndex += 1
-        }
-
-        func levels() -> [Float] {
-            let count = buffer.count
-            var result = [Float](repeating: 0, count: count)
-            for i in 0..<count {
-                result[i] = buffer[(writeIndex + i) % count]
-            }
-            return result
-        }
-
-        func readLevels(into destination: inout [Float]) {
-            let count = min(buffer.count, destination.count)
-            for i in 0..<count {
-                destination[i] = buffer[(writeIndex + i) % buffer.count]
-            }
-        }
-
-        mutating func reset() {
-            buffer = [Float](repeating: 0, count: buffer.count)
-            writeIndex = 0
-        }
-    }
-
-    static let bufferSize = 40
-
-    private let lock = OSAllocatedUnfairLock<RingState>(
-        initialState: RingState()
+    private let lock = OSAllocatedUnfairLock<[Float]>(
+        initialState: [Float](repeating: 0, count: bandCount)
     )
 
     /// Creates a new audio level monitor.
     public init() {}
 
-    /// Push a new normalized audio level (0.0-1.0).
+    /// Replace all band levels at once.
     ///
-    /// Called from the audio tap thread.
-    public func push(_ level: Float) {
-        lock.withLock { $0.push(level) }
+    /// Called from the audio tap thread with spectrum data.
+    public func pushBands(_ bands: [Float]) {
+        lock.withLock { state in
+            for i in 0..<min(bands.count, state.count) {
+                state[i] = bands[i]
+            }
+        }
     }
 
-    /// Read all levels in chronological order (oldest first).
+    /// Read current band levels into a pre-allocated buffer.
     ///
     /// Called from the main thread.
-    public func levels() -> [Float] {
-        lock.withLock { $0.levels() }
-    }
-
-    /// Read levels into a pre-allocated buffer to avoid per-frame allocation.
-    ///
-    /// Called from the main thread.
-    public func readLevels(into destination: inout [Float]) {
-        // Use withLockUnchecked to allow capturing inout parameter.
-        lock.withLockUnchecked { $0.readLevels(into: &destination) }
+    public func readBands(into destination: inout [Float]) {
+        lock.withLockUnchecked { state in
+            for i in 0..<min(state.count, destination.count) {
+                destination[i] = state[i]
+            }
+        }
     }
 
     /// Reset all levels to zero.
     public func reset() {
-        lock.withLock { $0.reset() }
+        lock.withLock { state in
+            for i in 0..<state.count { state[i] = 0 }
+        }
     }
 }
 
-/// Animated waveform data driven by real audio levels from an AudioLevelMonitor.
+/// Spectrum-driven waveform: each position = a frequency band, center = speech frequencies.
 ///
-/// Reads audio levels on a 30 Hz timer, applies exponential smoothing for fluid
-/// transitions, and modulates a traveling wave with the smoothed amplitude.
+/// Reads band levels at 30 Hz, applies exponential smoothing, and alternates
+/// above/below the center line. Speech energy naturally peaks in the center
+/// bands (~300-3000 Hz), giving the tallest-in-center look without an artificial envelope.
 @MainActor
 @Observable
 public final class WaveformModel {
-    static let sampleCount = 40
+    static let sampleCount = AudioLevelMonitor.bandCount
     private static let zeroed = Array(repeating: CGFloat.zero, count: sampleCount)
     private static let frameInterval: TimeInterval = 1.0 / 30.0
 
-    /// Minimum raw level to register as audio (noise gate).
-    private static let noiseGate: CGFloat = 0.03
     /// Exponential smoothing factor (0 = no change, 1 = instant).
-    private static let smoothingFactor: CGFloat = 0.25
-    /// Minimum smoothed level to use audio amplitude vs. idle ripple.
-    private static let activeThreshold: CGFloat = 0.02
-    /// Amplitude of the gentle idle ripple when no audio is present.
-    private static let idleAmplitude = 0.04
+    private static let smoothingFactor: CGFloat = 0.45
 
     /// Normalized amplitudes for each sample point across the waveform width.
     var samples: [CGFloat] = zeroed
 
     private var animationTimer: Timer?
     private var isAnimating = false
-    private var startTime: CFTimeInterval = 0
     private var levelMonitor: AudioLevelMonitor?
-    private var smoothedLevels = [CGFloat](repeating: 0, count: sampleCount)
-    private var rawLevelBuffer = [Float](repeating: 0, count: sampleCount)
+    private var smoothedBands = [CGFloat](repeating: 0, count: sampleCount)
+    private var rawBands = [Float](repeating: 0, count: sampleCount)
 
     func startAnimating(levelMonitor: AudioLevelMonitor?) {
         guard !isAnimating else {
@@ -110,7 +75,6 @@ public final class WaveformModel {
         }
         self.levelMonitor = levelMonitor
         isAnimating = true
-        startTime = CACurrentMediaTime()
 
         animationTimer = Timer.scheduledTimer(
             withTimeInterval: Self.frameInterval,
@@ -127,8 +91,8 @@ public final class WaveformModel {
         animationTimer?.invalidate()
         animationTimer = nil
         levelMonitor = nil
+        smoothedBands = [CGFloat](repeating: 0, count: Self.sampleCount)
         samples = Self.zeroed
-        smoothedLevels = [CGFloat](repeating: 0, count: Self.sampleCount)
     }
 
     private func updateSamples() {
@@ -136,51 +100,34 @@ public final class WaveformModel {
             return
         }
 
-        let elapsed = CACurrentMediaTime() - startTime
         let count = Self.sampleCount
 
-        // Read levels into a reusable buffer to avoid allocating per frame.
         if let monitor = levelMonitor {
-            monitor.readLevels(into: &rawLevelBuffer)
+            monitor.readBands(into: &rawBands)
         } else {
-            for i in 0..<count { rawLevelBuffer[i] = 0 }
+            for i in 0..<count { rawBands[i] = 0 }
         }
 
         for i in 0..<count {
-            let x = Double(i) / Double(count - 1)
+            let raw = CGFloat(rawBands[i])
+            smoothedBands[i] += (raw - smoothedBands[i]) * Self.smoothingFactor
 
-            let rawLevel = CGFloat(rawLevelBuffer[min(i, rawLevelBuffer.count - 1)])
-            let gatedLevel = rawLevel < Self.noiseGate ? CGFloat(0) : rawLevel
-
-            // Exponential smoothing for fluid transitions.
-            smoothedLevels[i] += (gatedLevel - smoothedLevels[i]) * Self.smoothingFactor
-            let level = smoothedLevels[i]
-
-            // Taper amplitude toward edges.
-            let envelope = sin(x * .pi)
-
-            // Traveling wave provides organic oscillation.
-            let wave = sin(elapsed * 2.0 + x * 2.5 * .pi)
-
-            // Gentle idle ripple when no audio is present.
-            let idleRipple = Self.idleAmplitude * sin(elapsed * 1.2 + x * .pi)
-
-            let amplitude = level > Self.activeThreshold ? Double(level) : idleRipple
-            samples[i] = CGFloat(amplitude * wave * envelope)
+            // Alternate above/below center line for waveform look.
+            let sign: CGFloat = i.isMultiple(of: 2) ? 1 : -1
+            samples[i] = smoothedBands[i] * sign
         }
     }
 }
 
 /// SwiftUI view that renders a thin animated waveform line indicator.
 ///
-/// Driven by real audio levels during recording, with a gentle idle ripple
-/// during processing states. Rendered as a smooth cubic Bezier path with
-/// round line caps for a refined appearance.
+/// Driven by frequency band levels during recording. Rendered as a smooth
+/// cubic Bezier path with round line caps for a refined appearance.
 public struct WaveformView: View {
     var model: WaveformModel
 
-    private let waveformWidth: CGFloat = 36
-    private let waveformHeight: CGFloat = 12
+    private let waveformWidth: CGFloat = 40
+    private let waveformHeight: CGFloat = 18
 
     /// The waveform view rendering animated sample points.
     public var body: some View {
@@ -239,8 +186,8 @@ public struct WaveformView: View {
 @MainActor
 public final class WaveformPanel: NSPanel {
     private static let logger = Log.logger(for: "WaveformPanel")
-    private static let panelWidth: CGFloat = 52
-    private static let panelHeight: CGFloat = 20
+    private static let panelWidth: CGFloat = 56
+    private static let panelHeight: CGFloat = 26
 
     private let waveformModel = WaveformModel()
     private let levelMonitor: AudioLevelMonitor?

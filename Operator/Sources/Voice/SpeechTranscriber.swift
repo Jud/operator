@@ -21,11 +21,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
     private static let logger = Log.logger(for: "SpeechTranscriber")
 
-    /// Floor of the dB range mapped to 0.0 (below this is silence).
-    nonisolated private static let dbFloor: Float = -50
-    /// Width of the dB range mapped to 0.0-1.0.
-    nonisolated private static let dbRange: Float = 40
-
     /// Directory for saved audio files.
     static let audioTraceDir: URL = {
         let appSupport =
@@ -91,24 +86,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
             }
         }
         return copy
-    }
-
-    /// Compute normalized RMS level (0.0-1.0) from an audio buffer using dB scaling.
-    nonisolated static func computeRMS(_ buffer: AVAudioPCMBuffer) -> Float {
-        guard let channelData = buffer.floatChannelData else {
-            return 0
-        }
-        let frames = Int(buffer.frameLength)
-        guard frames > 0 else {
-            return 0
-        }
-
-        var sumSquares: Float = 0
-        vDSP_svesq(channelData[0], 1, &sumSquares, vDSP_Length(frames))
-        let rms = sqrt(sumSquares / Float(frames))
-
-        let db = 20 * log10(max(rms, 1e-7))
-        return max(0, min(1, (db - dbFloor) / dbRange))
     }
 
     /// Write captured buffers to a timestamped WAV file off the main actor.
@@ -180,6 +157,12 @@ public final class SpeechTranscriber: SpeechTranscribing {
         let capturedEngine = engine
         let buffers = capturedBuffers
         let monitor = levelMonitor
+        let analyzer: SpectrumAnalyzer? =
+            monitor != nil
+            ? SpectrumAnalyzer(
+                frameCount: 1_024,
+                sampleRate: Float(recordingFormat.sampleRate)
+            ) : nil
 
         inputNode.installTap(
             onBus: 0,
@@ -188,9 +171,10 @@ public final class SpeechTranscriber: SpeechTranscribing {
         ) { @Sendable buffer, _ in
             capturedEngine.append(buffer)
 
-            // Push audio level for waveform visualization.
-            if let monitor {
-                monitor.push(Self.computeRMS(buffer))
+            // Push spectrum band levels for waveform visualization.
+            if let monitor, let analyzer {
+                let bands = analyzer.analyze(buffer)
+                monitor.pushBands(bands)
             }
 
             // Copy the buffer for WAV export.

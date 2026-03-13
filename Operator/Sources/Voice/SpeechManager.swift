@@ -20,9 +20,6 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     /// The underlying speech synthesizer instance.
     private let synthesizer = AVSpeechSynthesizer()
 
-    /// Whether the synthesizer is currently speaking.
-    public var isSpeaking: Bool { synthesizer.isSpeaking }
-
     /// The full text (including prefix) of the currently playing utterance.
     private var currentText: String = ""
 
@@ -34,12 +31,6 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     /// The session name (prefix) associated with the currently playing utterance.
     private var currentSession: String = ""
 
-    /// Playback speed multiplier for Apple TTS.
-    ///
-    /// Mapped from the user-facing 0.5–2.0 range to AVSpeechUtterance's rate scale
-    /// where 0.5 is the Apple default. A value of 1.0 here means "normal" (Apple rate 0.55).
-    public var speechRate: Float = 1.0
-
     /// Stream that yields each time an utterance finishes playing (not interrupted).
     ///
     /// AudioQueue consumes this to trigger playback of the next queued message.
@@ -48,6 +39,13 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     /// Continuation backing `finishedSpeaking`.
     private let finishedContinuation: AsyncStream<Void>.Continuation
 
+    /// Playback speed multiplier for Apple TTS.
+    ///
+    /// Mapped from the user-facing 0.5–2.0 range to AVSpeechUtterance's rate scale
+    /// where 0.5 is the Apple default. A value of 1.0 here means "normal" (Apple rate 0.55).
+    public var speechRate: Float = 1.0
+
+    // swiftlint:disable type_contents_order
     override public init() {
         let (stream, continuation) = AsyncStream<Void>.makeStream()
         self.finishedSpeaking = stream
@@ -55,6 +53,14 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
         super.init()
         synthesizer.delegate = self
     }
+
+    /// Whether the synthesizer is currently speaking.
+    public var isSpeaking: Bool { synthesizer.isSpeaking }
+
+    deinit {
+        finishedContinuation.finish()
+    }
+    // swiftlint:enable type_contents_order
 
     /// Speak text with an agent name prefix and the specified voice.
     ///

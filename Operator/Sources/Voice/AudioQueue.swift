@@ -81,6 +81,9 @@ public actor AudioQueue {
     /// The session name of the most recently played agent message.
     private var lastSpokenAgent: String?
 
+    /// Handle to the listener task consuming the speech manager's finishedSpeaking stream.
+    private var listenerTask: Task<Void, Never>?
+
     /// The number of messages currently waiting in the queue.
     public var pendingCount: Int {
         queue.count
@@ -107,12 +110,15 @@ public actor AudioQueue {
 
     /// Start consuming the speech manager's `finishedSpeaking` stream to drive sequential playback.
     ///
-    /// Spawns a detached task that awaits each stream element and calls `handleSpeechFinished()`.
-    /// The task ends automatically when the stream terminates (i.e., the speech manager deallocates).
+    /// Cancels any existing listener task before spawning a new one. The task awaits each
+    /// stream element and calls `handleSpeechFinished()`. Ends automatically when the stream
+    /// terminates (i.e., the speech manager deallocates) or the task is cancelled.
     public func startListening() async {
+        listenerTask?.cancel()
         let stream = await MainActor.run { speechManager.finishedSpeaking }
-        Task { [weak self] in
+        listenerTask = Task { [weak self] in
             for await _ in stream {
+                guard !Task.isCancelled else { break }
                 await self?.handleSpeechFinished()
             }
         }

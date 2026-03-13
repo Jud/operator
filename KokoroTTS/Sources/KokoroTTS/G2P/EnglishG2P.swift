@@ -357,8 +357,13 @@ final class EnglishG2P {
         }
     }
 
-    func retokenize(_ tokens: [MToken]) -> [Any] {
-        var words: [Any] = []
+    enum RetokenizedItem {
+        case single(MToken)
+        case compound([MToken])
+    }
+
+    func retokenize(_ tokens: [MToken]) -> [RetokenizedItem] {
+        var words: [RetokenizedItem] = []
         var currency: String? = nil
 
         for (i, token) in tokens.enumerated() {
@@ -428,25 +433,27 @@ final class EnglishG2P {
                 }
 
                 if token.`_`.alias != nil || token.phonemes != nil {
-                    words.append(token)
-                } else if let last = words.last as? [MToken],
+                    words.append(.single(token))
+                } else if case .compound(let last) = words.last,
                     last.last?.whitespace.isEmpty == true
                 {
                     var arr = last
                     token.`_`.is_head = false
                     arr.append(token)
                     _ = words.popLast()
-                    words.append(arr)
+                    words.append(.compound(arr))
                 } else {
-                    if token.whitespace.isEmpty { words.append([token]) } else {
-                        words.append(token)
+                    if token.whitespace.isEmpty { words.append(.compound([token])) } else {
+                        words.append(.single(token))
                     }
                 }
             }
         }
 
         return words.map { item in
-            if let arr = item as? [MToken], arr.count == 1 { return arr[0] }
+            if case .compound(let arr) = item, arr.count == 1 {
+                return .single(arr[0])
+            }
             return item
         }
     }
@@ -513,7 +520,8 @@ final class EnglishG2P {
 
         var ctx = TokenContext()
         for i in stride(from: words.count - 1, through: 0, by: -1) {
-            if let w = words[i] as? MToken {
+            switch words[i] {
+            case .single(let w):
                 if w.phonemes == nil {
                     let out = lexicon.transcribe(w, ctx: ctx)
                     w.phonemes = out.0
@@ -527,7 +535,8 @@ final class EnglishG2P {
                 }
 
                 ctx = tokenContext(ctx, ps: w.phonemes, token: w)
-            } else if var arr = words[i] as? [MToken] {
+
+            case .compound(var arr):
                 var left = 0
                 var right = arr.count
                 var shouldFallback = false
@@ -591,8 +600,12 @@ final class EnglishG2P {
         }
 
         let finalTokens: [MToken] = words.map { item in
-            if let arr = item as? [MToken] { return mergeTokens(arr, unk: self.unk) }
-            return item as! MToken
+            switch item {
+            case .single(let token):
+                return token
+            case .compound(let arr):
+                return mergeTokens(arr, unk: self.unk)
+            }
         }
 
         for i in 0..<finalTokens.count {

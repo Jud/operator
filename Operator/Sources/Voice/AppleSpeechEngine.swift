@@ -1,5 +1,5 @@
 import AVFoundation
-import Speech
+@preconcurrency import Speech
 import os
 
 /// Apple Speech framework implementation of ``TranscriptionEngine``.
@@ -18,6 +18,18 @@ import os
 /// were seen but the final result doesn't arrive within 3 seconds, the
 /// best partial is returned as a fallback.
 public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
+    /// Mutable session state protected by a single lock to prevent data races.
+    ///
+    /// All access to recognition request, task, and stream state goes through
+    /// this lock. The lock is nil when no session is active.
+    private struct SessionState: @unchecked Sendable {
+        var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+        var recognitionTask: SFSpeechRecognitionTask?
+        var eventContinuation: AsyncStream<RecognitionEvent>.Continuation?
+        var eventStream: AsyncStream<RecognitionEvent>?
+        var partialCount: Int = 0
+    }
+
     // MARK: - Type Properties
 
     private static let logger = Log.logger(for: "AppleSpeechEngine")
@@ -31,17 +43,7 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
     // MARK: - Instance Properties
 
     private let recognizer: SFSpeechRecognizer
-
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private var eventContinuation: AsyncStream<RecognitionEvent>.Continuation?
-    private var eventStream: AsyncStream<RecognitionEvent>?
-
-    /// Count of partial results received during the listening phase.
-    ///
-    /// Thread-safe via lock; incremented from the recognition callback,
-    /// read from @MainActor in `finishAndTranscribe()`.
-    private let partialCount = OSAllocatedUnfairLock(initialState: 0)
+    private let sessionLock = OSAllocatedUnfairLock<SessionState?>(initialState: nil)
 
     // MARK: - Initialization
 
@@ -99,10 +101,16 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
         }
 
         let (stream, continuation) = AsyncStream<RecognitionEvent>.makeStream()
-        self.eventStream = stream
-        self.eventContinuation = continuation
-        self.recognitionRequest = request
-        partialCount.withLock { $0 = 0 }
+
+        sessionLock.withLock { state in
+            state = SessionState(
+                recognitionRequest: request,
+                recognitionTask: nil,
+                eventContinuation: continuation,
+                eventStream: stream,
+                partialCount: 0
+            )
+        }
 
         startRecognitionTask(request: request, continuation: continuation)
         Self.logger.debug("Recognition task started (real-time processing)")
@@ -110,24 +118,26 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Forward an audio buffer to the speech recognition request.
     public func append(_ buffer: AVAudioPCMBuffer) {
-        recognitionRequest?.append(buffer)
+        let request = sessionLock.withLock { $0?.recognitionRequest }
+        request?.append(buffer)
     }
 
     /// Signal end of audio input and return the recognized text.
     ///
     /// Calls `endAudio()` on the request and waits for the final result.
     /// Since the recognition task has been processing audio in real-time,
-    /// the final result typically arrives within 0.5–1s.
+    /// the final result typically arrives within 0.5-1s.
     public func finishAndTranscribe() async -> String? {
-        guard let request = recognitionRequest, let stream = eventStream
-        else {
+        let request = sessionLock.withLock { $0?.recognitionRequest }
+        let stream = sessionLock.withLock { $0?.eventStream }
+        let hadPartials = sessionLock.withLock { $0?.partialCount ?? 0 } > 0
+
+        guard let request, let stream else {
             Self.logger.error("No recognition session active")
             return nil
         }
 
         request.endAudio()
-
-        let hadPartials = partialCount.withLock { $0 > 0 }
         let timeout = hadPartials ? Self.finalResultTimeout : Self.noSpeechTimeout
 
         if !hadPartials {
@@ -142,22 +152,25 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
     /// Cancel any in-progress recognition task and release resources.
     public func cancel() {
         resetSession()
-        partialCount.withLock { $0 = 0 }
     }
 
     // MARK: - Private
 
     /// Tear down the current recognition session and release all resources.
     private func resetSession() {
-        if let task = recognitionTask {
-            task.cancel()
-            recognitionTask = nil
-            Self.logger.debug("Cancelled recognition task")
+        let previous = sessionLock.withLock { state -> SessionState? in
+            let old = state
+            state = nil
+            return old
         }
-        eventContinuation?.finish()
-        eventContinuation = nil
-        eventStream = nil
-        recognitionRequest = nil
+
+        if let previous {
+            if let task = previous.recognitionTask {
+                task.cancel()
+                Self.logger.debug("Cancelled recognition task")
+            }
+            previous.eventContinuation?.finish()
+        }
     }
 
     /// Start the recognition task and wire its callback to the AsyncStream.
@@ -165,9 +178,9 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
         request: SFSpeechAudioBufferRecognitionRequest,
         continuation: AsyncStream<RecognitionEvent>.Continuation
     ) {
-        let partials = partialCount
+        let lock = sessionLock
 
-        self.recognitionTask = recognizer.recognitionTask(with: request) { result, error in
+        let task = recognizer.recognitionTask(with: request) { result, error in
             if let result {
                 if result.isFinal {
                     let text = result.bestTranscription.formattedString
@@ -176,9 +189,9 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
                     continuation.finish()
                 } else {
                     let partial = result.bestTranscription.formattedString
-                    let count = partials.withLock { value -> Int in
-                        value += 1
-                        return value
+                    let count = lock.withLock { state -> Int in
+                        state?.partialCount += 1
+                        return state?.partialCount ?? 0
                     }
                     if count <= 3 {
                         Self.logger.debug("Partial #\(count): \"\(partial.prefix(40))\"")
@@ -192,6 +205,10 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
                 continuation.yield(.failed)
                 continuation.finish()
             }
+        }
+
+        lock.withLock { state in
+            state?.recognitionTask = task
         }
     }
 
@@ -237,8 +254,7 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
     // MARK: - Deinitialization
 
     deinit {
-        eventContinuation?.finish()
-        recognitionTask?.cancel()
+        resetSession()
     }
 }
 

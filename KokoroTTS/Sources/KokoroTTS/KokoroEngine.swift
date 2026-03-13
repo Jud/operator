@@ -2,6 +2,7 @@ import Accelerate
 import CoreML
 import Foundation
 import NaturalLanguage
+import os
 
 /// High-quality text-to-speech engine using Kokoro-82M CoreML models.
 ///
@@ -49,11 +50,26 @@ public final class KokoroEngine: @unchecked Sendable {
         static let speed = "speed"
     }
 
+    private static let logger = Logger(
+        subsystem: "com.kokorotts", category: "KokoroEngine")
+
+    /// Threshold in seconds above which model.prediction() is considered slow
+    /// (likely ANE fallback to CPU/GPU).
+    private static let slowPredictionThreshold: TimeInterval = 0.150
+
     private let g2p: EnglishG2P
     private let g2pLock = NSLock()
+    private let synthesizeLock = NSLock()
     private let tokenizer: Tokenizer
     private let voiceStore: VoiceStore
     private let model: MLModel
+
+    // Pre-allocated MLMultiArray buffers reused across synthesis calls.
+    private let preInputIds: MLMultiArray
+    private let preMask: MLMultiArray
+    private let preRefS: MLMultiArray
+    private let preRandomPhases: MLMultiArray
+    private let preSpeed: MLMultiArray
 
     /// Creates a KokoroEngine from cached models.
     ///
@@ -80,6 +96,15 @@ public final class KokoroEngine: @unchecked Sendable {
         config.computeUnits = .cpuAndNeuralEngine
         let url = modelDirectory.appendingPathComponent(Self.modelName + ".mlmodelc")
         self.model = try MLModel(contentsOf: url, configuration: config)
+
+        let maxTokens = Self.maxTokenCount
+        self.preInputIds = try MLMultiArray(shape: [1, maxTokens as NSNumber], dataType: .int32)
+        self.preMask = try MLMultiArray(shape: [1, maxTokens as NSNumber], dataType: .int32)
+        self.preRefS = try MLMultiArray(
+            shape: [1, VoiceStore.styleDim as NSNumber], dataType: .float32)
+        self.preRandomPhases = try MLMultiArray(
+            shape: [1, Self.numPhases as NSNumber], dataType: .float32)
+        self.preSpeed = try MLMultiArray(shape: [1], dataType: .float32)
     }
 
     // MARK: - Synthesis
@@ -144,25 +169,13 @@ public final class KokoroEngine: @unchecked Sendable {
     /// at app startup to avoid a cold-start delay on the first synthesis call.
     /// Safe to skip — the first real synthesis will just be slower.
     public func warmUp() {
-        let maxTokens = Self.maxTokenCount
         do {
-            let (inputIds, mask) = try MLArrayHelpers.makeTokenInputs(
-                tokenIds: [Int](repeating: 0, count: maxTokens), maxLength: maxTokens)
-            let refS = try MLArrayHelpers.makeStyleArray(
-                [Float](repeating: 0, count: VoiceStore.styleDim))
-            let phases = try MLMultiArray(
-                shape: [1, Self.numPhases as NSNumber], dataType: .float32)
-            let speed = try MLArrayHelpers.makeSpeedArray(1.0)
-            let input = try MLDictionaryFeatureProvider(dictionary: [
-                Feature.inputIds: MLFeatureValue(multiArray: inputIds),
-                Feature.attentionMask: MLFeatureValue(multiArray: mask),
-                Feature.refS: MLFeatureValue(multiArray: refS),
-                Feature.randomPhases: MLFeatureValue(multiArray: phases),
-                Feature.speed: MLFeatureValue(multiArray: speed),
-            ])
-            _ = try model.prediction(from: input)
+            let dummyTokens = [Int](repeating: 0, count: Self.maxTokenCount)
+            let dummyStyle = [Float](repeating: 0, count: VoiceStore.styleDim)
+            _ = try synthesizeUnified(
+                tokenIds: dummyTokens, styleVector: dummyStyle, speed: 1.0)
         } catch {
-            // Warmup failure is non-fatal; first real call will be slower.
+            Self.logger.warning("Warmup failed (non-fatal): \(error.localizedDescription)")
         }
     }
 
@@ -197,30 +210,38 @@ public final class KokoroEngine: @unchecked Sendable {
                 tokenCount: tokenIds.count, maxTokens: Self.maxTokenCount)
         }
 
+        synthesizeLock.lock()
+        defer { synthesizeLock.unlock() }
+
         let maxTokens = Self.maxTokenCount
-        let (inputIds, maskArray) = try MLArrayHelpers.makeTokenInputs(
-            tokenIds: tokenIds, maxLength: maxTokens)
+        MLArrayHelpers.fillTokenInputs(
+            from: tokenIds, into: preInputIds, mask: preMask, maxLength: maxTokens)
+        MLArrayHelpers.fillStyleArray(from: styleVector, into: preRefS)
 
-        let refS = try MLArrayHelpers.makeStyleArray(styleVector)
-
-        let randomPhases = try MLMultiArray(
-            shape: [1, Self.numPhases as NSNumber], dataType: .float32)
-        let phasePtr = randomPhases.dataPointer.assumingMemoryBound(to: Float.self)
+        let phasePtr = preRandomPhases.dataPointer.assumingMemoryBound(to: Float.self)
         for i in 0..<Self.numPhases {
             phasePtr[i] = Float.random(in: 0..<(2 * .pi))
         }
 
-        let speedArray = try MLArrayHelpers.makeSpeedArray(speed)
+        preSpeed[0] = speed as NSNumber
 
         let input = try MLDictionaryFeatureProvider(dictionary: [
-            Feature.inputIds: MLFeatureValue(multiArray: inputIds),
-            Feature.attentionMask: MLFeatureValue(multiArray: maskArray),
-            Feature.refS: MLFeatureValue(multiArray: refS),
-            Feature.randomPhases: MLFeatureValue(multiArray: randomPhases),
-            Feature.speed: MLFeatureValue(multiArray: speedArray),
+            Feature.inputIds: MLFeatureValue(multiArray: preInputIds),
+            Feature.attentionMask: MLFeatureValue(multiArray: preMask),
+            Feature.refS: MLFeatureValue(multiArray: preRefS),
+            Feature.randomPhases: MLFeatureValue(multiArray: preRandomPhases),
+            Feature.speed: MLFeatureValue(multiArray: preSpeed),
         ])
 
+        let predictionStart = CFAbsoluteTimeGetCurrent()
         let output = try model.prediction(from: input)
+        let predictionElapsed = CFAbsoluteTimeGetCurrent() - predictionStart
+
+        if predictionElapsed > Self.slowPredictionThreshold {
+            let ms = String(format: "%.0f", predictionElapsed * 1_000)
+            Self.logger.warning(
+                "model.prediction() took \(ms)ms (possible ANE fallback to CPU/GPU)")
+        }
 
         guard let audio = output.featureValue(for: Feature.audio)?.multiArrayValue else {
             throw KokoroError.inferenceFailed("Missing audio output")
