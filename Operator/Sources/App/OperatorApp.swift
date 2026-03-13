@@ -165,7 +165,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         bootstrapTrigger()
         bootstrapDiscovery(terminalBridge: terminalBridge, reg: reg, aq: aq, vm: vm)
         wireVoicePreview()
-        ttsManager.speak("Operator is ready.", voice: vm.operatorVoice, prefix: "Operator")
+        ttsManager.speak("Operator is ready.", voice: vm.operatorVoice, prefix: "")
         Self.logger.info("Operator startup complete")
     }
 

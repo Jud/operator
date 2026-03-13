@@ -63,7 +63,8 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: playbackFormat)
         do {
             try audioEngine.start()
-            Self.logger.info("Audio engine started")
+            playerNode.play()
+            Self.logger.info("Audio engine started, player node armed")
         } catch {
             Self.logger.error("Failed to start audio engine: \(error)")
         }
@@ -85,6 +86,9 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     /// dispatches back to MainActor on completion.
     public func speak(_ text: String, voice: VoiceDescriptor, prefix: String, pitchMultiplier: Float) {
         cancelSynthesis()
+        // Flush any previously scheduled buffer, then re-arm.
+        playerNode.stop()
+        playerNode.play()
 
         let fullText = "\(prefix): \(text)"
         currentText = fullText
@@ -140,6 +144,7 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         }
 
         playerNode.stop()
+        playerNode.play()  // re-arm for next schedule
 
         // Map elapsed time to character position via phoneme durations
         let framesPerSecond = Double(KokoroEngine.sampleRate)
@@ -175,6 +180,7 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     public func stop() {
         cancelSynthesis()
         playerNode.stop()
+        playerNode.play()  // re-arm for next schedule
     }
 
     // MARK: - Private
@@ -207,13 +213,11 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         let audioDur = String(format: "%.1f", result.duration)
         Self.logger.info("Speaking: \"\(prefix): \(text.prefix(60))...\" (\(synthMs)ms synth, \(audioDur)s audio)")
 
-        playerNode.stop()
         playerNode.scheduleBuffer(buffer) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.handlePlaybackComplete()
             }
         }
-        playerNode.play()
     }
 
     private func handlePlaybackComplete() {

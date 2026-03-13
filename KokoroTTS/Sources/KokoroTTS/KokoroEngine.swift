@@ -383,8 +383,18 @@ public final class KokoroEngine: @unchecked Sendable {
 
         // 1. DC offset removal + high-pass at ~80Hz (single-pole IIR)
         let alpha = Self.hpAlpha
+        let prechargeCount = min(240, samples.count)  // 10ms at 24kHz
+
+        // Pre-charge: run filter backwards on first 10ms to warm up state
         var prev: Float = 0
         var prevOut: Float = 0
+        for i in stride(from: prechargeCount - 1, through: 0, by: -1) {
+            let x = samples[i]
+            prevOut = (x - prev) + alpha * prevOut
+            prev = x
+        }
+
+        // Forward pass with warmed-up state
         for i in 0..<samples.count {
             let x = samples[i]
             prevOut = (x - prev) + alpha * prevOut
@@ -394,7 +404,17 @@ public final class KokoroEngine: @unchecked Sendable {
 
         // 2. Presence boost biquad
         let c = Self.eqCoeffs
+
+        // Pre-charge biquad on reversed first 10ms
         var x1: Float = 0, x2: Float = 0, y1: Float = 0, y2: Float = 0
+        for i in stride(from: prechargeCount - 1, through: 0, by: -1) {
+            let x = samples[i]
+            let y = c.nb0 * x + c.nb1 * x1 + c.nb2 * x2 - c.na1 * y1 - c.na2 * y2
+            x2 = x1; x1 = x
+            y2 = y1; y1 = y
+        }
+
+        // Forward pass with warmed-up state
         for i in 0..<samples.count {
             let x = samples[i]
             let y = c.nb0 * x + c.nb1 * x1 + c.nb2 * x2 - c.na1 * y1 - c.na2 * y2

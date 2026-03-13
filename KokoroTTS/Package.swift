@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "KokoroTTS", targets: ["KokoroTTS"]),
+        .executable(name: "kokoro-say", targets: ["CLI"]),
     ],
     targets: [
         .target(
@@ -14,6 +15,11 @@ let package = Package(
             resources: [
                 .process("Resources"),
             ]
+        ),
+        .executableTarget(
+            name: "CLI",
+            dependencies: ["KokoroTTS"],
+            path: "Sources/CLI"
         ),
         .testTarget(
             name: "KokoroTTSTests",
