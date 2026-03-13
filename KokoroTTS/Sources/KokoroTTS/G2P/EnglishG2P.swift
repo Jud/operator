@@ -9,6 +9,7 @@ final class EnglishG2P {
     private let tagger: NLTagger
     private let lexicon: Lexicon
     private let unk: String
+    private let bart: BARTFallback?
 
     static let punctuationTags: Set<NLTag> = Set([
         .openQuote, .closeQuote, .openParenthesis, .closeParenthesis, .punctuation,
@@ -62,6 +63,8 @@ final class EnglishG2P {
         self.tagger = NLTagger(tagSchemes: [.nameTypeOrLexicalClass])
         self.lexicon = Lexicon(british: british)
         self.unk = unk
+
+        self.bart = BARTFallback.fromBundle()
     }
 
     private func tokenContext(_ ctx: TokenContext, ps: String?, token: MToken) -> TokenContext {
@@ -470,10 +473,14 @@ final class EnglishG2P {
         return parts.isEmpty ? [word] : parts
     }
 
-    /// OOV fallback: try CamelCase splitting with dictionary lookup,
-    /// then fall back to letter-by-letter spelling via getNNP.
+    /// OOV fallback: BART neural G2P → CamelCase splitting → letter spelling.
     private func fallback(_ word: MToken) -> (phoneme: String?, rating: Int?) {
         let text = word.text
+
+        // Layer 0: BART neural G2P (best quality for unknown words)
+        if let result = bart?.predict(text.lowercased()) {
+            return (result, 2)
+        }
 
         // Layer 1: CamelCase/compound splitting — each part looked up individually
         let parts = splitCamelCase(text)
