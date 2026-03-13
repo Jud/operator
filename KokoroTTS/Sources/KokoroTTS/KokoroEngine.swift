@@ -33,7 +33,7 @@ public enum ModelBucket: CaseIterable, Sendable, Comparable {
     /// Assumes `available` is sorted ascending (which `activeBuckets` always is).
     public static func select(forTokenCount count: Int, available: [ModelBucket]) -> ModelBucket? {
         assert(available == available.sorted(), "available must be sorted ascending")
-        return available.first { $0.maxTokens >= count }
+        return available.first { count <= $0.maxTokens }
     }
 }
 
@@ -56,14 +56,15 @@ public final class KokoroEngine: @unchecked Sendable {
     /// Output sample rate in Hz (24kHz).
     public static let sampleRate = 24_000
 
-    /// Audio samples per duration frame (sampleRate / vocoder frame rate).
-    public static let hopSize = sampleRate / 24
+    /// Audio samples per duration frame (from model.mil: total_frames * 600).
+    public static let hopSize = 600
 
     /// Valid speed range for synthesis.
     public static let speedRange: ClosedRange<Float> = 0.5...2.0
 
     /// Number of random phase channels for the iSTFTNet vocoder.
     private static let numPhases = 9
+
 
     // CoreML model input/output feature names.
     private enum Feature {
@@ -170,8 +171,8 @@ public final class KokoroEngine: @unchecked Sendable {
 
     /// Synthesize text to PCM audio samples.
     ///
-    /// Automatically splits long text into sentences when it exceeds the model's
-    /// token limit. Each sentence is synthesized separately and concatenated.
+    /// Splits text into sentences, merges consecutive short ones that fit in a
+    /// single bucket for better prosody, then synthesizes each chunk.
     ///
     /// - Parameters:
     ///   - text: Text to speak (any length).
@@ -179,24 +180,47 @@ public final class KokoroEngine: @unchecked Sendable {
     ///     See ``availableVoices`` for valid names.
     ///   - speed: Speech rate multiplier (0.5 = half speed, 2.0 = double speed).
     ///     Clamped to 0.5...2.0. Default is 1.0.
+    ///   - rawAudio: If true, skip post-processing (HP filter, EQ, normalization).
     /// - Returns: Synthesis result with PCM samples and metadata.
     /// - Throws: ``KokoroError/voiceNotFound(_:)`` if the voice doesn't exist.
     public func synthesize(
-        text: String, voice: String, speed: Float = 1.0, bucket: ModelBucket? = nil
+        text: String, voice: String, speed: Float = 1.0,
+        bucket: ModelBucket? = nil, rawAudio: Bool = false
     ) throws -> SynthesisResult {
         let t0 = CFAbsoluteTimeGetCurrent()
-        let styleVector = try voiceStore.embedding(for: voice)
         let clampedSpeed = min(max(speed, Self.speedRange.lowerBound), Self.speedRange.upperBound)
 
+        // 1. Split, phonemize, and encode all sentences.
+        let sentences = splitSentences(text)
+        let tokenized = sentences.map { tokenizer.encode(lockedPhonemize($0)) }
+
+        // 2. Merge consecutive chunks that fit in one bucket.
+        let maxTokens = activeBuckets.last!.maxTokens
+        var mergedIds: [[Int]] = []
+        var currentIds: [Int] = []
+        for ids in tokenized {
+            let combined = currentIds.isEmpty
+                ? ids
+                : Array(currentIds.dropLast()) + Array(ids.dropFirst())
+            if combined.count <= maxTokens {
+                currentIds = combined
+            } else {
+                if !currentIds.isEmpty { mergedIds.append(currentIds) }
+                currentIds = ids
+            }
+        }
+        if !currentIds.isEmpty { mergedIds.append(currentIds) }
+
+        // 3. Synthesize each merged chunk.
         var allSamples: [Float] = []
         var allDurations: [Int] = []
         var totalTokens = 0
         var selectedBucket: ModelBucket?
 
-        for sentence in splitSentences(text) {
-            let phonemes = lockedPhonemize(sentence)
-            let tokenIds = tokenizer.encode(phonemes)
+        for tokenIds in mergedIds {
             totalTokens += tokenIds.count
+
+            let styleVector = try voiceStore.embedding(for: voice, tokenCount: tokenIds.count)
 
             let useBucket: ModelBucket
             if let forced = bucket {
@@ -206,8 +230,6 @@ public final class KokoroEngine: @unchecked Sendable {
             {
                 useBucket = auto
             } else {
-                // Token count exceeds all buckets — use largest available.
-                // activeBuckets is guaranteed non-empty by init.
                 useBucket = activeBuckets.last!
             }
             selectedBucket = useBucket
@@ -215,16 +237,16 @@ public final class KokoroEngine: @unchecked Sendable {
             var (samples, durations) = try synthesizeUnified(
                 tokenIds: tokenIds, styleVector: styleVector, speed: clampedSpeed,
                 bucket: useBucket)
-            trimTrailingArtifacts(&samples)
-            if allSamples.isEmpty {
-                allSamples = samples
-            } else {
-                allSamples.append(contentsOf: samples)
+
+            applyFades(&samples)
+            if !allSamples.isEmpty {
+                allSamples.append(contentsOf: [Float](repeating: 0, count: 2400))
             }
+            allSamples.append(contentsOf: samples)
             allDurations.append(contentsOf: durations)
         }
 
-        postProcess(&allSamples)
+        if !rawAudio { postProcess(&allSamples) }
 
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
         return SynthesisResult(
@@ -312,13 +334,18 @@ public final class KokoroEngine: @unchecked Sendable {
 
         res.speed[0] = speed as NSNumber
 
-        let input = try MLDictionaryFeatureProvider(dictionary: [
+        // Only include speed input if the model accepts it (speed-injected models).
+        var dict: [String: MLFeatureValue] = [
             Feature.inputIds: MLFeatureValue(multiArray: res.inputIds),
             Feature.attentionMask: MLFeatureValue(multiArray: res.mask),
             Feature.refS: MLFeatureValue(multiArray: res.refS),
             Feature.randomPhases: MLFeatureValue(multiArray: res.randomPhases),
-            Feature.speed: MLFeatureValue(multiArray: res.speed),
-        ])
+        ]
+        let hasSpeed = res.model.modelDescription.inputDescriptionsByName[Feature.speed] != nil
+        if hasSpeed {
+            dict[Feature.speed] = MLFeatureValue(multiArray: res.speed)
+        }
+        let input = try MLDictionaryFeatureProvider(dictionary: dict)
 
         let predictionStart = CFAbsoluteTimeGetCurrent()
         let output = try res.model.prediction(from: input)
@@ -344,16 +371,15 @@ public final class KokoroEngine: @unchecked Sendable {
             durations = []
         }
 
-        // Use pred_dur to compute expected audio length.
-        // Each duration unit = sampleRate/24 audio samples (hop size).
+        // Prefer model's own audio_length_samples output (exact); fall back to pred_dur * hopSize.
         let validSamples: Int
-        if !durations.isEmpty {
-            let totalFrames = durations.reduce(0, +)
-            validSamples = min(totalFrames * Self.hopSize, audio.count)
-        } else if let lengthArray = output.featureValue(for: Feature.audioLength)?.multiArrayValue,
-            lengthArray[0].intValue > 0, lengthArray[0].intValue < audio.count
+        if let lengthArray = output.featureValue(for: Feature.audioLength)?.multiArrayValue,
+            lengthArray[0].intValue > 0, lengthArray[0].intValue <= audio.count
         {
             validSamples = lengthArray[0].intValue
+        } else if !durations.isEmpty {
+            let totalFrames = durations.reduce(0, +)
+            validSamples = min(totalFrames * Self.hopSize + 600, audio.count)
         } else {
             validSamples = audio.count
         }
@@ -362,95 +388,14 @@ public final class KokoroEngine: @unchecked Sendable {
         return (samples, durations)
     }
 
-    /// Trim trailing silence and artifacts in-place.
-    ///
-    /// Uses relative thresholds (percentage of peak amplitude) so it works
-    /// on raw model output before normalization. Two passes:
-    /// 1. Find the click (highest delta window followed by amplitude drop)
-    /// 2. Find the first post-speech silence gap preceded by real speech
-    private func trimTrailingArtifacts(_ samples: inout [Float]) {
-        let windowSize = 2400  // 100ms at 24kHz
-        var validCount = samples.count
-        guard validCount > windowSize * 3 else { return }
-
-        // Compute peak amplitude for relative thresholds.
-        var peak: Float = 0
-        for s in samples { peak = max(peak, abs(s)) }
-        guard peak > 1e-6 else { return }
-        let silenceThreshold = peak * 0.02  // 2% of peak = silence
-        let speechThreshold = peak * 0.15   // 15% of peak = speech
-
-        // --- Pass 1: Click detection (scan back third of audio) ---
-        let searchFrom = validCount / 3
-        let windowCount = (validCount - searchFrom) / windowSize
-        if windowCount > 2 {
-            struct WindowStats {
-                let start: Int
-                var maxDelta: Float = 0
-                var maxAmp: Float = 0
-            }
-            let windows = (0..<windowCount).map { w -> WindowStats in
-                let wStart = searchFrom + w * windowSize
-                var stats = WindowStats(start: wStart)
-                for j in wStart..<(wStart + windowSize) {
-                    stats.maxAmp = max(stats.maxAmp, abs(samples[j]))
-                    if j > wStart {
-                        stats.maxDelta = max(stats.maxDelta, abs(samples[j] - samples[j - 1]))
-                    }
-                }
-                return stats
-            }
-
-            var bestClickIdx = -1
-            var bestDelta: Float = 0
-            for w in 0..<(windowCount - 2) {
-                let delta = windows[w].maxDelta
-                guard delta > peak * 0.1 else { continue }
-                let amp = windows[w].maxAmp
-                let nextAmp = max(windows[w + 1].maxAmp, windows[w + 2].maxAmp)
-                if nextAmp < amp * 0.5 && delta > bestDelta {
-                    bestDelta = delta
-                    bestClickIdx = w
-                }
-            }
-
-            if bestClickIdx >= 0 {
-                validCount = windows[bestClickIdx].start
-            }
-        }
-
-        // --- Pass 2: End-of-speech silence gap ---
-        let baseLookback = max(5, 12000 / windowSize)
-        let lookback = min(baseLookback, validCount / windowSize / 3)
-        let pass2Count = validCount / windowSize
-        if pass2Count > lookback {
-            let pass2Stats = (0..<pass2Count).map { w -> (start: Int, maxAmp: Float) in
-                let wStart = w * windowSize
-                var ma: Float = 0
-                for j in wStart..<min(wStart + windowSize, validCount) {
-                    ma = max(ma, abs(samples[j]))
-                }
-                return (wStart, ma)
-            }
-            for w in lookback..<pass2Count {
-                if pass2Stats[w].maxAmp < silenceThreshold {
-                    let hasSpeech = (max(0, w - lookback)..<w).contains {
-                        pass2Stats[$0].maxAmp > speechThreshold
-                    }
-                    if hasSpeech {
-                        validCount = pass2Stats[w].start
-                        break
-                    }
-                }
-            }
-        }
-
-        if validCount < samples.count {
-            samples.removeSubrange(validCount..<samples.count)
-        }
-
-        // Fade-out: 20ms (always applied)
-        let fadeOut = min(480, samples.count)
+    /// Apply fade-in and fade-out to suppress transients.
+    private func applyFades(_ samples: inout [Float]) {
+        guard samples.count > 0 else { return }
+        // Fade-in: 5ms to suppress onset transient.
+        let fadeIn = min(120, samples.count)
+        for i in 0..<fadeIn { samples[i] *= Float(i) / Float(fadeIn) }
+        // Fade-out: 50ms for natural ending.
+        let fadeOut = min(1200, samples.count)
         let fadeStart = samples.count - fadeOut
         for i in 0..<fadeOut { samples[fadeStart + i] *= Float(fadeOut - i) / Float(fadeOut) }
     }

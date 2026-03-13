@@ -25,6 +25,13 @@ if let idx = args.firstIndex(of: "--wav"), idx + 1 < args.count {
     args.removeSubrange(idx...idx + 1)
 }
 
+// Parse --raw flag (skip post-processing)
+var rawAudio = false
+if let idx = args.firstIndex(of: "--raw") {
+    rawAudio = true
+    args.remove(at: idx)
+}
+
 // Parse --bucket flag (force a specific model bucket)
 var forcedBucket: ModelBucket?
 if let idx = args.firstIndex(of: "--bucket"), idx + 1 < args.count {
@@ -41,7 +48,7 @@ if let idx = args.firstIndex(of: "--bucket"), idx + 1 < args.count {
 let text = args.joined(separator: " ")
 
 guard !text.isEmpty else {
-    print("Usage: kokoro-say [--voice NAME] [--debug] [--wav out.wav] [--bucket small|medium] <text>")
+    print("Usage: kokoro-say [--voice NAME] [--debug] [--raw] [--wav out.wav] [--bucket small|medium] <text>")
     exit(1)
 }
 
@@ -64,7 +71,7 @@ if debug {
     print("Loaded buckets: \(bucketNames)")
 }
 
-let result = try engine.synthesize(text: text, voice: voice, bucket: forcedBucket)
+let result = try engine.synthesize(text: text, voice: voice, bucket: forcedBucket, rawAudio: rawAudio)
 
 if debug {
     if let bucket = result.bucket {
@@ -85,8 +92,22 @@ if debug {
     for s in result.samples { globalPeak = max(globalPeak, abs(s)) }
     print(String(format: "\n  Global peak: %.3f", globalPeak))
     print(String(format: "  Total samples: %d (%.1fs)", result.samples.count, result.duration))
-    print(String(format: "  Token durations: %@",
-        result.tokenDurations.prefix(10).map(String.init).joined(separator: ", ")))
+    print(String(format: "  Token durations (%d): %@", result.tokenDurations.count,
+        result.tokenDurations.map(String.init).joined(separator: ", ")))
+
+    // Per-token amplitude profile
+    let hopSize = KokoroEngine.hopSize
+    var cumFrames = 0
+    for (i, dur) in result.tokenDurations.enumerated() {
+        let startSample = cumFrames * hopSize
+        let endSample = min((cumFrames + dur) * hopSize, result.samples.count)
+        var peak: Float = 0
+        if startSample < endSample {
+            for j in startSample..<endSample { peak = max(peak, abs(result.samples[j])) }
+        }
+        print(String(format: "    t%02d: dur=%2d  %6d-%6d  peak=%.3f", i, dur, startSample, endSample, peak))
+        cumFrames += dur
+    }
 }
 
 let bucketTag = result.bucket.map { " \($0.modelName)" } ?? ""
