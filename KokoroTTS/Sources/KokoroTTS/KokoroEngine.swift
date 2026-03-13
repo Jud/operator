@@ -29,8 +29,10 @@ public enum ModelBucket: CaseIterable, Sendable, Comparable {
 
     /// Select the smallest bucket that fits the token count.
     /// Returns nil if no bucket is large enough.
+    ///
+    /// Assumes `available` is sorted ascending (which `activeBuckets` always is).
     public static func select(forTokenCount count: Int, available: [ModelBucket]) -> ModelBucket? {
-        available.sorted().first { $0.maxTokens >= count }
+        available.first { $0.maxTokens >= count }
     }
 }
 
@@ -78,7 +80,6 @@ public final class KokoroEngine: @unchecked Sendable {
     /// Per-bucket CoreML model and pre-allocated buffers.
     private struct BucketResources {
         let model: MLModel
-        let bucket: ModelBucket
         let inputIds: MLMultiArray
         let mask: MLMultiArray
         let refS: MLMultiArray
@@ -100,13 +101,8 @@ public final class KokoroEngine: @unchecked Sendable {
     private let voiceStore: VoiceStore
     private let bucketResources: [ModelBucket: BucketResources]
 
-    /// Which buckets are loaded and available for synthesis.
+    /// Which buckets are loaded and available for synthesis (sorted ascending).
     public let activeBuckets: [ModelBucket]
-
-    /// Maximum token count across all loaded buckets.
-    public var maxTokenCount: Int {
-        activeBuckets.map(\.maxTokens).max() ?? 0
-    }
 
     /// Creates a KokoroEngine from cached models.
     ///
@@ -144,7 +140,6 @@ public final class KokoroEngine: @unchecked Sendable {
                 let maxTokens = bucket.maxTokens
                 let res = BucketResources(
                     model: model,
-                    bucket: bucket,
                     inputIds: try MLMultiArray(
                         shape: [1, maxTokens as NSNumber], dataType: .int32),
                     mask: try MLMultiArray(
@@ -209,9 +204,11 @@ public final class KokoroEngine: @unchecked Sendable {
                 forTokenCount: tokenIds.count, available: activeBuckets)
             {
                 useBucket = auto
-            } else {
+            } else if let largest = activeBuckets.last {
                 // Token count exceeds all buckets — use largest available
-                useBucket = activeBuckets.max()!
+                useBucket = largest
+            } else {
+                continue
             }
             selectedBucket = useBucket
 

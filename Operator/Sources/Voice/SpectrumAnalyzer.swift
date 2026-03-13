@@ -31,6 +31,7 @@ internal final class SpectrumAnalyzer: @unchecked Sendable {
     private var imagp: [Float]
     private var magnitudes: [Float]
     private var bands: [Float]
+    private var halfSorted: [Float]
 
     /// Creates a spectrum analyzer for a given frame count and sample rate.
     ///
@@ -57,6 +58,7 @@ internal final class SpectrumAnalyzer: @unchecked Sendable {
         self.imagp = [Float](repeating: 0, count: frameCount / 2)
         self.magnitudes = [Float](repeating: 0, count: frameCount / 2)
         self.bands = [Float](repeating: 0, count: Self.bandCount)
+        self.halfSorted = [Float](repeating: 0, count: Self.bandCount / 2)
 
         // Compute half the bands from spectrum, then mirror for symmetric output.
         // Left half = low→speech center, right half = mirror.
@@ -166,12 +168,12 @@ internal final class SpectrumAnalyzer: @unchecked Sendable {
         // Sort bands by energy descending so the tallest always lands at center,
         // creating a natural mountain shape. Mirrored for symmetry.
         let halfBands = Self.bandCount / 2
-        var halfValues = Array(bands[0..<halfBands])
-        halfValues.sort(by: >)
+        for idx in 0..<halfBands { halfSorted[idx] = bands[idx] }
+        halfSorted[0..<halfBands].sort(by: >)
 
         for idx in 0..<halfBands {
-            bands[halfBands - 1 - idx] = halfValues[idx]  // left: center → edge
-            bands[halfBands + idx] = halfValues[idx]  // right: center → edge
+            bands[halfBands - 1 - idx] = halfSorted[idx]  // left: center → edge
+            bands[halfBands + idx] = halfSorted[idx]  // right: center → edge
         }
     }
 }
