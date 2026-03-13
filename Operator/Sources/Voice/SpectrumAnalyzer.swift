@@ -163,14 +163,15 @@ internal final class SpectrumAnalyzer: @unchecked Sendable {
     }
 
     private func mirrorBands() {
-        // Mirror: low freqs at edges, high freqs (speech) at center.
-        // Copy half-band values first to avoid in-place read-after-write corruption.
+        // Sort bands by energy descending so the tallest always lands at center,
+        // creating a natural mountain shape. Mirrored for symmetry.
         let halfBands = Self.bandCount / 2
-        let halfValues = Array(bands[0..<halfBands])
+        var halfValues = Array(bands[0..<halfBands])
+        halfValues.sort(by: >)
+
         for idx in 0..<halfBands {
-            let specVal = halfValues[halfBands - 1 - idx]
-            bands[idx] = specVal  // left side
-            bands[Self.bandCount - 1 - idx] = specVal  // right side (mirror)
+            bands[halfBands - 1 - idx] = halfValues[idx]  // left: center → edge
+            bands[halfBands + idx] = halfValues[idx]  // right: center → edge
         }
     }
 }

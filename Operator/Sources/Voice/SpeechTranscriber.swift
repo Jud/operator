@@ -169,17 +169,17 @@ public final class SpeechTranscriber: SpeechTranscribing {
             bufferSize: 1_024,
             format: recordingFormat
         ) { @Sendable buffer, _ in
-            capturedEngine.append(buffer)
+            // Deep-copy first — AVAudioEngine recycles buffer memory after tap returns.
+            // Share the copy between the recognizer and WAV export.
+            if let copy = Self.copyBuffer(buffer) {
+                capturedEngine.append(copy)
+                buffers.withLock { $0.append(copy) }
+            }
 
-            // Push spectrum band levels for waveform visualization.
+            // Analyzer reads original buffer (valid for the tap callback's duration).
             if let monitor, let analyzer {
                 let bands = analyzer.analyze(buffer)
                 monitor.pushBands(bands)
-            }
-
-            // Copy the buffer for WAV export.
-            if let copy = Self.copyBuffer(buffer) {
-                buffers.withLock { $0.append(copy) }
             }
         }
 

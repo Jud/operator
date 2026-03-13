@@ -111,58 +111,33 @@ public final class WaveformModel {
         for i in 0..<count {
             let raw = CGFloat(rawBands[i])
             smoothedBands[i] += (raw - smoothedBands[i]) * Self.smoothingFactor
-
-            // Alternate above/below center line for waveform look.
-            let sign: CGFloat = i.isMultiple(of: 2) ? 1 : -1
-            samples[i] = smoothedBands[i] * sign
+            samples[i] = smoothedBands[i]
         }
     }
 }
 
-/// SwiftUI view that renders a thin animated waveform line indicator.
+/// SwiftUI view that renders a symmetric filled waveform driven by frequency bands.
 ///
-/// Driven by frequency band levels during recording. Rendered as a smooth
-/// cubic Bezier path with round line caps for a refined appearance.
+/// Each sample (0-1) is drawn as a vertical extent mirrored above and below
+/// the center line, connected with smooth Bezier curves to form a filled shape.
 public struct WaveformView: View {
     var model: WaveformModel
 
-    private let waveformWidth: CGFloat = 40
-    private let waveformHeight: CGFloat = 18
+    private let waveformWidth: CGFloat = 38
+    private let waveformHeight: CGFloat = 14
 
     /// The waveform view rendering animated sample points.
     public var body: some View {
         Canvas { context, size in
-            let midY = size.height / 2
-            let amplitude = waveformHeight / 2
             let samples = model.samples
-            guard samples.count >= 2 else {
-                return
-            }
-
-            let step = size.width / CGFloat(samples.count - 1)
-            var path = Path()
-            var prevX = CGFloat.zero
-            var prevY = midY - samples[0] * amplitude
-            path.move(to: CGPoint(x: prevX, y: prevY))
-
-            for i in 1..<samples.count {
-                let x = CGFloat(i) * step
-                let y = midY - samples[i] * amplitude
-                let cpX = (prevX + x) / 2
-                path.addCurve(
-                    to: CGPoint(x: x, y: y),
-                    control1: CGPoint(x: cpX, y: prevY),
-                    control2: CGPoint(x: cpX, y: y)
-                )
-                prevX = x
-                prevY = y
-            }
-
-            context.stroke(
-                path,
-                with: .color(.white),
-                style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
+            guard samples.count >= 2
+            else { return }
+            let path = Self.symmetricPath(
+                samples: samples,
+                size: size,
+                amplitude: waveformHeight / 2
             )
+            context.fill(path, with: .color(.white.opacity(0.9)))
         }
         .frame(width: waveformWidth, height: waveformHeight)
         .padding(.horizontal, 8)
@@ -171,6 +146,51 @@ public struct WaveformView: View {
             Capsule()
                 .fill(Color.black.opacity(0.55))
         )
+    }
+
+    private static func symmetricPath(
+        samples: [CGFloat],
+        size: CGSize,
+        amplitude: CGFloat
+    ) -> Path {
+        let midY = size.height / 2
+        let step = size.width / CGFloat(samples.count - 1)
+        var path = Path()
+        var prevX: CGFloat = 0
+        var prevY = midY - samples[0] * amplitude
+
+        // Top edge: left to right.
+        path.move(to: CGPoint(x: 0, y: prevY))
+        for i in 1..<samples.count {
+            let x = CGFloat(i) * step
+            let y = midY - samples[i] * amplitude
+            let cpX = (prevX + x) / 2
+            path.addCurve(
+                to: CGPoint(x: x, y: y),
+                control1: CGPoint(x: cpX, y: prevY),
+                control2: CGPoint(x: cpX, y: y)
+            )
+            prevX = x
+            prevY = y
+        }
+
+        // Bottom edge: right to left (mirror), closing the shape.
+        prevY = midY + samples[samples.count - 1] * amplitude
+        path.addLine(to: CGPoint(x: prevX, y: prevY))
+        for i in stride(from: samples.count - 2, through: 0, by: -1) {
+            let x = CGFloat(i) * step
+            let y = midY + samples[i] * amplitude
+            let cpX = (prevX + x) / 2
+            path.addCurve(
+                to: CGPoint(x: x, y: y),
+                control1: CGPoint(x: cpX, y: prevY),
+                control2: CGPoint(x: cpX, y: y)
+            )
+            prevX = x
+            prevY = y
+        }
+        path.closeSubpath()
+        return path
     }
 }
 
@@ -186,8 +206,8 @@ public struct WaveformView: View {
 @MainActor
 public final class WaveformPanel: NSPanel {
     private static let logger = Log.logger(for: "WaveformPanel")
-    private static let panelWidth: CGFloat = 56
-    private static let panelHeight: CGFloat = 26
+    private static let panelWidth: CGFloat = 50
+    private static let panelHeight: CGFloat = 22
 
     private let waveformModel = WaveformModel()
     private let levelMonitor: AudioLevelMonitor?
