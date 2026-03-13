@@ -25,13 +25,11 @@ internal struct AudioFormatConverterTests {
             channelData[idx] = sin(Float(idx) * 2 * .pi * 440 / 48_000)
         }
 
-        let result = converter.convert(buffer)
-        #expect(result != nil)
-
-        if let samples = result {
-            #expect(samples.count > 1_200)
-            #expect(samples.count < 1_800)
-        }
+        var samples: [Float] = []
+        let success = converter.appendConverted(buffer, to: &samples)
+        #expect(success)
+        #expect(samples.count > 1_200)
+        #expect(samples.count < 1_800)
     }
 
     @Test("converts 48kHz stereo to 16kHz mono")
@@ -56,12 +54,11 @@ internal struct AudioFormatConverterTests {
             }
         }
 
-        let result = converter.convert(buffer)
-        #expect(result != nil)
-        if let samples = result {
-            #expect(samples.count > 1_200)
-            #expect(samples.count < 1_800)
-        }
+        var samples: [Float] = []
+        let success = converter.appendConverted(buffer, to: &samples)
+        #expect(success)
+        #expect(samples.count > 1_200)
+        #expect(samples.count < 1_800)
     }
 
     @Test("handles empty buffer")
@@ -80,7 +77,8 @@ internal struct AudioFormatConverterTests {
         let buffer = try #require(AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: 0))
         buffer.frameLength = 0
 
-        let result = converter.convert(buffer)
-        #expect(result == nil || result?.isEmpty == true)
+        var samples: [Float] = []
+        let success = converter.appendConverted(buffer, to: &samples)
+        #expect(!success || samples.isEmpty)
     }
 }

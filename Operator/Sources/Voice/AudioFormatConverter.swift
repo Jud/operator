@@ -41,13 +41,15 @@ internal final class AudioFormatConverter: @unchecked Sendable {
         self.ratio = output.sampleRate / inputFormat.sampleRate
     }
 
-    /// Convert a captured audio buffer to 16kHz mono Float32 samples.
+    /// Convert a captured audio buffer and append the result to the destination array.
     ///
-    /// - Parameter buffer: The input buffer from the audio tap.
-    /// - Returns: The converted samples, or nil if conversion fails.
-    func convert(_ buffer: AVAudioPCMBuffer) -> [Float]? {
+    /// - Parameters:
+    ///   - buffer: The input buffer from the audio tap.
+    ///   - destination: The array to append converted samples to.
+    /// - Returns: True if samples were appended, false on failure or empty input.
+    func appendConverted(_ buffer: AVAudioPCMBuffer, to destination: inout [Float]) -> Bool {
         guard buffer.frameLength > 0 else {
-            return nil
+            return false
         }
 
         let needed = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 1
@@ -56,7 +58,7 @@ internal final class AudioFormatConverter: @unchecked Sendable {
             outBuf = existing
         } else {
             guard let buf = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: needed) else {
-                return nil
+                return false
             }
             reusableBuffer = buf
             outBuf = buf
@@ -77,16 +79,17 @@ internal final class AudioFormatConverter: @unchecked Sendable {
         }
 
         if error != nil {
-            return nil
+            return false
         }
 
         guard let channelData = outBuf.floatChannelData?[0] else {
-            return nil
+            return false
         }
         let count = Int(outBuf.frameLength)
         guard count > 0 else {
-            return nil
+            return false
         }
-        return Array(UnsafeBufferPointer(start: channelData, count: count))
+        destination.append(contentsOf: UnsafeBufferPointer(start: channelData, count: count))
+        return true
     }
 }

@@ -30,33 +30,25 @@ public enum WhisperKitModelManager {
         return appSupport.appendingPathComponent("com.operator/models/whisperkit", isDirectory: true)
     }()
 
-    /// Check if a model variant has been downloaded.
-    ///
-    /// - Parameter variant: The model variant name (e.g. "openai_whisper-large-v3_turbo").
-    /// - Returns: True if the model folder exists and contains at least one file.
-    public static func modelAvailable(_ variant: String) -> Bool {
-        let folder = modelDirectory.appendingPathComponent(variant)
-        guard FileManager.default.fileExists(atPath: folder.path) else {
-            return false
-        }
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        return !contents.isEmpty
-    }
-
-    /// Check if any model is available.
-    public static func anyModelAvailable() -> Bool {
-        availableModels.contains { modelAvailable($0) }
-    }
-
     /// Path to a specific downloaded model.
     ///
     /// - Parameter variant: The model variant name.
     /// - Returns: The folder path, or nil if the model isn't downloaded.
     public static func modelPath(_ variant: String) -> String? {
-        guard modelAvailable(variant) else {
+        let folder = modelDirectory.appendingPathComponent(variant)
+        guard FileManager.default.fileExists(atPath: folder.path) else {
             return nil
         }
-        return modelDirectory.appendingPathComponent(variant).path
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return contents.isEmpty ? nil : folder.path
+    }
+
+    /// Check if a model variant has been downloaded.
+    ///
+    /// - Parameter variant: The model variant name (e.g. "openai_whisper-large-v3_turbo").
+    /// - Returns: True if the model folder exists and contains at least one file.
+    public static func modelAvailable(_ variant: String) -> Bool {
+        modelPath(variant) != nil
     }
 
     /// Download a model variant using WhisperKit's built-in downloader.

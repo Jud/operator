@@ -25,7 +25,7 @@ public struct SettingsView: View {
 
     /// Selected STT engine.
     @AppStorage("sttEngine")
-    private var sttEngine: String = STTEnginePreference.auto.rawValue
+    private var sttEngine: STTEnginePreference = .auto
 
     /// Selected WhisperKit model variant.
     @AppStorage("whisperKitModel")
@@ -36,6 +36,7 @@ public struct SettingsView: View {
     @State private var inputDevices: [AudioDevice] = []
     @State private var isDownloadingModel = false
     @State private var downloadError: String?
+    @State private var modelStatus: [String: Bool] = [:]
 
     /// The view body rendering the settings form.
     public var body: some View {
@@ -68,7 +69,10 @@ extension SettingsView {
         }
         .formStyle(.grouped)
         .frame(width: 450, height: 560)
-        .onAppear { refreshDevices() }
+        .onAppear {
+            refreshDevices()
+            refreshModelStatus()
+        }
     }
 
     private var audioDeviceSection: some View {
@@ -101,12 +105,12 @@ extension SettingsView {
     private var speechRecognitionSection: some View {
         Section("Speech Recognition") {
             Picker("Engine", selection: $sttEngine) {
-                Text("Auto").tag(STTEnginePreference.auto.rawValue)
-                Text("Apple Speech").tag(STTEnginePreference.apple.rawValue)
-                Text("WhisperKit").tag(STTEnginePreference.whisperKit.rawValue)
+                Text("Auto").tag(STTEnginePreference.auto)
+                Text("Apple Speech").tag(STTEnginePreference.apple)
+                Text("WhisperKit").tag(STTEnginePreference.whisperKit)
             }
 
-            if sttEngine != STTEnginePreference.apple.rawValue {
+            if sttEngine != .apple {
                 whisperKitModelSection
             }
 
@@ -125,7 +129,7 @@ extension SettingsView {
             ForEach(WhisperKitModelManager.availableModels, id: \.self) { model in
                 HStack {
                     Text(model)
-                    if WhisperKitModelManager.modelAvailable(model) {
+                    if modelStatus[model] == true {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                             .font(.caption)
@@ -135,7 +139,7 @@ extension SettingsView {
             }
         }
 
-        if !WhisperKitModelManager.modelAvailable(whisperKitModel) {
+        if modelStatus[whisperKitModel] != true {
             HStack {
                 Button(isDownloadingModel ? "Downloading..." : "Download Model") {
                     downloadModel()
@@ -216,6 +220,14 @@ extension SettingsView {
         inputDevices = AudioDeviceManager.inputDevices()
     }
 
+    private func refreshModelStatus() {
+        modelStatus = Dictionary(
+            uniqueKeysWithValues: WhisperKitModelManager.availableModels.map {
+                ($0, WhisperKitModelManager.modelAvailable($0))
+            }
+        )
+    }
+
     private func downloadModel() {
         isDownloadingModel = true
         downloadError = nil
@@ -224,6 +236,7 @@ extension SettingsView {
             do {
                 try await WhisperKitModelManager.download(variant: model)
                 isDownloadingModel = false
+                refreshModelStatus()
             } catch {
                 downloadError = "Download failed: \(error.localizedDescription)"
                 isDownloadingModel = false

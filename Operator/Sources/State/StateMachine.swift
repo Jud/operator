@@ -159,7 +159,6 @@ public final class StateMachine {
         )
 
         Self.logger.info("StateMachine initialized in IDLE state")
-        refreshContextualStrings()
     }
 
     // MARK: - Trigger Callbacks

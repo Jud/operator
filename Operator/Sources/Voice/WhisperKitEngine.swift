@@ -97,10 +97,16 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             state?.converter = conv
             return conv
         }
-        guard let samples = converter?.convert(buffer) else {
+        guard let converter else {
             return
         }
-        sessionLock.withLock { $0?.audioSamples.append(contentsOf: samples) }
+        sessionLock.withLock { state in
+            guard var session = state else {
+                return
+            }
+            _ = converter.appendConverted(buffer, to: &session.audioSamples)
+            state = session
+        }
     }
 
     /// Finish recording and return the transcribed text.

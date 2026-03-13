@@ -431,7 +431,6 @@ private func benchmarkTTSRoundtrip() async {
             // Feed to SFSpeechRecognizer.
             let recognized = await recognizeFromBuffer(
                 buffer,
-                format: format,
                 recognizer: recognizer
             )
 
@@ -476,7 +475,6 @@ private func benchmarkTTSRoundtrip() async {
 /// Recognize speech from an audio buffer using SFSpeechRecognizer.
 private func recognizeFromBuffer(
     _ buffer: AVAudioPCMBuffer,
-    format: AVAudioFormat,
     recognizer: SFSpeechRecognizer
 ) async -> String? {
     let request = SFSpeechAudioBufferRecognitionRequest()
@@ -504,11 +502,8 @@ private func recognizeFromBuffer(
 }
 
 /// Levenshtein distance ratio (0.0 = completely different, 1.0 = identical).
-private func levenshteinRatio(_ a: String, _ b: String) -> Double {
-    let maxLen = max(a.count, b.count)
-    guard maxLen > 0 else { return 1.0 }
-    let distance = VocabularyCorrector.editDistance(a, b)
-    return 1.0 - Double(distance) / Double(maxLen)
+private func levenshteinRatio(_ lhs: String, _ rhs: String) -> Double {
+    VocabularyCorrector.editDistanceRatio(lhs, rhs)
 }
 
 // MARK: - Play

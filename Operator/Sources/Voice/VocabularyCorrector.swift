@@ -37,6 +37,7 @@ public enum VocabularyCorrector {
                 if dist < bestDistance && dist <= 2 && dist > 0 {
                     bestDistance = dist
                     bestMatch = original
+                    if dist == 1 { break }
                 }
             }
 
@@ -76,5 +77,14 @@ public enum VocabularyCorrector {
         }
 
         return prev[lenB]
+    }
+
+    /// Similarity ratio between two strings (0.0 = completely different, 1.0 = identical).
+    public static func editDistanceRatio(_ lhs: String, _ rhs: String) -> Double {
+        let maxLen = max(lhs.count, rhs.count)
+        guard maxLen > 0 else {
+            return 1.0
+        }
+        return 1.0 - Double(editDistance(lhs, rhs)) / Double(maxLen)
     }
 }
