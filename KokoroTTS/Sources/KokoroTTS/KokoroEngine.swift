@@ -4,6 +4,36 @@ import Foundation
 import NaturalLanguage
 import os
 
+/// Model size bucket for automatic selection based on token count.
+public enum ModelBucket: CaseIterable, Sendable, Comparable {
+    /// Short utterances — 124 tokens max (~5s audio).
+    case small
+    /// Medium utterances — 242 tokens max (~10s audio).
+    case medium
+
+    /// CoreML model bundle name (without .mlmodelc extension).
+    public var modelName: String {
+        switch self {
+        case .small: "kokoro_21_5s"
+        case .medium: "kokoro_24_10s"
+        }
+    }
+
+    /// Maximum input token count for this bucket.
+    public var maxTokens: Int {
+        switch self {
+        case .small: 124
+        case .medium: 242
+        }
+    }
+
+    /// Select the smallest bucket that fits the token count.
+    /// Returns nil if no bucket is large enough.
+    public static func select(forTokenCount count: Int, available: [ModelBucket]) -> ModelBucket? {
+        available.sorted().first { $0.maxTokens >= count }
+    }
+}
+
 /// High-quality text-to-speech engine using Kokoro-82M CoreML models.
 ///
 /// Uses unified end-to-end models (StyleTTS2 + iSTFTNet vocoder) with one
@@ -19,12 +49,6 @@ import os
 public final class KokoroEngine: @unchecked Sendable {
     // Immutable after init. EnglishG2P has internal mutable state,
     // so all phonemize calls are serialized through g2pLock.
-
-    /// Maximum token count for the unified model.
-    static let maxTokenCount = 242
-
-    /// CoreML model bundle name (without .mlmodelc extension).
-    static let modelName = "kokoro_24_10s"
 
     /// Output sample rate in Hz (24kHz).
     public static let sampleRate = 24_000
@@ -46,8 +70,20 @@ public final class KokoroEngine: @unchecked Sendable {
         static let randomPhases = "random_phases"
         static let audio = "audio"
         static let audioLength = "audio_length_samples"
-        static let predDur = "pred_dur_clamped"
+        static let predDurClamped = "pred_dur_clamped"
+        static let predDur = "pred_dur"
         static let speed = "speed"
+    }
+
+    /// Per-bucket CoreML model and pre-allocated buffers.
+    private struct BucketResources {
+        let model: MLModel
+        let bucket: ModelBucket
+        let inputIds: MLMultiArray
+        let mask: MLMultiArray
+        let refS: MLMultiArray
+        let randomPhases: MLMultiArray
+        let speed: MLMultiArray
     }
 
     private static let logger = Logger(
@@ -62,16 +98,20 @@ public final class KokoroEngine: @unchecked Sendable {
     private let synthesizeLock = NSLock()
     private let tokenizer: Tokenizer
     private let voiceStore: VoiceStore
-    private let model: MLModel
+    private let bucketResources: [ModelBucket: BucketResources]
 
-    // Pre-allocated MLMultiArray buffers reused across synthesis calls.
-    private let preInputIds: MLMultiArray
-    private let preMask: MLMultiArray
-    private let preRefS: MLMultiArray
-    private let preRandomPhases: MLMultiArray
-    private let preSpeed: MLMultiArray
+    /// Which buckets are loaded and available for synthesis.
+    public let activeBuckets: [ModelBucket]
+
+    /// Maximum token count across all loaded buckets.
+    public var maxTokenCount: Int {
+        activeBuckets.map(\.maxTokens).max() ?? 0
+    }
 
     /// Creates a KokoroEngine from cached models.
+    ///
+    /// Loads all available model buckets from the directory. At least one
+    /// `.mlmodelc` model bundle and a `voices/` directory must be present.
     ///
     /// - Parameter modelDirectory: Path containing `.mlmodelc` model bundles
     ///   and a `voices/` directory with voice embedding JSON files.
@@ -94,17 +134,40 @@ public final class KokoroEngine: @unchecked Sendable {
 
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
-        let url = modelDirectory.appendingPathComponent(Self.modelName + ".mlmodelc")
-        self.model = try MLModel(contentsOf: url, configuration: config)
 
-        let maxTokens = Self.maxTokenCount
-        self.preInputIds = try MLMultiArray(shape: [1, maxTokens as NSNumber], dataType: .int32)
-        self.preMask = try MLMultiArray(shape: [1, maxTokens as NSNumber], dataType: .int32)
-        self.preRefS = try MLMultiArray(
-            shape: [1, VoiceStore.styleDim as NSNumber], dataType: .float32)
-        self.preRandomPhases = try MLMultiArray(
-            shape: [1, Self.numPhases as NSNumber], dataType: .float32)
-        self.preSpeed = try MLMultiArray(shape: [1], dataType: .float32)
+        var resources: [ModelBucket: BucketResources] = [:]
+        for bucket in ModelBucket.allCases {
+            let url = modelDirectory.appendingPathComponent(bucket.modelName + ".mlmodelc")
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                let model = try MLModel(contentsOf: url, configuration: config)
+                let maxTokens = bucket.maxTokens
+                let res = BucketResources(
+                    model: model,
+                    bucket: bucket,
+                    inputIds: try MLMultiArray(
+                        shape: [1, maxTokens as NSNumber], dataType: .int32),
+                    mask: try MLMultiArray(
+                        shape: [1, maxTokens as NSNumber], dataType: .int32),
+                    refS: try MLMultiArray(
+                        shape: [1, VoiceStore.styleDim as NSNumber], dataType: .float32),
+                    randomPhases: try MLMultiArray(
+                        shape: [1, Self.numPhases as NSNumber], dataType: .float32),
+                    speed: try MLMultiArray(shape: [1], dataType: .float32)
+                )
+                resources[bucket] = res
+                Self.logger.info("Loaded \(bucket.modelName) (\(maxTokens) tokens)")
+            } catch {
+                Self.logger.warning("Failed to load \(bucket.modelName): \(error)")
+            }
+        }
+
+        guard !resources.isEmpty else {
+            throw KokoroError.modelsNotAvailable(modelDirectory)
+        }
+
+        self.bucketResources = resources
+        self.activeBuckets = ModelBucket.allCases.filter { resources[$0] != nil }
     }
 
     // MARK: - Synthesis
@@ -122,7 +185,9 @@ public final class KokoroEngine: @unchecked Sendable {
     ///     Clamped to 0.5...2.0. Default is 1.0.
     /// - Returns: Synthesis result with PCM samples and metadata.
     /// - Throws: ``KokoroError/voiceNotFound(_:)`` if the voice doesn't exist.
-    public func synthesize(text: String, voice: String, speed: Float = 1.0) throws -> SynthesisResult {
+    public func synthesize(
+        text: String, voice: String, speed: Float = 1.0, bucket: ModelBucket? = nil
+    ) throws -> SynthesisResult {
         let t0 = CFAbsoluteTimeGetCurrent()
         let styleVector = try voiceStore.embedding(for: voice)
         let clampedSpeed = min(max(speed, Self.speedRange.lowerBound), Self.speedRange.upperBound)
@@ -130,13 +195,29 @@ public final class KokoroEngine: @unchecked Sendable {
         var allSamples: [Float] = []
         var allDurations: [Int] = []
         var totalTokens = 0
+        var selectedBucket: ModelBucket?
 
         for sentence in splitSentences(text) {
             let phonemes = lockedPhonemize(sentence)
             let tokenIds = tokenizer.encode(phonemes)
             totalTokens += tokenIds.count
+
+            let useBucket: ModelBucket
+            if let forced = bucket {
+                useBucket = forced
+            } else if let auto = ModelBucket.select(
+                forTokenCount: tokenIds.count, available: activeBuckets)
+            {
+                useBucket = auto
+            } else {
+                // Token count exceeds all buckets — use largest available
+                useBucket = activeBuckets.max()!
+            }
+            selectedBucket = useBucket
+
             let (samples, durations) = try synthesizeUnified(
-                tokenIds: tokenIds, styleVector: styleVector, speed: clampedSpeed)
+                tokenIds: tokenIds, styleVector: styleVector, speed: clampedSpeed,
+                bucket: useBucket)
             if allSamples.isEmpty {
                 allSamples = samples
             } else {
@@ -151,7 +232,8 @@ public final class KokoroEngine: @unchecked Sendable {
         let elapsed = CFAbsoluteTimeGetCurrent() - t0
         return SynthesisResult(
             samples: allSamples, tokenDurations: allDurations,
-            tokenCount: totalTokens, synthesisTime: elapsed)
+            tokenCount: totalTokens, synthesisTime: elapsed,
+            bucket: selectedBucket)
     }
 
     // MARK: - Voices
@@ -163,19 +245,24 @@ public final class KokoroEngine: @unchecked Sendable {
 
     // MARK: - Warmup
 
-    /// Pre-warm the CoreML compilation cache.
+    /// Pre-warm the CoreML compilation cache for all loaded buckets.
     ///
     /// Triggers on-device model compilation for the Neural Engine. Call once
     /// at app startup to avoid a cold-start delay on the first synthesis call.
     /// Safe to skip — the first real synthesis will just be slower.
     public func warmUp() {
-        do {
-            let dummyTokens = [Int](repeating: 0, count: Self.maxTokenCount)
-            let dummyStyle = [Float](repeating: 0, count: VoiceStore.styleDim)
-            _ = try synthesizeUnified(
-                tokenIds: dummyTokens, styleVector: dummyStyle, speed: 1.0)
-        } catch {
-            Self.logger.warning("Warmup failed (non-fatal): \(error.localizedDescription)")
+        for bucket in activeBuckets {
+            do {
+                let dummyTokens = [Int](repeating: 0, count: bucket.maxTokens)
+                let dummyStyle = [Float](repeating: 0, count: VoiceStore.styleDim)
+                _ = try synthesizeUnified(
+                    tokenIds: dummyTokens, styleVector: dummyStyle, speed: 1.0,
+                    bucket: bucket)
+            } catch {
+                Self.logger.warning(
+                    "Warmup failed for \(bucket.modelName) (non-fatal): \(error.localizedDescription)"
+                )
+            }
         }
     }
 
@@ -203,52 +290,58 @@ public final class KokoroEngine: @unchecked Sendable {
     private func synthesizeUnified(
         tokenIds: [Int],
         styleVector: [Float],
-        speed: Float
+        speed: Float,
+        bucket: ModelBucket
     ) throws -> (samples: [Float], durations: [Int]) {
-        guard tokenIds.count <= Self.maxTokenCount else {
+        guard let res = bucketResources[bucket] else {
+            throw KokoroError.inferenceFailed("Bucket \(bucket.modelName) not loaded")
+        }
+        guard tokenIds.count <= bucket.maxTokens else {
             throw KokoroError.textTooLong(
-                tokenCount: tokenIds.count, maxTokens: Self.maxTokenCount)
+                tokenCount: tokenIds.count, maxTokens: bucket.maxTokens)
         }
 
         synthesizeLock.lock()
         defer { synthesizeLock.unlock() }
 
-        let maxTokens = Self.maxTokenCount
         MLArrayHelpers.fillTokenInputs(
-            from: tokenIds, into: preInputIds, mask: preMask, maxLength: maxTokens)
-        MLArrayHelpers.fillStyleArray(from: styleVector, into: preRefS)
+            from: tokenIds, into: res.inputIds, mask: res.mask, maxLength: bucket.maxTokens)
+        MLArrayHelpers.fillStyleArray(from: styleVector, into: res.refS)
 
-        let phasePtr = preRandomPhases.dataPointer.assumingMemoryBound(to: Float.self)
+        let phasePtr = res.randomPhases.dataPointer.assumingMemoryBound(to: Float.self)
         for i in 0..<Self.numPhases {
             phasePtr[i] = Float.random(in: 0..<(2 * .pi))
         }
 
-        preSpeed[0] = speed as NSNumber
+        res.speed[0] = speed as NSNumber
 
         let input = try MLDictionaryFeatureProvider(dictionary: [
-            Feature.inputIds: MLFeatureValue(multiArray: preInputIds),
-            Feature.attentionMask: MLFeatureValue(multiArray: preMask),
-            Feature.refS: MLFeatureValue(multiArray: preRefS),
-            Feature.randomPhases: MLFeatureValue(multiArray: preRandomPhases),
-            Feature.speed: MLFeatureValue(multiArray: preSpeed),
+            Feature.inputIds: MLFeatureValue(multiArray: res.inputIds),
+            Feature.attentionMask: MLFeatureValue(multiArray: res.mask),
+            Feature.refS: MLFeatureValue(multiArray: res.refS),
+            Feature.randomPhases: MLFeatureValue(multiArray: res.randomPhases),
+            Feature.speed: MLFeatureValue(multiArray: res.speed),
         ])
 
         let predictionStart = CFAbsoluteTimeGetCurrent()
-        let output = try model.prediction(from: input)
+        let output = try res.model.prediction(from: input)
         let predictionElapsed = CFAbsoluteTimeGetCurrent() - predictionStart
 
         if predictionElapsed > Self.slowPredictionThreshold {
             let ms = String(format: "%.0f", predictionElapsed * 1_000)
             Self.logger.warning(
-                "model.prediction() took \(ms)ms (possible ANE fallback to CPU/GPU)")
+                "\(bucket.modelName) prediction took \(ms)ms (possible ANE fallback to CPU/GPU)")
         }
 
         guard let audio = output.featureValue(for: Feature.audio)?.multiArrayValue else {
             throw KokoroError.inferenceFailed("Missing audio output")
         }
 
+        // Models with speed output pred_dur_clamped; without speed output pred_dur.
         let durations: [Int]
-        if let predDur = output.featureValue(for: Feature.predDur)?.multiArrayValue {
+        let predDur = output.featureValue(for: Feature.predDurClamped)?.multiArrayValue
+            ?? output.featureValue(for: Feature.predDur)?.multiArrayValue
+        if let predDur {
             durations = (0..<min(predDur.count, tokenIds.count)).map { predDur[$0].intValue }
         } else {
             durations = []
@@ -450,6 +543,9 @@ public struct SynthesisResult: Sendable {
     /// Wall-clock synthesis time in seconds.
     public let synthesisTime: TimeInterval
 
+    /// Which model bucket was used (last sentence's bucket if multi-sentence).
+    public let bucket: ModelBucket?
+
     /// Audio duration in seconds.
     public var duration: TimeInterval {
         Double(samples.count) / Double(KokoroEngine.sampleRate)
@@ -466,11 +562,13 @@ public struct SynthesisResult: Sendable {
         samples: [Float],
         tokenDurations: [Int] = [],
         tokenCount: Int,
-        synthesisTime: TimeInterval
+        synthesisTime: TimeInterval,
+        bucket: ModelBucket? = nil
     ) {
         self.samples = samples
         self.tokenDurations = tokenDurations
         self.tokenCount = tokenCount
         self.synthesisTime = synthesisTime
+        self.bucket = bucket
     }
 }

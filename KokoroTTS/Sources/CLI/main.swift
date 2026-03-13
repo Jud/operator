@@ -25,10 +25,23 @@ if let idx = args.firstIndex(of: "--wav"), idx + 1 < args.count {
     args.removeSubrange(idx...idx + 1)
 }
 
+// Parse --bucket flag (force a specific model bucket)
+var forcedBucket: ModelBucket?
+if let idx = args.firstIndex(of: "--bucket"), idx + 1 < args.count {
+    switch args[idx + 1] {
+    case "small": forcedBucket = .small
+    case "medium": forcedBucket = .medium
+    default:
+        print("Unknown bucket '\(args[idx + 1])'. Use: small, medium")
+        exit(1)
+    }
+    args.removeSubrange(idx...idx + 1)
+}
+
 let text = args.joined(separator: " ")
 
 guard !text.isEmpty else {
-    print("Usage: kokoro-say [--voice NAME] [--debug] [--wav out.wav] <text>")
+    print("Usage: kokoro-say [--voice NAME] [--debug] [--wav out.wav] [--bucket small|medium] <text>")
     exit(1)
 }
 
@@ -46,9 +59,17 @@ guard engine.availableVoices.contains(voice) else {
     exit(1)
 }
 
-let result = try engine.synthesize(text: text, voice: voice)
+if debug {
+    let bucketNames = engine.activeBuckets.map(\.modelName).joined(separator: ", ")
+    print("Loaded buckets: \(bucketNames)")
+}
+
+let result = try engine.synthesize(text: text, voice: voice, bucket: forcedBucket)
 
 if debug {
+    if let bucket = result.bucket {
+        print("Selected bucket: \(bucket.modelName) (\(bucket.maxTokens) max tokens)")
+    }
     let windowSize = 120  // 5ms at 24kHz
     let windows = min(20, result.samples.count / windowSize)
     print("\nOnset amplitude profile (first \(windows * 5)ms):")
@@ -68,8 +89,9 @@ if debug {
         result.tokenDurations.prefix(10).map(String.init).joined(separator: ", ")))
 }
 
+let bucketTag = result.bucket.map { " \($0.modelName)" } ?? ""
 let fmt = String(format: "%.0fms synth, %.1fs audio", result.synthesisTime * 1000, result.duration)
-print("[\(voice)] \(fmt) | \"\(text)\"")
+print("[\(voice)\(bucketTag)] \(fmt) | \"\(text)\"")
 
 // Write WAV if requested
 if let wavPath {

@@ -35,5 +35,5 @@ public enum ModelManager {
         return hasModel && hasVoices
     }
 
-    private static let modelFiles = [KokoroEngine.modelName + ".mlmodelc"]
+    private static let modelFiles = ModelBucket.allCases.map { $0.modelName + ".mlmodelc" }
 }

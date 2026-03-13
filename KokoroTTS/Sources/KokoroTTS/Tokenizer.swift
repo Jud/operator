@@ -43,7 +43,7 @@ final class Tokenizer: Sendable {
     }
 
     /// Encode an IPA phoneme string to token IDs with BOS/EOS.
-    func encode(_ phonemes: String, maxLength: Int = KokoroEngine.maxTokenCount) -> [Int] {
+    func encode(_ phonemes: String, maxLength: Int = ModelBucket.medium.maxTokens) -> [Int] {
         var ids = [Self.bosId]
 
         for char in phonemes {
