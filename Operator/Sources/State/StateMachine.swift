@@ -857,23 +857,21 @@ extension StateMachine {
         contextRefreshTask?.cancel()
         let axQuery = bimodalEngine.accessibilityQuery
         contextRefreshTask = Task {
-            var strings = Set<String>()
+            async let sessionsResult = registry.allSessions()
+            async let visibleResult = axQuery.visibleVocabulary()
 
-            let sessions = await registry.allSessions()
+            let (sessions, visible) = await (sessionsResult, visibleResult)
             guard !Task.isCancelled else {
                 return
             }
+
+            var strings = Set<String>()
             for session in sessions {
                 strings.insert(session.name)
                 let projectName = URL(fileURLWithPath: session.cwd).lastPathComponent
                 if !projectName.isEmpty {
                     strings.insert(projectName)
                 }
-            }
-
-            let visible = await axQuery.visibleVocabulary()
-            guard !Task.isCancelled else {
-                return
             }
             strings.formUnion(visible)
 

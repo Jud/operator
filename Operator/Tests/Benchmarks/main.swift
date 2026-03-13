@@ -363,12 +363,7 @@ private func benchmarkTTSRoundtrip() async {
     }
 
     // Request speech recognition authorization.
-    let authStatus = await withCheckedContinuation {
-        (cont: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
-        SFSpeechRecognizer.requestAuthorization { status in
-            cont.resume(returning: status)
-        }
-    }
+    let authStatus = await AppleSpeechEngine.requestAuthorization()
     guard authStatus == .authorized else {
         print("SKIP: Speech recognition not authorized (status=\(authStatus.rawValue))")
         return

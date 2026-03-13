@@ -71,10 +71,12 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
         let vocab = contextualStrings
         sessionLock.withLock { state in
-            state = SessionState(
+            var session = SessionState(
                 promptTokens: resolvedTokens,
                 vocabulary: vocab
             )
+            session.audioSamples.reserveCapacity(480_000)
+            state = session
         }
 
         Self.logger.debug("WhisperKit session prepared")
@@ -82,20 +84,19 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Append an audio buffer from the microphone tap.
     public func append(_ buffer: AVAudioPCMBuffer) {
-        // Single lock acquisition: check converter, create if needed, convert, append.
-        let needsConverter = sessionLock.withLock { $0?.converter == nil && $0 != nil }
-
-        if needsConverter {
-            do {
-                let converter = try AudioFormatConverter(inputFormat: buffer.format)
-                sessionLock.withLock { $0?.converter = converter }
-            } catch {
-                Self.logger.error("Failed to create audio format converter: \(error)")
-                return
+        let converter: AudioFormatConverter? = sessionLock.withLock { state in
+            guard state != nil else {
+                return nil
             }
+            if let existing = state?.converter {
+                return existing
+            }
+            guard let conv = try? AudioFormatConverter(inputFormat: buffer.format) else {
+                return nil
+            }
+            state?.converter = conv
+            return conv
         }
-
-        let converter = sessionLock.withLock { $0?.converter }
         guard let samples = converter?.convert(buffer) else {
             return
         }
@@ -105,15 +106,13 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     /// Finish recording and return the transcribed text.
     public func finishAndTranscribe() async -> String? {
         let snapshot = sessionLock.withLock { state -> SessionState? in
-            guard let session = state else {
-                return nil
-            }
+            let session = state
+            state = nil
             return session
         }
         let samples = snapshot?.audioSamples ?? []
         let promptTokens = snapshot?.promptTokens ?? []
         let vocabulary = snapshot?.vocabulary ?? []
-        resetSession()
 
         guard !samples.isEmpty else {
             Self.logger.info("No audio samples captured")
