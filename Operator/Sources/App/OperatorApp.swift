@@ -152,8 +152,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         bootstrapFeedbackPanel(traceStore: traceStore)
         bootstrapHTTPServer(reg: reg, aq: aq, tts: ttsManager, vm: vm)
+        let sttEngine = await bootstrapSTT()
         bootstrapStateMachine(
-            stt: AppleSpeechEngine(),
+            stt: sttEngine,
             tts: ttsManager,
             aq: aq,
             router: router,
@@ -185,6 +186,37 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             Self.logger.info("Kokoro models not downloaded. Using Apple TTS.")
         }
         return (SpeechManager(), VoiceManager())
+    }
+
+    private func bootstrapSTT() async -> any TranscriptionEngine {
+        let preference =
+            STTEnginePreference(
+                rawValue: UserDefaults.standard.string(forKey: "sttEngine") ?? "auto"
+            ) ?? .auto
+        let model =
+            UserDefaults.standard.string(forKey: "whisperKitModel")
+            ?? WhisperKitModelManager.defaultModel
+
+        if preference == .apple {
+            Self.logger.info("STT engine: Apple Speech (user selected)")
+            return AppleSpeechEngine()
+        }
+
+        if let modelPath = WhisperKitModelManager.modelPath(model) {
+            do {
+                let engine = try await WhisperKitEngine.create(modelFolder: modelPath)
+                Self.logger.info("STT engine: WhisperKit (\(model))")
+                return engine
+            } catch {
+                Self.logger.warning("WhisperKit init failed: \(error). Falling back to Apple Speech.")
+            }
+        } else if preference == .whisperKit {
+            Self.logger.warning("WhisperKit selected but model \(model) not downloaded. Falling back to Apple Speech.")
+        } else {
+            Self.logger.info("STT engine: Apple Speech (no WhisperKit models available)")
+        }
+
+        return AppleSpeechEngine()
     }
 
     private func bootstrapPrerequisites() {
@@ -229,7 +261,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Create the state machine, waveform panel, and menu bar model.
     private func bootstrapStateMachine(  // swiftlint:disable:this function_parameter_count
-        stt: AppleSpeechEngine,
+        stt: any TranscriptionEngine,
         tts: any SpeechManaging,
         aq: AudioQueue,
         router: MessageRouter,
@@ -384,7 +416,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             "feedbackSoundsEnabled": true,
             "triggerKeyCode": 63,
             "inputDeviceUID": "",
-            "hasCompletedOnboarding": false
+            "hasCompletedOnboarding": false,
+            "sttEngine": STTEnginePreference.auto.rawValue,
+            "whisperKitModel": WhisperKitModelManager.defaultModel
         ])
     }
 

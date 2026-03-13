@@ -1,12 +1,14 @@
 import AVFoundation
 import KokoroTTS
 import OperatorCore
+@preconcurrency import Speech
 
 private enum BenchmarkTarget: String, CaseIterable {
     case routing
     case routingAccuracy = "routing-accuracy"
     case routingLatency = "routing-latency"
     case tts
+    case ttsRoundtrip = "tts-roundtrip"
     case play
 }
 
@@ -20,6 +22,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  routing-accuracy  Run only routing accuracy benchmark")
     print("  routing-latency   Run only routing latency benchmark")
     print("  tts               Run TTS synthesis and speed control verification")
+    print("  tts-roundtrip     Run TTS→STT roundtrip quality check")
     print("  play              Synthesize and play example phrases through speakers")
     if listOnly {
         return
@@ -348,6 +351,171 @@ private func benchmarkTTS() {
     }
 }
 
+// MARK: - TTS→STT Roundtrip
+
+private func benchmarkTTSRoundtrip() async {
+    print("\n=== TTS→STT ROUNDTRIP ===\n")
+
+    let modelDir = ModelManager.defaultDirectory(for: "com.operator")
+    guard ModelManager.modelsAvailable(at: modelDir) else {
+        print("SKIP: Models not found at \(modelDir.path)")
+        return
+    }
+
+    // Request speech recognition authorization.
+    let authStatus = await withCheckedContinuation {
+        (cont: CheckedContinuation<SFSpeechRecognizerAuthorizationStatus, Never>) in
+        SFSpeechRecognizer.requestAuthorization { status in
+            cont.resume(returning: status)
+        }
+    }
+    guard authStatus == .authorized else {
+        print("SKIP: Speech recognition not authorized (status=\(authStatus.rawValue))")
+        return
+    }
+
+    guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+        recognizer.isAvailable
+    else {
+        print("SKIP: Speech recognizer not available")
+        return
+    }
+
+    do {
+        let engine = try KokoroEngine(modelDirectory: modelDir)
+        let voice = "af_heart"
+        guard engine.availableVoices.contains(voice) else {
+            print("SKIP: Voice '\(voice)' not found")
+            return
+        }
+
+        let testPhrases = [
+            "Hi",
+            "Hello",
+            "Yes",
+            "No",
+            "Okay",
+            "Sure",
+            "Operator is ready",
+            "Sure, I can help with that.",
+            "The quick brown fox jumps over the lazy dog.",
+            "All ten sections done. Twelve decisions made, zero unresolved."
+        ]
+
+        guard
+            let format = AVAudioFormat(
+                standardFormatWithSampleRate: Double(KokoroEngine.sampleRate),
+                channels: 1
+            )
+        else {
+            print("FAIL: Could not create audio format")
+            return
+        }
+
+        var passed = 0
+        var failed = 0
+
+        for phrase in testPhrases {
+            let result = try engine.synthesize(text: phrase, voice: voice)
+
+            // Create AVAudioPCMBuffer from synthesis output.
+            let frameCount = AVAudioFrameCount(result.samples.count)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+                print("  [FAIL] \"\(phrase)\" — could not create buffer")
+                failed += 1
+                continue
+            }
+            buffer.frameLength = frameCount
+            result.samples.withUnsafeBufferPointer { src in
+                guard let channelData = buffer.floatChannelData,
+                    let baseAddr = src.baseAddress
+                else { return }
+                channelData[0].update(from: baseAddr, count: result.samples.count)
+            }
+
+            // Feed to SFSpeechRecognizer.
+            let recognized = await recognizeFromBuffer(
+                buffer,
+                format: format,
+                recognizer: recognizer
+            )
+
+            let synthMs = String(format: "%.0f", result.synthesisTime * 1000)
+            let dur = String(format: "%.1f", result.duration)
+
+            if let recognized {
+                let normalizedInput = phrase.lowercased()
+                    .replacingOccurrences(of: ".", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                let normalizedOutput = recognized.lowercased()
+                    .replacingOccurrences(of: ".", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+
+                let match =
+                    normalizedOutput.contains(normalizedInput)
+                    || normalizedInput.contains(normalizedOutput)
+                    || levenshteinRatio(normalizedInput, normalizedOutput) > 0.7
+
+                if match {
+                    print("  [PASS] \"\(phrase)\" → \"\(recognized)\" (\(synthMs)ms, \(dur)s)")
+                    passed += 1
+                } else {
+                    print("  [FAIL] \"\(phrase)\" → \"\(recognized)\" (\(synthMs)ms, \(dur)s)")
+                    failed += 1
+                }
+            } else {
+                print("  [FAIL] \"\(phrase)\" → <no recognition> (\(synthMs)ms, \(dur)s)")
+                failed += 1
+            }
+        }
+
+        print("\nResults: \(passed)/\(passed + failed) passed")
+        if failed > 0 {
+            print("WARNING: \(failed) phrases did not roundtrip correctly")
+        }
+    } catch {
+        print("ERROR: \(error)")
+    }
+}
+
+/// Recognize speech from an audio buffer using SFSpeechRecognizer.
+private func recognizeFromBuffer(
+    _ buffer: AVAudioPCMBuffer,
+    format: AVAudioFormat,
+    recognizer: SFSpeechRecognizer
+) async -> String? {
+    let request = SFSpeechAudioBufferRecognitionRequest()
+    request.shouldReportPartialResults = false
+    if #available(macOS 15, *) {
+        request.requiresOnDeviceRecognition = true
+    }
+
+    request.append(buffer)
+    request.endAudio()
+
+    return await withCheckedContinuation { continuation in
+        var resumed = false
+        recognizer.recognitionTask(with: request) { result, error in
+            guard !resumed else { return }
+            if let result, result.isFinal {
+                resumed = true
+                continuation.resume(returning: result.bestTranscription.formattedString)
+            } else if error != nil {
+                resumed = true
+                continuation.resume(returning: nil)
+            }
+        }
+    }
+}
+
+/// Levenshtein distance ratio (0.0 = completely different, 1.0 = identical).
+private func levenshteinRatio(_ a: String, _ b: String) -> Double {
+    let maxLen = max(a.count, b.count)
+    guard maxLen > 0 else { return 1.0 }
+    let distance = VocabularyCorrector.editDistance(a, b)
+    return 1.0 - Double(distance) / Double(maxLen)
+}
+
 // MARK: - Play
 
 private func playExamples() async {
@@ -456,6 +624,10 @@ enum BenchmarkRunner {
 
         if targets.contains(.tts) {
             benchmarkTTS()
+        }
+
+        if targets.contains(.ttsRoundtrip) {
+            await benchmarkTTSRoundtrip()
         }
 
         if targets.contains(.play) {

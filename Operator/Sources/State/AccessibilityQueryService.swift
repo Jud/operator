@@ -58,6 +58,11 @@ public protocol AccessibilityQuerying: Sendable {
     /// Query the current accessibility context: frontmost app, terminal status,
     /// text field status, and permission state.
     func queryContext() -> AccessibilityContext
+
+    /// Returns visible vocabulary from AX labels and OCR of on-screen windows.
+    ///
+    /// Up to 200 words sorted by length (longest first). Returns empty on failure.
+    func visibleVocabulary() async -> [String]
 }
 
 /// Queries macOS accessibility state for frontmost app detection,
@@ -170,5 +175,16 @@ public struct AccessibilityQueryService: AccessibilityQuerying {
         }
 
         return (isTextField: Self.textFieldRoles.contains(role), hasPermission: true)
+    }
+
+    /// Returns visible vocabulary from HarnessCore's dictation context.
+    public func visibleVocabulary() async -> [String] {
+        do {
+            let context = try await harness.dictationContext()
+            return context.visibleVocabulary
+        } catch {
+            Self.logger.debug("Failed to get visible vocabulary: \(error.localizedDescription)")
+            return []
+        }
     }
 }

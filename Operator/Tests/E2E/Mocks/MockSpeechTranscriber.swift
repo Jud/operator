@@ -16,7 +16,7 @@ internal final class MockSpeechTranscriber: SpeechTranscribing {
     /// Set this before simulating a trigger stop to script the user's "speech".
     var nextTranscription: String?
 
-    func startListening() throws {
+    func startListening(contextualStrings: [String] = []) throws {
         isListening = true
     }
 

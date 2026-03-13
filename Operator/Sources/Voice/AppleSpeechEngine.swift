@@ -85,7 +85,7 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
     ///
     /// The recognition task begins immediately so audio buffers are processed
     /// as they arrive, rather than batch-processing after capture ends.
-    public func prepare() throws {
+    public func prepare(contextualStrings: [String] = []) throws {
         cancel()
 
         guard recognizer.isAvailable else {
@@ -95,6 +95,12 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
+        request.taskHint = .search
+
+        if !contextualStrings.isEmpty {
+            request.contextualStrings = contextualStrings
+            Self.logger.info("Set \(contextualStrings.count) contextual strings for recognition")
+        }
 
         if #available(macOS 15, *) {
             request.requiresOnDeviceRecognition = true

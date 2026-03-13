@@ -24,6 +24,10 @@ internal struct MockAccessibilityQuery: AccessibilityQuerying {
     func queryContext() -> AccessibilityContext {
         context
     }
+
+    func visibleVocabulary() async -> [String] {
+        []
+    }
 }
 
 internal enum AccessibilityQueryServiceTests {

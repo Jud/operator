@@ -7,7 +7,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(path: "../../harness"),
-        .package(path: "../KokoroTTS"),
+        .package(url: "https://github.com/Jud/kokoro-tts-swift.git", from: "0.1.0"),
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
     ],
     targets: [
         .target(
@@ -18,7 +19,8 @@ let package = Package(
             name: "OperatorCore",
             dependencies: [
                 "OperatorShared",
-                "KokoroTTS",
+                .product(name: "KokoroTTS", package: "kokoro-tts-swift"),
+                .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HarnessCore", package: "Harness"),
             ],
@@ -65,7 +67,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "Benchmarks",
-            dependencies: ["OperatorCore", "KokoroTTS"],
+            dependencies: ["OperatorCore", .product(name: "KokoroTTS", package: "kokoro-tts-swift")],
             path: "Tests/Benchmarks"
         ),
     ]

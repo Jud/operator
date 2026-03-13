@@ -15,7 +15,7 @@ private final class TestSpeechTranscriber: SpeechTranscribing {
     private(set) var lastAudioFileURL: URL?
     var nextTranscription: String?
 
-    func startListening() throws {
+    func startListening(contextualStrings: [String] = []) throws {
         isListening = true
     }
 

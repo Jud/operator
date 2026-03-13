@@ -139,7 +139,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
     /// Begin capturing audio from the microphone and feeding it to the engine.
     ///
     /// - Throws: If the audio engine fails to start (e.g., no microphone access).
-    public func startListening() throws {
+    public func startListening(contextualStrings: [String] = []) throws {
         cancelExistingSession()
 
         // Reset audio capture state.
@@ -147,7 +147,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
         lastAudioFileURL = nil
         levelMonitor?.reset()
 
-        try engine.prepare()
+        try engine.prepare(contextualStrings: contextualStrings)
 
         applyInputDevice()
 

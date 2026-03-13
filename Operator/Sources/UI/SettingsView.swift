@@ -23,9 +23,19 @@ public struct SettingsView: View {
     @AppStorage("inputDeviceUID")
     private var inputDeviceUID: String = ""
 
+    /// Selected STT engine.
+    @AppStorage("sttEngine")
+    private var sttEngine: String = STTEnginePreference.auto.rawValue
+
+    /// Selected WhisperKit model variant.
+    @AppStorage("whisperKitModel")
+    private var whisperKitModel: String = WhisperKitModelManager.defaultModel
+
     // MARK: - Local State
 
     @State private var inputDevices: [AudioDevice] = []
+    @State private var isDownloadingModel = false
+    @State private var downloadError: String?
 
     /// The view body rendering the settings form.
     public var body: some View {
@@ -49,6 +59,7 @@ extension SettingsView {
     private var settingsForm: some View {
         Form {
             audioDeviceSection
+            speechRecognitionSection
             voiceSection
             triggerKeySection
             triggerBehaviorSection
@@ -56,7 +67,7 @@ extension SettingsView {
             aboutSection
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 480)
+        .frame(width: 450, height: 560)
         .onAppear { refreshDevices() }
     }
 
@@ -84,6 +95,68 @@ extension SettingsView {
             Text("Operator uses Apple speech synthesis for all spoken output.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var speechRecognitionSection: some View {
+        Section("Speech Recognition") {
+            Picker("Engine", selection: $sttEngine) {
+                Text("Auto").tag(STTEnginePreference.auto.rawValue)
+                Text("Apple Speech").tag(STTEnginePreference.apple.rawValue)
+                Text("WhisperKit").tag(STTEnginePreference.whisperKit.rawValue)
+            }
+
+            if sttEngine != STTEnginePreference.apple.rawValue {
+                whisperKitModelSection
+            }
+
+            Text(
+                "WhisperKit provides higher accuracy for technical terms. "
+                    + "Requires a one-time model download (~400 MB). "
+                    + "Restart Operator after changing engine."
+            )
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder private var whisperKitModelSection: some View {
+        Picker("Model", selection: $whisperKitModel) {
+            ForEach(WhisperKitModelManager.availableModels, id: \.self) { model in
+                HStack {
+                    Text(model)
+                    if WhisperKitModelManager.modelAvailable(model) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .font(.caption)
+                    }
+                }
+                .tag(model)
+            }
+        }
+
+        if !WhisperKitModelManager.modelAvailable(whisperKitModel) {
+            HStack {
+                Button(isDownloadingModel ? "Downloading..." : "Download Model") {
+                    downloadModel()
+                }
+                .disabled(isDownloadingModel)
+
+                if isDownloadingModel {
+                    ProgressView()
+                        .controlSize(.small)
+                }
+            }
+        } else {
+            Label("Model downloaded", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.caption)
+        }
+
+        if let downloadError {
+            Text(downloadError)
+                .foregroundStyle(.red)
+                .font(.caption)
         }
     }
 
@@ -141,5 +214,20 @@ extension SettingsView {
 
     private func refreshDevices() {
         inputDevices = AudioDeviceManager.inputDevices()
+    }
+
+    private func downloadModel() {
+        isDownloadingModel = true
+        downloadError = nil
+        let model = whisperKitModel
+        Task {
+            do {
+                try await WhisperKitModelManager.download(variant: model)
+                isDownloadingModel = false
+            } catch {
+                downloadError = "Download failed: \(error.localizedDescription)"
+                isDownloadingModel = false
+            }
+        }
     }
 }

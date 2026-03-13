@@ -15,7 +15,7 @@ public protocol SpeechTranscribing: AnyObject, Sendable {
     /// if no audio was captured. Reset on each `startListening()` call.
     var lastAudioFileURL: URL? { get }
 
-    func startListening() throws
+    func startListening(contextualStrings: [String]) throws
     func stopListening() async -> String?
     func stopListeningWithTimeout(seconds: TimeInterval) async -> String?
 }

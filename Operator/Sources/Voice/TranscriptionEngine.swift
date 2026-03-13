@@ -12,7 +12,11 @@ public protocol TranscriptionEngine: Sendable {
     ///
     /// Called once before audio capture begins. Implementations should allocate
     /// any request or session objects needed for the upcoming transcription.
-    func prepare() throws
+    ///
+    /// - Parameter contextualStrings: Domain-specific terms (session names, project names)
+    ///   that bias the recognizer toward expected vocabulary.
+    /// - Throws: If the engine cannot be prepared (e.g. recognizer unavailable).
+    func prepare(contextualStrings: [String]) throws
 
     /// Append an audio buffer captured from the microphone.
     ///
@@ -27,4 +31,11 @@ public protocol TranscriptionEngine: Sendable {
 
     /// Cancel any in-progress transcription and release resources.
     func cancel()
+}
+
+/// User preference for which STT engine to use.
+public enum STTEnginePreference: String {
+    case auto
+    case apple
+    case whisperKit
 }

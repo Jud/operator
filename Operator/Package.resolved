@@ -1,5 +1,5 @@
 {
-  "originHash" : "b3d9fc2cc9f43032649354d219128284233e595eff719f4ca9b8540fa41b60da",
+  "originHash" : "9c2d66f295acdbb22834308feda72bf768890c4a935c8197d12428731197f93b",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -17,6 +17,15 @@
       "state" : {
         "revision" : "328a211b3bdc8bdd41a40a3d4112ed6b79358fa4",
         "version" : "2.20.1"
+      }
+    },
+    {
+      "identity" : "kokoro-tts-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Jud/kokoro-tts-swift.git",
+      "state" : {
+        "revision" : "bfccdd6f65e087a86e84340318f870e66e50ca95",
+        "version" : "0.1.1"
       }
     },
     {
@@ -62,6 +71,15 @@
       "state" : {
         "revision" : "b601256eab081c0f92f059e12818ac1d4f178ff7",
         "version" : "1.3.0"
+      }
+    },
+    {
+      "identity" : "swift-bart-g2p",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Jud/swift-bart-g2p.git",
+      "state" : {
+        "revision" : "66ec6ccd29e4499ab911a9ade5198e634619715a",
+        "version" : "0.1.0"
       }
     },
     {
@@ -125,6 +143,15 @@
       "state" : {
         "revision" : "45eb0224913ea070ec4fba17291b9e7ecf4749ca",
         "version" : "1.5.1"
+      }
+    },
+    {
+      "identity" : "swift-jinja",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-jinja.git",
+      "state" : {
+        "revision" : "f731f03bf746481d4fda07f817c3774390c4d5b9",
+        "version" : "2.3.2"
       }
     },
     {
@@ -224,6 +251,33 @@
       "state" : {
         "revision" : "7c6ad0fc39d0763e0b699210e4124afd5041c5df",
         "version" : "1.6.4"
+      }
+    },
+    {
+      "identity" : "swift-transformers",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/huggingface/swift-transformers.git",
+      "state" : {
+        "revision" : "150169bfba0889c229a2ce7494cf8949f18e6906",
+        "version" : "1.1.9"
+      }
+    },
+    {
+      "identity" : "whisperkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/argmaxinc/WhisperKit.git",
+      "state" : {
+        "revision" : "26577ce3017aae8c9edfd9a0dd17851bd248c731",
+        "version" : "0.17.0"
+      }
+    },
+    {
+      "identity" : "yyjson",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ibireme/yyjson.git",
+      "state" : {
+        "revision" : "8b4a38dc994a110abaec8a400615567bd996105f",
+        "version" : "0.12.0"
       }
     }
   ],

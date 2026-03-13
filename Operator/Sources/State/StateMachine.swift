@@ -81,6 +81,12 @@ public final class StateMachine {
     /// complete in time.
     private var timeoutTask: Task<Void, Never>?
 
+    /// Cached contextual strings for speech recognition, refreshed from the registry.
+    private var cachedContextualStrings: [String] = []
+
+    /// Handle to the in-flight contextual strings refresh task.
+    private var contextRefreshTask: Task<Void, Never>?
+
     // MARK: - Dependencies
 
     private let transcriber: any SpeechTranscribing
@@ -153,6 +159,7 @@ public final class StateMachine {
         )
 
         Self.logger.info("StateMachine initialized in IDLE state")
+        refreshContextualStrings()
     }
 
     // MARK: - Trigger Callbacks
@@ -197,7 +204,7 @@ public final class StateMachine {
         waveformPanel?.show()
 
         do {
-            try transcriber.startListening()
+            try transcriber.startListening(contextualStrings: cachedContextualStrings)
         } catch {
             Self.logger.error("Failed to start audio capture: \(error)")
             speakOperator("I can't access the microphone. Check System Settings.")
@@ -748,6 +755,8 @@ extension StateMachine {
         Task {
             await audioQueue.userStoppedSpeaking()
         }
+
+        refreshContextualStrings()
     }
 
     /// Start a timeout for the current state.
@@ -836,6 +845,41 @@ extension StateMachine {
     /// Speak a message using the Operator voice.
     private func speakOperator(_ text: String) {
         speechManager.speak(text, voice: voiceManager.operatorVoice, prefix: "Operator")
+    }
+
+    /// Refresh cached contextual strings from the session registry and visible UI.
+    ///
+    /// Called on enterIdle so the cache is ready for the next triggerStart.
+    /// Pulls session names and project directory names from the registry,
+    /// plus visible vocabulary from HarnessCore (AX labels + OCR).
+    /// Apple's contextualStrings is most effective with ~100 entries.
+    private func refreshContextualStrings() {
+        contextRefreshTask?.cancel()
+        let axQuery = bimodalEngine.accessibilityQuery
+        contextRefreshTask = Task {
+            var strings = Set<String>()
+
+            let sessions = await registry.allSessions()
+            guard !Task.isCancelled else {
+                return
+            }
+            for session in sessions {
+                strings.insert(session.name)
+                let projectName = URL(fileURLWithPath: session.cwd).lastPathComponent
+                if !projectName.isEmpty {
+                    strings.insert(projectName)
+                }
+            }
+
+            let visible = await axQuery.visibleVocabulary()
+            guard !Task.isCancelled else {
+                return
+            }
+            strings.formUnion(visible)
+
+            let sorted = strings.sorted { $0.count > $1.count }
+            cachedContextualStrings = Array(sorted.prefix(100))
+        }
     }
 
     /// Handle a DictationResult by playing the appropriate feedback/speech.
