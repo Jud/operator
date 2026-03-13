@@ -238,8 +238,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         reg: SessionRegistry,
         vm: VoiceManager
     ) {
-        let transcriber = SpeechTranscriber(engine: stt)
-        let wp = WaveformPanel()
+        let levelMonitor = AudioLevelMonitor()
+        let transcriber = SpeechTranscriber(engine: stt, levelMonitor: levelMonitor)
+        let wp = WaveformPanel(levelMonitor: levelMonitor)
         waveformPanel = wp
 
         let mbm = MenuBarModel.shared

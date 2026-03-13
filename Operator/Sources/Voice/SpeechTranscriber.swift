@@ -48,13 +48,19 @@ public final class SpeechTranscriber: SpeechTranscribing {
     /// Format of the captured audio (set when the tap is installed).
     private var capturedFormat: AVAudioFormat?
 
+    /// Audio level monitor for waveform visualization.
+    private let levelMonitor: AudioLevelMonitor?
+
     // MARK: - Initialization
 
     /// Creates a new speech transcriber with the given transcription engine.
     ///
-    /// - Parameter engine: The recognition backend (default: ``AppleSpeechEngine``).
-    public init(engine: any TranscriptionEngine = AppleSpeechEngine()) {
+    /// - Parameters:
+    ///   - engine: The recognition backend (default: ``AppleSpeechEngine``).
+    ///   - levelMonitor: Optional audio level monitor for waveform visualization.
+    public init(engine: any TranscriptionEngine = AppleSpeechEngine(), levelMonitor: AudioLevelMonitor? = nil) {
         self.engine = engine
+        self.levelMonitor = levelMonitor
     }
 
     // MARK: - Type Methods
@@ -79,6 +85,29 @@ public final class SpeechTranscriber: SpeechTranscribing {
             }
         }
         return copy
+    }
+
+    /// Compute normalized RMS level (0.0-1.0) from an audio buffer using dB scaling.
+    nonisolated static func computeRMS(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let channelData = buffer.floatChannelData else {
+            return 0
+        }
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else {
+            return 0
+        }
+
+        let samples = channelData[0]
+        var sumSquares: Float = 0
+        for i in 0..<frames {
+            let sample = samples[i]
+            sumSquares += sample * sample
+        }
+        let rms = sqrt(sumSquares / Float(frames))
+
+        // Map to 0-1 using dB scale. Speech is typically -50 to -10 dB.
+        let db = 20 * log10(max(rms, 1e-7))
+        return max(0, min(1, (db + 50) / 40))
     }
 
     /// Write captured buffers to a timestamped WAV file off the main actor.
@@ -138,6 +167,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
         // Reset audio capture state.
         capturedBuffers.withLock { $0.removeAll() }
         lastAudioFileURL = nil
+        levelMonitor?.reset()
 
         try engine.prepare()
 
@@ -148,6 +178,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
         capturedFormat = recordingFormat
         let capturedEngine = engine
         let buffers = capturedBuffers
+        let monitor = levelMonitor
 
         inputNode.installTap(
             onBus: 0,
@@ -155,6 +186,11 @@ public final class SpeechTranscriber: SpeechTranscribing {
             format: recordingFormat
         ) { @Sendable buffer, _ in
             capturedEngine.append(buffer)
+
+            // Push audio level for waveform visualization.
+            if let monitor {
+                monitor.push(Self.computeRMS(buffer))
+            }
 
             // Copy the buffer for WAV export.
             if let copy = Self.copyBuffer(buffer) {
@@ -253,5 +289,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
         audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         isListening = false
+        levelMonitor?.reset()
     }
 }
