@@ -1,7 +1,6 @@
 import Accelerate
 import CoreML
 import Foundation
-import NaturalLanguage
 import os
 
 /// Model size bucket for automatic selection based on token count.
@@ -190,12 +189,23 @@ public final class KokoroEngine: @unchecked Sendable {
         let t0 = CFAbsoluteTimeGetCurrent()
         let clampedSpeed = min(max(speed, Self.speedRange.lowerBound), Self.speedRange.upperBound)
 
-        // 1. Split, phonemize, and encode all sentences.
-        let sentences = splitSentences(text)
-        let tokenized = sentences.map { tokenizer.encode(lockedPhonemize($0)) }
+        // 1. Split on paragraph boundaries, phonemize each, join.
+        let paragraphs = text.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let fullPhonemes: String
+        if paragraphs.count <= 1 {
+            fullPhonemes = lockedPhonemize(text)
+        } else {
+            fullPhonemes = paragraphs.map { lockedPhonemize($0) }.joined(separator: " ")
+        }
 
-        // 2. Merge consecutive chunks that fit in one bucket.
+        // 2. Chunk phoneme stream at punctuation boundaries, then encode.
         let maxTokens = activeBuckets.last!.maxTokens
+        let chunks = Self.chunkPhonemes(fullPhonemes, maxPhonemes: maxTokens - 2)
+        let tokenized = chunks.map { tokenizer.encode($0) }
+
+        // 3. Merge consecutive short chunks that fit in one bucket.
         var mergedIds: [[Int]] = []
         var currentIds: [Int] = []
         for ids in tokenized {
@@ -211,7 +221,7 @@ public final class KokoroEngine: @unchecked Sendable {
         }
         if !currentIds.isEmpty { mergedIds.append(currentIds) }
 
-        // 3. Synthesize each merged chunk.
+        // 4. Synthesize each merged chunk.
         var allSamples: [Float] = []
         var allDurations: [Int] = []
         var totalTokens = 0
@@ -220,7 +230,7 @@ public final class KokoroEngine: @unchecked Sendable {
         for tokenIds in mergedIds {
             totalTokens += tokenIds.count
 
-            let styleVector = try voiceStore.embedding(for: voice, tokenCount: tokenIds.count)
+            let styleVector = try voiceStore.embedding(for: voice, tokenCount: tokenIds.count - 2)
 
             let useBucket: ModelBucket
             if let forced = bucket {
@@ -294,16 +304,54 @@ public final class KokoroEngine: @unchecked Sendable {
         return phonemes
     }
 
-    private func splitSentences(_ text: String) -> [String] {
-        var sentences: [String] = []
-        let nlTokenizer = NLTokenizer(unit: .sentence)
-        nlTokenizer.string = text
-        nlTokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
-            let s = String(text[range]).trimmingCharacters(in: .whitespaces)
-            if !s.isEmpty { sentences.append(s) }
-            return true
+    /// Chunk a phoneme string into pieces that each fit within `maxPhonemes` characters.
+    ///
+    /// Uses a waterfall punctuation search matching the reference implementation:
+    /// first try to split at sentence-ending punctuation (`!.?…`), then at
+    /// clause boundaries (`:;`), then at phrase boundaries (`,—`), then at spaces.
+    static func chunkPhonemes(_ phonemes: String, maxPhonemes: Int) -> [String] {
+        guard phonemes.count > maxPhonemes else { return [phonemes] }
+
+        let waterfallSets: [Set<Character>] = [
+            Set("!.?\u{2026}"),   // sentence endings
+            Set(":;"),             // clause boundaries
+            Set(",\u{2014}"),      // phrase boundaries
+        ]
+
+        var chunks: [String] = []
+        var remaining = phonemes[...]
+
+        while remaining.count > maxPhonemes {
+            let window = remaining.prefix(maxPhonemes)
+            var splitIndex: String.Index?
+
+            // Waterfall: try each punctuation set, picking the last occurrence.
+            for punctSet in waterfallSets {
+                if let idx = window.lastIndex(where: { punctSet.contains($0) }) {
+                    splitIndex = window.index(after: idx)
+                    break
+                }
+            }
+
+            // Fallback: split at last space.
+            if splitIndex == nil {
+                if let idx = window.lastIndex(of: " ") {
+                    splitIndex = window.index(after: idx)
+                }
+            }
+
+            // Last resort: hard split at max.
+            let cut = splitIndex ?? window.endIndex
+            let chunk = String(remaining[remaining.startIndex..<cut])
+                .trimmingCharacters(in: .whitespaces)
+            if !chunk.isEmpty { chunks.append(chunk) }
+            remaining = remaining[cut...]
         }
-        return sentences.isEmpty ? [text] : sentences
+
+        let tail = String(remaining).trimmingCharacters(in: .whitespaces)
+        if !tail.isEmpty { chunks.append(tail) }
+
+        return chunks
     }
 
     private func synthesizeUnified(

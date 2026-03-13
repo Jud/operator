@@ -7,10 +7,11 @@ final class Tokenizer: Sendable {
 
     /// Pad token ID.
     static let padId: Int = 0
-    /// Start-of-sequence token ID.
-    static let bosId: Int = 1
-    /// End-of-sequence token ID.
-    static let eosId: Int = 2
+    /// Boundary token ID — used at both start and end of sequence.
+    /// Matches reference: [0, *input_ids, 0]
+    static let bosId: Int = 0
+    /// Boundary token ID — same as BOS per reference implementation.
+    static let eosId: Int = 0
 
     init(vocab: [String: Int]) {
         self.vocab = vocab
@@ -56,7 +57,19 @@ final class Tokenizer: Sendable {
         ids.append(Self.eosId)
 
         if ids.count > maxLength {
-            ids = Array(ids.prefix(maxLength - 1)) + [Self.eosId]
+            // Try to truncate at a punctuation boundary for cleaner audio.
+            // Search backwards in the second half for sentence/clause punctuation.
+            // Kokoro vocab: ;=1 :=2 ,=3 .=4 !=5 ?=6 —=9 …=10
+            let limit = maxLength - 1
+            var cutAt = limit
+            for i in stride(from: limit - 1, through: max(limit / 2, 1), by: -1) {
+                let id = ids[i]
+                if (1...6).contains(id) || id == 9 || id == 10 {
+                    cutAt = i + 1
+                    break
+                }
+            }
+            ids = Array(ids.prefix(cutAt)) + [Self.eosId]
         }
 
         return ids
