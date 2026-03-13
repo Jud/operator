@@ -24,6 +24,13 @@ public final class AudioLevelMonitor: @unchecked Sendable {
             return result
         }
 
+        func readLevels(into destination: inout [Float]) {
+            let count = min(buffer.count, destination.count)
+            for i in 0..<count {
+                destination[i] = buffer[(writeIndex + i) % buffer.count]
+            }
+        }
+
         mutating func reset() {
             buffer = [Float](repeating: 0, count: buffer.count)
             writeIndex = 0
@@ -53,6 +60,14 @@ public final class AudioLevelMonitor: @unchecked Sendable {
         lock.withLock { $0.levels() }
     }
 
+    /// Read levels into a pre-allocated buffer to avoid per-frame allocation.
+    ///
+    /// Called from the main thread.
+    public func readLevels(into destination: inout [Float]) {
+        // Use withLockUnchecked to allow capturing inout parameter.
+        lock.withLockUnchecked { $0.readLevels(into: &destination) }
+    }
+
     /// Reset all levels to zero.
     public func reset() {
         lock.withLock { $0.reset() }
@@ -70,6 +85,15 @@ public final class WaveformModel {
     private static let zeroed = Array(repeating: CGFloat.zero, count: sampleCount)
     private static let frameInterval: TimeInterval = 1.0 / 30.0
 
+    /// Minimum raw level to register as audio (noise gate).
+    private static let noiseGate: CGFloat = 0.03
+    /// Exponential smoothing factor (0 = no change, 1 = instant).
+    private static let smoothingFactor: CGFloat = 0.25
+    /// Minimum smoothed level to use audio amplitude vs. idle ripple.
+    private static let activeThreshold: CGFloat = 0.02
+    /// Amplitude of the gentle idle ripple when no audio is present.
+    private static let idleAmplitude = 0.04
+
     /// Normalized amplitudes for each sample point across the waveform width.
     var samples: [CGFloat] = zeroed
 
@@ -78,6 +102,7 @@ public final class WaveformModel {
     private var startTime: CFTimeInterval = 0
     private var levelMonitor: AudioLevelMonitor?
     private var smoothedLevels = [CGFloat](repeating: 0, count: sampleCount)
+    private var rawLevelBuffer = [Float](repeating: 0, count: sampleCount)
 
     func startAnimating(levelMonitor: AudioLevelMonitor?) {
         guard !isAnimating else {
@@ -113,18 +138,22 @@ public final class WaveformModel {
 
         let elapsed = CACurrentMediaTime() - startTime
         let count = Self.sampleCount
-        let rawLevels = levelMonitor?.levels() ?? [Float](repeating: 0, count: count)
+
+        // Read levels into a reusable buffer to avoid allocating per frame.
+        if let monitor = levelMonitor {
+            monitor.readLevels(into: &rawLevelBuffer)
+        } else {
+            for i in 0..<count { rawLevelBuffer[i] = 0 }
+        }
 
         for i in 0..<count {
             let x = Double(i) / Double(count - 1)
 
-            // Map ring buffer position to this sample.
-            let levelIndex = min(i, rawLevels.count - 1)
-            let rawLevel = CGFloat(rawLevels[max(0, levelIndex)])
-            let gatedLevel = rawLevel < 0.03 ? CGFloat(0) : rawLevel
+            let rawLevel = CGFloat(rawLevelBuffer[min(i, rawLevelBuffer.count - 1)])
+            let gatedLevel = rawLevel < Self.noiseGate ? CGFloat(0) : rawLevel
 
             // Exponential smoothing for fluid transitions.
-            smoothedLevels[i] += (gatedLevel - smoothedLevels[i]) * 0.25
+            smoothedLevels[i] += (gatedLevel - smoothedLevels[i]) * Self.smoothingFactor
             let level = smoothedLevels[i]
 
             // Taper amplitude toward edges.
@@ -134,9 +163,9 @@ public final class WaveformModel {
             let wave = sin(elapsed * 2.0 + x * 2.5 * .pi)
 
             // Gentle idle ripple when no audio is present.
-            let idleRipple = 0.04 * sin(elapsed * 1.2 + x * .pi)
+            let idleRipple = Self.idleAmplitude * sin(elapsed * 1.2 + x * .pi)
 
-            let amplitude = level > 0.02 ? Double(level) : idleRipple
+            let amplitude = level > Self.activeThreshold ? Double(level) : idleRipple
             samples[i] = CGFloat(amplitude * wave * envelope)
         }
     }

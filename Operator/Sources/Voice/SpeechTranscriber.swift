@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import Accelerate
 import AudioToolbox
 import os
 
@@ -19,6 +20,11 @@ public final class SpeechTranscriber: SpeechTranscribing {
     // MARK: - Type Properties
 
     private static let logger = Log.logger(for: "SpeechTranscriber")
+
+    /// Floor of the dB range mapped to 0.0 (below this is silence).
+    nonisolated private static let dbFloor: Float = -50
+    /// Width of the dB range mapped to 0.0-1.0.
+    nonisolated private static let dbRange: Float = 40
 
     /// Directory for saved audio files.
     static let audioTraceDir: URL = {
@@ -97,17 +103,12 @@ public final class SpeechTranscriber: SpeechTranscribing {
             return 0
         }
 
-        let samples = channelData[0]
         var sumSquares: Float = 0
-        for i in 0..<frames {
-            let sample = samples[i]
-            sumSquares += sample * sample
-        }
+        vDSP_svesq(channelData[0], 1, &sumSquares, vDSP_Length(frames))
         let rms = sqrt(sumSquares / Float(frames))
 
-        // Map to 0-1 using dB scale. Speech is typically -50 to -10 dB.
         let db = 20 * log10(max(rms, 1e-7))
-        return max(0, min(1, (db + 50) / 40))
+        return max(0, min(1, (db - dbFloor) / dbRange))
     }
 
     /// Write captured buffers to a timestamped WAV file off the main actor.
