@@ -488,7 +488,7 @@ private func recognizeFromBuffer(
 
     return await withCheckedContinuation { continuation in
         var resumed = false
-        recognizer.recognitionTask(with: request) { result, error in
+        let task = recognizer.recognitionTask(with: request) { result, error in
             guard !resumed else { return }
             if let result, result.isFinal {
                 resumed = true
@@ -497,6 +497,12 @@ private func recognizeFromBuffer(
                 resumed = true
                 continuation.resume(returning: nil)
             }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+            guard !resumed else { return }
+            resumed = true
+            task.cancel()
+            continuation.resume(returning: nil)
         }
     }
 }
