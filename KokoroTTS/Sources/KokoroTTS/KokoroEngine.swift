@@ -32,7 +32,8 @@ public enum ModelBucket: CaseIterable, Sendable, Comparable {
     ///
     /// Assumes `available` is sorted ascending (which `activeBuckets` always is).
     public static func select(forTokenCount count: Int, available: [ModelBucket]) -> ModelBucket? {
-        available.first { $0.maxTokens >= count }
+        assert(available == available.sorted(), "available must be sorted ascending")
+        return available.first { $0.maxTokens >= count }
     }
 }
 
@@ -204,11 +205,10 @@ public final class KokoroEngine: @unchecked Sendable {
                 forTokenCount: tokenIds.count, available: activeBuckets)
             {
                 useBucket = auto
-            } else if let largest = activeBuckets.last {
-                // Token count exceeds all buckets — use largest available
-                useBucket = largest
             } else {
-                continue
+                // Token count exceeds all buckets — use largest available.
+                // activeBuckets is guaranteed non-empty by init.
+                useBucket = activeBuckets.last!
             }
             selectedBucket = useBucket
 
