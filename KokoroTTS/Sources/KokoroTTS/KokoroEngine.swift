@@ -348,9 +348,7 @@ public final class KokoroEngine: @unchecked Sendable {
             samples.removeSubrange(validCount..<samples.count)
         }
 
-        // Fade-in: 5ms / Fade-out: 20ms (always applied)
-        let fadeIn = min(120, samples.count)
-        for i in 0..<fadeIn { samples[i] *= Float(i) / Float(fadeIn) }
+        // Fade-out: 20ms (always applied)
         let fadeOut = min(480, samples.count)
         let fadeStart = samples.count - fadeOut
         for i in 0..<fadeOut { samples[fadeStart + i] *= Float(fadeOut - i) / Float(fadeOut) }
