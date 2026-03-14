@@ -1,4 +1,5 @@
 import AVFoundation
+import VocabularyCorrector
 import WhisperKit
 import os
 

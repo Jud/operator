@@ -1,5 +1,5 @@
 {
-  "originHash" : "fb72bdf77acab31c90ec1c2998175a17bab21869fa6d7a87f608ade1bfb9fbea",
+  "originHash" : "63691b5c440d3e32263ccb2c3b7a8967037de618b97b178639429205ee67d197",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -269,6 +269,15 @@
       "state" : {
         "revision" : "150169bfba0889c229a2ce7494cf8949f18e6906",
         "version" : "1.1.9"
+      }
+    },
+    {
+      "identity" : "vocabulary-corrector-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Jud/vocabulary-corrector-swift.git",
+      "state" : {
+        "revision" : "89d0c800eb04be5b6e49a4988399c1df02d898d7",
+        "version" : "0.1.0"
       }
     },
     {

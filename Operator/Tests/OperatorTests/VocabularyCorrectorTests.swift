@@ -1,6 +1,5 @@
 import Testing
-
-@testable import OperatorCore
+import VocabularyCorrector
 
 @Suite("VocabularyCorrector")
 internal struct VocabularyCorrectorTests {

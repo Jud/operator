@@ -2,6 +2,7 @@ import AVFoundation
 import KokoroTTS
 import OperatorCore
 @preconcurrency import Speech
+import VocabularyCorrector
 import os
 
 private enum BenchmarkTarget: String, CaseIterable {
