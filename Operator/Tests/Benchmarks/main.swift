@@ -2,6 +2,7 @@ import AVFoundation
 import KokoroTTS
 import OperatorCore
 @preconcurrency import Speech
+import os
 
 private enum BenchmarkTarget: String, CaseIterable {
     case routing
@@ -487,20 +488,25 @@ private func recognizeFromBuffer(
     request.endAudio()
 
     return await withCheckedContinuation { continuation in
-        var resumed = false
+        let resumed = OSAllocatedUnfairLock(initialState: false)
+        func claimOnce() -> Bool {
+            resumed.withLock { val in
+                guard !val else { return false }
+                val = true
+                return true
+            }
+        }
         let task = recognizer.recognitionTask(with: request) { result, error in
-            guard !resumed else { return }
             if let result, result.isFinal {
-                resumed = true
+                guard claimOnce() else { return }
                 continuation.resume(returning: result.bestTranscription.formattedString)
             } else if error != nil {
-                resumed = true
+                guard claimOnce() else { return }
                 continuation.resume(returning: nil)
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
-            guard !resumed else { return }
-            resumed = true
+            guard claimOnce() else { return }
             task.cancel()
             continuation.resume(returning: nil)
         }

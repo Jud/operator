@@ -30,17 +30,19 @@ public enum WhisperKitModelManager {
         return appSupport.appendingPathComponent("com.operator/models/whisperkit", isDirectory: true)
     }()
 
+    /// Path to a specific downloaded model under the given base directory.
+    internal static func modelPath(_ variant: String, baseDirectory: URL) -> String? {
+        let folder = baseDirectory.appendingPathComponent(variant)
+        let contents = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        return contents.isEmpty ? nil : folder.path
+    }
+
     /// Path to a specific downloaded model.
     ///
     /// - Parameter variant: The model variant name.
     /// - Returns: The folder path, or nil if the model isn't downloaded.
     public static func modelPath(_ variant: String) -> String? {
-        let folder = modelDirectory.appendingPathComponent(variant)
-        guard FileManager.default.fileExists(atPath: folder.path) else {
-            return nil
-        }
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        return contents.isEmpty ? nil : folder.path
+        modelPath(variant, baseDirectory: modelDirectory)
     }
 
     /// Check if a model variant has been downloaded.

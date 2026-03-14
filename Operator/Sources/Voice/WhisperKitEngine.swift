@@ -84,6 +84,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Append an audio buffer from the microphone tap.
     public func append(_ buffer: AVAudioPCMBuffer) {
+        nonisolated(unsafe) let buf = buffer
         let converter: AudioFormatConverter? = sessionLock.withLock { state in
             guard state != nil else {
                 return nil
@@ -91,7 +92,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             if let existing = state?.converter {
                 return existing
             }
-            guard let conv = try? AudioFormatConverter(inputFormat: buffer.format) else {
+            guard let conv = try? AudioFormatConverter(inputFormat: buf.format) else {
                 return nil
             }
             state?.converter = conv
@@ -104,7 +105,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             guard var session = state else {
                 return
             }
-            _ = converter.appendConverted(buffer, to: &session.audioSamples)
+            _ = converter.appendConverted(buf, to: &session.audioSamples)
             state = session
         }
     }
