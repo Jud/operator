@@ -30,18 +30,23 @@ jobs:
 
   swift:
     name: Swift (build, lint, format)
-    runs-on: macos-15
+    runs-on: macos-26
     defaults:
       run:
         working-directory: Operator
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure SSH for private dependencies
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.HARNESS_DEPLOY_KEY }}
+
       - name: Build
         run: swift build
 
-      - name: Build tests
-        run: swift build --build-tests
+      - name: Test
+        run: swift test
 
       - name: Install SwiftLint
         run: brew install swiftlint

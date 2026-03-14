@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v15)],
     dependencies: [
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
-        .package(path: "../../harness"),
+        .package(url: "git@github.com:Jud/harness.git", from: "0.1.0"),
         .package(url: "https://github.com/Jud/kokoro-tts-swift.git", from: "0.1.0"),
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
     ],

@@ -1,5 +1,5 @@
 {
-  "originHash" : "9c2d66f295acdbb22834308feda72bf768890c4a935c8197d12428731197f93b",
+  "originHash" : "fb72bdf77acab31c90ec1c2998175a17bab21869fa6d7a87f608ade1bfb9fbea",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "2fc4652fb4689eb24af10e55cabaa61d8ba774fd",
         "version" : "1.32.0"
+      }
+    },
+    {
+      "identity" : "harness",
+      "kind" : "remoteSourceControl",
+      "location" : "git@github.com:Jud/harness.git",
+      "state" : {
+        "revision" : "a8b6c69187b30157b9e3af4e1a763010bfdd3e8d",
+        "version" : "0.1.0"
       }
     },
     {
