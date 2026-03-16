@@ -20,6 +20,9 @@ internal struct OnboardingViewModelTests {
         #expect(vm.currentStep == .accessibility)
 
         vm.advance()
+        #expect(vm.currentStep == .modelDownload)
+
+        vm.advance()
         #expect(vm.currentStep == .howItWorks)
 
         vm.advance()
@@ -42,6 +45,9 @@ internal struct OnboardingViewModelTests {
         vm.currentStep = .done
         vm.goBack()
         #expect(vm.currentStep == .howItWorks)
+
+        vm.goBack()
+        #expect(vm.currentStep == .modelDownload)
 
         vm.goBack()
         #expect(vm.currentStep == .accessibility)
@@ -132,7 +138,6 @@ internal struct OnboardingViewModelTests {
         let vm = OnboardingViewModel()
 
         #expect(vm.microphoneGranted == false)
-        #expect(vm.speechRecognitionGranted == false)
         #expect(vm.accessibilityGranted == false)
 
         // Calling refresh reads system state; should not trigger OS dialogs.
@@ -144,7 +149,6 @@ internal struct OnboardingViewModelTests {
         // consistent with OS query results (this mainly guards against regressions
         // such as accidentally calling request APIs instead of status queries).
         _ = vm.microphoneGranted
-        _ = vm.speechRecognitionGranted
         _ = vm.accessibilityGranted
     }
 

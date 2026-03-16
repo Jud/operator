@@ -190,7 +190,7 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
             if let result {
                 if result.isFinal {
                     let text = result.bestTranscription.formattedString
-                    Self.logger.info("Transcription complete: \(text)")
+                    Self.logger.notice("Transcription complete: \(text, privacy: .public)")
                     continuation.yield(.final(text.isEmpty ? nil : text))
                     continuation.finish()
                 } else {
@@ -200,7 +200,9 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
                         return state?.partialCount ?? 0
                     }
                     if count <= 3 {
-                        Self.logger.debug("Partial #\(count): \"\(partial.prefix(40))\"")
+                        Self.logger.notice("Partial #\(count): \(partial, privacy: .public)")
+                    } else {
+                        Self.logger.debug("Partial #\(count): \(partial, privacy: .public)")
                     }
                     continuation.yield(.partial(partial))
                 }

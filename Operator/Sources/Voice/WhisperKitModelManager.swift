@@ -63,7 +63,7 @@ public enum WhisperKitModelManager {
     @discardableResult
     public static func download(
         variant: String,
-        progressCallback: ((Progress) -> Void)? = nil
+        progressCallback: (@Sendable (Progress) -> Void)? = nil
     ) async throws -> URL {
         logger.info("Downloading WhisperKit model: \(variant)")
 
