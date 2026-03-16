@@ -127,11 +127,44 @@ public final class SpeechTranscriber: SpeechTranscribing {
                 try audioFile.write(from: buffer)
             }
             log.info("Saved audio trace: \(fileURL.lastPathComponent)")
+            pruneOldTraces(in: directory, keep: 20, log: log)
             return fileURL
         } catch {
             log.error("Failed to write audio trace: \(error)")
             return nil
         }
+    }
+
+    /// Keep only the most recent `keep` audio trace files, deleting the rest.
+    nonisolated private static func pruneOldTraces(
+        in directory: URL,
+        keep: Int,
+        log: Logger
+    ) {
+        let fm = FileManager.default
+        guard
+            let files = try? fm.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.creationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+        else { return }
+
+        let wavFiles = files.filter { $0.pathExtension == "wav" }
+        guard wavFiles.count > keep
+        else { return }
+
+        let sorted = wavFiles.sorted { lhs, rhs in
+            let dateL = (try? lhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            let dateR = (try? rhs.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
+            return dateL < dateR
+        }
+
+        let toDelete = sorted.prefix(sorted.count - keep)
+        for file in toDelete {
+            try? fm.removeItem(at: file)
+        }
+        log.info("Pruned \(toDelete.count) old audio trace(s), keeping \(keep)")
     }
 
     // MARK: - Public Methods

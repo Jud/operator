@@ -10,10 +10,10 @@ import os
 /// correction.
 ///
 /// During recording, a background loop re-transcribes accumulated audio every
-/// ~1 second, confirming segments whose boundaries are stable across passes.
-/// Confirmed segments are locked and skipped in future passes via `clipTimestamps`.
-/// On `finishAndTranscribe()`, only the unconfirmed tail needs decoding, giving
-/// near-instant results for typical push-to-talk durations.
+/// ~1 second, confirming segments when 2+ are produced. Confirmed segments are
+/// skipped in future passes via `clipTimestamps`. On `finishAndTranscribe()`,
+/// only the unconfirmed tail needs decoding. Short utterances that only produce
+/// 1 segment fall back to standard batch transcription (~500ms).
 public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     private struct SessionState: @unchecked Sendable {
         var audioSamples: [Float] = []
@@ -30,9 +30,6 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     /// Minimum new audio (in samples at 16 kHz) before triggering a background pass.
     private static let retranscribeThreshold = 16_000  // 1 second
 
-    /// Number of trailing segments to keep unconfirmed (they may shift as more audio arrives).
-    private static let segmentsToKeepUnconfirmed = 2
-
     // MARK: - Instance Properties
 
     private let pipe: WhisperKit
@@ -42,6 +39,9 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     private let streamLock = OSAllocatedUnfairLock<StreamState>(
         initialState: StreamState()
     )
+
+    /// Flag to stop the background loop without cancelling in-flight inference.
+    private let stopLoop = OSAllocatedUnfairLock(initialState: false)
 
     /// Handle to the periodic re-transcription task.
     private var retranscribeTask: Task<Void, Never>?
@@ -56,6 +56,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         self.pipe = pipe
     }
 
+    // MARK: - Type Methods
+
     /// Create a WhisperKitEngine by loading a model from disk.
     ///
     /// - Parameter modelFolder: Path to the directory containing the WhisperKit model.
@@ -66,6 +68,13 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let pipe = try await WhisperKit(config)
         logger.info("WhisperKit pipeline loaded from \(modelFolder)")
         return WhisperKitEngine(pipe: pipe)
+    }
+
+    /// Strip hallucinated angle-bracket tokens (e.g. `<5639ef...>`) that
+    /// `skipSpecialTokens` doesn't catch, and trim whitespace.
+    private static func stripArtifacts(_ text: String) -> String {
+        text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - TranscriptionEngine
@@ -127,10 +136,11 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Finish recording and return the transcribed text.
     ///
-    /// Decodes only the unconfirmed tail (from the last confirmed segment boundary)
-    /// and combines it with the confirmed prefix for the full result.
+    /// Signals the background loop to stop (without cancelling in-flight
+    /// inference) and runs a final pass from the last confirmed point.
     public func finishAndTranscribe() async -> String? {  // swiftlint:disable:this function_body_length
-        retranscribeTask?.cancel()
+        // Stop the loop — don't cancel, just flag it to exit after its current pass.
+        stopLoop.withLock { $0 = true }
         retranscribeTask = nil
 
         let snapshot = sessionLock.withLock { state -> SessionState? in
@@ -150,12 +160,14 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
         let stream = streamLock.withLock { $0 }
 
+        // Final pass: decode from last confirmed point.
         let tailText = await transcribe(
             samples: samples,
             promptTokens: promptTokens,
             clipStart: stream.confirmedEndSeconds
         )
 
+        // Combine confirmed prefix with the final tail.
         let fullText: String
         if stream.confirmedText.isEmpty {
             fullText = tailText ?? ""
@@ -165,16 +177,18 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             fullText = stream.confirmedText
         }
 
-        guard !fullText.isEmpty
+        let cleaned = Self.stripArtifacts(fullText)
+
+        guard !cleaned.isEmpty
         else {
             Self.logger.info("Transcription returned empty")
             return nil
         }
 
-        let corrected = VocabularyCorrector.correct(text: fullText, vocabulary: vocabulary)
-        if corrected != fullText {
+        let corrected = VocabularyCorrector.correct(text: cleaned, vocabulary: vocabulary)
+        if corrected != cleaned {
             Self.logger.notice(
-                "Post-correction: \"\(fullText, privacy: .public)\" -> \"\(corrected, privacy: .public)\""
+                "Post-correction: \"\(cleaned, privacy: .public)\" -> \"\(corrected, privacy: .public)\""
             )
         }
         let clip = stream.confirmedEndSeconds
@@ -186,26 +200,22 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
     /// Cancel any in-progress session and release resources.
     public func cancel() {
+        stopLoop.withLock { $0 = true }
         retranscribeTask?.cancel()
         retranscribeTask = nil
-        resetSession()
-    }
-
-    // MARK: - Private
-
-    private func resetSession() {
         sessionLock.withLock { $0 = nil }
         streamLock.withLock { $0 = StreamState() }
     }
 
+    // MARK: - Private
+
     private func startRetranscriptionLoop() {
+        stopLoop.withLock { $0 = false }
         retranscribeTask = Task { [weak self] in
+            // Wait for enough audio to make a useful first pass.
             try? await Task.sleep(nanoseconds: 2_000_000_000)
 
-            while !Task.isCancelled {
-                guard let self
-                else { return }
-
+            while let self, !self.stopLoop.withLock({ $0 }) {
                 let (samples, promptTokens) = self.sessionLock.withLock { state -> ([Float], [Int]) in
                     guard let session = state
                     else { return ([], []) }
@@ -213,9 +223,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
                 }
 
                 let stream = self.streamLock.withLock { $0 }
-                let processedSamples = Int(
-                    stream.confirmedEndSeconds * Float(WhisperKit.sampleRate)
-                )
+                let processedSamples = Int(stream.confirmedEndSeconds * Float(WhisperKit.sampleRate))
                 let newSamples = samples.count - processedSamples
 
                 if newSamples >= Self.retranscribeThreshold {
@@ -226,11 +234,20 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
                     )
                 }
 
+                // Check flag before sleeping so we exit promptly.
+                guard !self.stopLoop.withLock({ $0 })
+                else { return }
+
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
     }
 
+    /// Run a transcription pass from `clipStart` and confirm stable segments.
+    ///
+    /// When 2+ segments are produced, all but the last are confirmed (their
+    /// boundaries are natural phrase breaks from Whisper's decoder). With only
+    /// 1 segment, nothing is confirmed — short utterances fall back to batch.
     private func runBackgroundPass(
         samples: [Float],
         promptTokens: [Int],
@@ -242,20 +259,21 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             clipStart: clipStart
         )
 
-        guard !segments.isEmpty
-        else { return }
+        guard segments.count >= 2
+        else {
+            Self.logger.notice(
+                "Background pass: \(segments.count) seg (need 2+ to confirm)"
+            )
+            return
+        }
 
-        let toConfirm = segments.count - Self.segmentsToKeepUnconfirmed
-        guard toConfirm > 0
-        else { return }
+        let toConfirm = segments.count - 1
 
         let confirmedSegments = Array(segments.prefix(toConfirm))
 
-        let newText =
-            confirmedSegments
-            .map(\.text)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let newText = Self.stripArtifacts(
+            confirmedSegments.map(\.text).joined(separator: " ")
+        )
         let newEnd = confirmedSegments.last?.end ?? clipStart
 
         guard newEnd > clipStart
@@ -270,8 +288,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             state.confirmedEndSeconds = newEnd
         }
 
-        Self.logger.debug(
-            "Confirmed \(toConfirm) segment(s) up to \(newEnd)s: \"\(newText.prefix(50))\""
+        Self.logger.notice(
+            "Confirmed \(toConfirm) seg to \(newEnd)s: \"\(newText.prefix(60), privacy: .public)\""
         )
     }
 
@@ -303,6 +321,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             var options = DecodingOptions()
             options.language = "en"
             options.skipSpecialTokens = true
+            options.chunkingStrategy = .vad
             if !promptTokens.isEmpty {
                 options.promptTokens = promptTokens
             }
@@ -330,6 +349,6 @@ private struct StreamState {
 
     /// End timestamp (seconds) of the last confirmed segment.
     ///
-    /// Used as clipTimestamps for the next pass so Whisper skips already-confirmed audio.
+    /// Used as clipTimestamps for the next pass so Whisper skips confirmed audio.
     var confirmedEndSeconds: Float = 0
 }
