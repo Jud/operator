@@ -213,10 +213,21 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         } else if preference == .whisperKit {
             Self.logger.warning("WhisperKit selected but model \(model) not downloaded. Falling back to Apple Speech.")
         } else {
-            Self.logger.info("STT engine: Apple Speech (no WhisperKit models available)")
+            Self.logger.info("STT engine: Apple Speech (WhisperKit model not yet downloaded)")
+            autoDownloadWhisperKitModel(model)
         }
 
         return AppleSpeechEngine()
+    }
+
+    /// Kick off a background download of the WhisperKit model so it's available on next launch.
+    private func autoDownloadWhisperKitModel(_ variant: String) {
+        guard !WhisperKitModelManager.modelAvailable(variant)
+        else { return }
+        Task.detached {
+            // WhisperKitModelManager.download logs start/completion internally.
+            try? await WhisperKitModelManager.download(variant: variant)
+        }
     }
 
     private func bootstrapPrerequisites() {
