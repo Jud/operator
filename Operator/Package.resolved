@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "git@github.com:Jud/harness.git",
       "state" : {
-        "revision" : "a8b6c69187b30157b9e3af4e1a763010bfdd3e8d",
-        "version" : "0.1.0"
+        "revision" : "0f7269fbc61c75e447a0e1643c2ccabd587d142c",
+        "version" : "0.1.1"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/hummingbird-project/hummingbird.git",
       "state" : {
-        "revision" : "328a211b3bdc8bdd41a40a3d4112ed6b79358fa4",
-        "version" : "2.20.1"
+        "revision" : "282f55d605bf9324d2da7cbebbf30112a0ae575d",
+        "version" : "2.21.0"
       }
     },
     {
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Jud/swift-bart-g2p.git",
       "state" : {
-        "revision" : "66ec6ccd29e4499ab911a9ade5198e634619715a",
-        "version" : "0.1.0"
+        "revision" : "b23ed24347e785f086be8f56f075a39660ce1873",
+        "version" : "0.2.0"
       }
     },
     {
@@ -105,8 +105,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-collections.git",
       "state" : {
-        "revision" : "7b847a3b7008b2dc2f47ca3110d8c782fb2e5c7e",
-        "version" : "1.3.0"
+        "revision" : "8d9834a6189db730f6264db7556a7ffb751e99ee",
+        "version" : "1.4.0"
       }
     },
     {
@@ -132,8 +132,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-distributed-tracing.git",
       "state" : {
-        "revision" : "e109d8b5308d0e05201d9a1dd1c475446a946a11",
-        "version" : "1.4.0"
+        "revision" : "dc4030184203ffafbb2ec614352487235d747fe0",
+        "version" : "1.4.1"
       }
     },
     {
@@ -186,8 +186,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio.git",
       "state" : {
-        "revision" : "e932d3c4d8f77433c8f7093b5ebcbf91463948a0",
-        "version" : "2.95.0"
+        "revision" : "b31565862a8f39866af50bc6676160d8dda7de35",
+        "version" : "2.96.0"
       }
     },
     {

@@ -331,7 +331,9 @@ extension StateMachine {
             return
         }
 
-        Self.logger.info("Transcription result: \"\(text.prefix(80))\"")
+        Self.logger.notice(
+            "Transcription: \"\(text.prefix(80), privacy: .public)\" file=\(audioFile ?? "none", privacy: .public)"
+        )
 
         let decision = await bimodalEngine.decide(text: text, routingState: routingState)
 
@@ -351,6 +353,8 @@ extension StateMachine {
         text: String,
         audioFile: String? = nil
     ) async {
+        Self.logger.notice("Bimodal decision: \(String(describing: decision), privacy: .public)")
+
         switch decision {
         case .routeToAgent:
             await processTranscription(text, audioFile: audioFile)
@@ -575,6 +579,10 @@ extension StateMachine {
 
         cancelTimeout()
 
+        Self.logger.notice(
+            "Delivery: \(String(describing: result), privacy: .public) session=\(session, privacy: .public)"
+        )
+
         switch result {
         case .success(let msg, let sess):
             routingState.recordRoute(text: msg, session: sess)
@@ -738,7 +746,7 @@ extension StateMachine {
         let oldState = currentState
         currentState = newState
         menuBarModel?.update(state: newState.rawValue)
-        Self.logger.info("State transition: \(oldState) -> \(newState)")
+        Self.logger.notice("State: \(oldState, privacy: .public) -> \(newState, privacy: .public)")
     }
 
     /// Enter the IDLE state: resume audio queue, play pending tone, fade waveform.

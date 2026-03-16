@@ -42,6 +42,9 @@ extension OnboardingView {
         case .accessibility:
             accessibilityStep
 
+        case .modelDownload:
+            modelDownloadStep
+
         case .howItWorks:
             howItWorksStep
 
@@ -93,31 +96,23 @@ extension OnboardingView {
                 .font(.system(size: 56))
                 .foregroundStyle(.tint)
 
-            Text("Voice Permissions")
+            Text("Microphone Access")
                 .font(.title)
                 .fontWeight(.semibold)
 
-            Text("Operator needs microphone and speech recognition access to hear your voice commands.")
+            Text("Operator needs microphone access to hear your voice commands.")
                 .font(.body)
                 .multilineTextAlignment(.center)
 
-            VStack(spacing: 12) {
-                permissionRow(
-                    label: "Microphone",
-                    granted: model.microphoneGranted,
-                    requested: model.microphoneRequested
-                )
-
-                permissionRow(
-                    label: "Speech Recognition",
-                    granted: model.speechRecognitionGranted,
-                    requested: model.speechRecognitionRequested
-                )
-            }
+            permissionRow(
+                label: "Microphone",
+                granted: model.microphoneGranted,
+                requested: model.microphoneRequested
+            )
             .padding(.top, 4)
 
             if !model.microphoneRequested {
-                Button("Request Permissions") {
+                Button("Grant Access") {
                     model.requestPermissions()
                 }
                 .buttonStyle(.borderedProminent)
@@ -202,7 +197,61 @@ extension OnboardingView {
     }
 }
 
-// MARK: - Step 4: How It Works
+// MARK: - Step 4: Model Download
+
+extension OnboardingView {
+    private var modelDownloadStep: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 56))
+                .foregroundStyle(.tint)
+
+            Text("Voice Engine")
+                .font(.title)
+                .fontWeight(.semibold)
+
+            Text(
+                "Operator uses a local AI model for accurate speech recognition. "
+                    + "This one-time download runs entirely on your Mac."
+            )
+            .font(.body)
+            .multilineTextAlignment(.center)
+
+            downloadStatusView
+        }
+        .onAppear { model.startModelDownload() }
+    }
+
+    @ViewBuilder private var downloadStatusView: some View {
+        if model.modelDownloaded {
+            Label("Model ready", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.body)
+        } else if model.modelDownloading {
+            VStack(spacing: 8) {
+                ProgressView(value: model.modelDownloadProgress)
+                    .progressViewStyle(.linear)
+                    .padding(.horizontal, 40)
+                Text("\(Int(model.modelDownloadProgress * 100))%")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        } else if let error = model.modelDownloadError {
+            VStack(spacing: 8) {
+                Label("Download failed", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.body)
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Retry") { model.startModelDownload() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+}
+
+// MARK: - Step 5: How It Works
 
 extension OnboardingView {
     private var howItWorksStep: some View {
@@ -272,7 +321,7 @@ extension OnboardingView {
     }
 }
 
-// MARK: - Step 5: Done
+// MARK: - Step 6: Done
 
 extension OnboardingView {
     private var doneStep: some View {
@@ -291,8 +340,8 @@ extension OnboardingView {
 
             VStack(spacing: 8) {
                 permissionSummaryRow(label: "Microphone", granted: model.microphoneGranted)
-                permissionSummaryRow(label: "Speech Recognition", granted: model.speechRecognitionGranted)
                 permissionSummaryRow(label: "Accessibility", granted: model.accessibilityGranted)
+                permissionSummaryRow(label: "Voice Engine", granted: model.modelDownloaded)
             }
             .padding(.top, 4)
         }
@@ -336,6 +385,7 @@ extension OnboardingView {
                     model.advance()
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(model.currentStep == .modelDownload && model.modelDownloading)
             }
         }
     }

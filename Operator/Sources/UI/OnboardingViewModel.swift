@@ -1,6 +1,5 @@
 import AVFoundation
 import Foundation
-import Speech
 
 /// View model managing the first-launch onboarding flow, including step
 /// navigation, permission tracking, and bootstrap completion signaling.
@@ -14,8 +13,9 @@ public final class OnboardingViewModel {
         case welcome = 0
         case permissions = 1
         case accessibility = 2
-        case howItWorks = 3
-        case done = 4
+        case modelDownload = 3
+        case howItWorks = 4
+        case done = 5
     }
 
     // MARK: - Constants
@@ -38,21 +38,28 @@ public final class OnboardingViewModel {
     /// Whether microphone access has been granted.
     public var microphoneGranted: Bool = false
 
-    /// Whether speech recognition access has been granted.
-    public var speechRecognitionGranted: Bool = false
-
     /// Whether Accessibility (AXIsProcessTrusted) has been granted.
     public var accessibilityGranted: Bool = false
 
     /// Whether microphone permission has been requested during this session.
     public var microphoneRequested: Bool = false
 
-    /// Whether speech recognition permission has been requested during this session.
-    public var speechRecognitionRequested: Bool = false
+    /// Whether the WhisperKit model is currently being downloaded.
+    public var modelDownloading: Bool = false
+
+    /// Progress of the WhisperKit model download (0.0–1.0).
+    public var modelDownloadProgress: Double = 0
+
+    /// Whether the WhisperKit model has been downloaded successfully.
+    public var modelDownloaded: Bool = false
+
+    /// Error message if the model download failed.
+    public var modelDownloadError: String?
 
     private var completionHandler: (() -> Void)?
     private var axPollingTimer: Timer?
     private var autoAdvanceTask: Task<Void, Never>?
+    private var downloadTask: Task<Void, Never>?
 
     // MARK: - Initialization
 
@@ -70,17 +77,16 @@ public final class OnboardingViewModel {
         }
 
         let micAuthorized = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        let speechAuthorized = SFSpeechRecognizer.authorizationStatus() == .authorized
         let axTrusted = AXIsProcessTrusted()
 
-        if micAuthorized && speechAuthorized && axTrusted {
+        if micAuthorized && axTrusted {
             UserDefaults.standard.set(true, forKey: Self.completedKey)
             logger.info("All permissions already granted, skipping onboarding")
             return false
         }
 
         logger.info(
-            "Onboarding needed: mic=\(micAuthorized), speech=\(speechAuthorized), ax=\(axTrusted)"
+            "Onboarding needed: mic=\(micAuthorized), ax=\(axTrusted)"
         )
         return true
     }
@@ -112,11 +118,10 @@ public final class OnboardingViewModel {
         Self.logger.info("Went back to step \(previousRaw.rawValue)")
     }
 
-    /// Request Microphone and Speech Recognition permissions sequentially.
+    /// Request Microphone permission.
     public func requestPermissions() {
         Task {
             await self.requestMicrophonePermission()
-            await self.requestSpeechRecognitionPermission()
         }
     }
 
@@ -155,6 +160,49 @@ public final class OnboardingViewModel {
         autoAdvanceTask = nil
     }
 
+    /// Start downloading the WhisperKit model.
+    public func startModelDownload() {
+        guard !modelDownloading, !modelDownloaded
+        else { return }
+
+        let model = WhisperKitModelManager.defaultModel
+
+        // Already downloaded (e.g. user re-visited step).
+        if WhisperKitModelManager.modelAvailable(model) {
+            modelDownloaded = true
+            modelDownloadProgress = 1.0
+            Self.logger.info("WhisperKit model already available, skipping download")
+            return
+        }
+
+        modelDownloading = true
+        modelDownloadError = nil
+        modelDownloadProgress = 0
+
+        weak var weakSelf = self
+        let callback: @Sendable (Progress) -> Void = { progress in
+            Task { @MainActor in
+                weakSelf?.modelDownloadProgress = progress.fractionCompleted
+            }
+        }
+
+        downloadTask = Task {
+            do {
+                Self.logger.info("Downloading WhisperKit model: \(model)")
+                try await WhisperKitModelManager.download(variant: model, progressCallback: callback)
+                self.modelDownloading = false
+                self.modelDownloaded = true
+                Self.logger.info("WhisperKit model download complete")
+            } catch {
+                guard !Task.isCancelled
+                else { return }
+                self.modelDownloading = false
+                self.modelDownloadError = error.localizedDescription
+                Self.logger.warning("WhisperKit model download failed: \(error)")
+            }
+        }
+    }
+
     /// Complete the onboarding flow.
     public func completeOnboarding() {
         stopAccessibilityPolling()
@@ -169,13 +217,11 @@ public final class OnboardingViewModel {
     /// Refresh permission states by reading current OS status.
     public func refreshPermissionStates() {
         let mic = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        let speech = SFSpeechRecognizer.authorizationStatus() == .authorized
         let ax = AXIsProcessTrusted()
         microphoneGranted = mic
-        speechRecognitionGranted = speech
         accessibilityGranted = ax
         Self.logger.info(
-            "Refreshed permission states: mic=\(mic), speech=\(speech), ax=\(ax)"
+            "Refreshed permission states: mic=\(mic), ax=\(ax)"
         )
     }
 
@@ -194,23 +240,6 @@ public final class OnboardingViewModel {
         let granted = await AVCaptureDevice.requestAccess(for: .audio)
         microphoneGranted = granted
         Self.logger.info("Microphone permission \(granted ? "granted" : "denied")")
-    }
-
-    private func requestSpeechRecognitionPermission() async {
-        let currentStatus = SFSpeechRecognizer.authorizationStatus()
-        if currentStatus == .authorized {
-            speechRecognitionGranted = true
-            speechRecognitionRequested = true
-            Self.logger.info("Speech recognition already authorized, skipping request")
-            return
-        }
-
-        speechRecognitionRequested = true
-        let status = await AppleSpeechEngine.requestAuthorization()
-        speechRecognitionGranted = status == .authorized
-        Self.logger.info(
-            "Speech recognition permission: \(String(describing: status))"
-        )
     }
 
     private func checkAccessibilityStatus() {

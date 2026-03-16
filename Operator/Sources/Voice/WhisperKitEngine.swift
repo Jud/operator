@@ -136,9 +136,9 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
         let corrected = VocabularyCorrector.correct(text: text, vocabulary: vocabulary)
         if corrected != text {
-            Self.logger.info("Post-correction: \"\(text)\" → \"\(corrected)\"")
+            Self.logger.notice("Post-correction: \"\(text, privacy: .public)\" -> \"\(corrected, privacy: .public)\"")
         }
-        Self.logger.info("Transcription complete: \(corrected)")
+        Self.logger.notice("Transcription complete (\(samples.count) samples): \(corrected, privacy: .public)")
         return corrected
     }
 
