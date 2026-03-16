@@ -32,4 +32,6 @@ internal final class MockSpeechTranscriber: SpeechTranscribing {
     func stopListeningWithTimeout(seconds: TimeInterval) async -> String? {
         await stopListening()
     }
+
+    func replaceEngine(_ newEngine: any TranscriptionEngine) {}
 }
