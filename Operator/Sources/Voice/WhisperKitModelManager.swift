@@ -19,7 +19,10 @@ public enum WhisperKitModelManager {
     ]
 
     /// Default model variant.
-    public static let defaultModel = "openai_whisper-large-v3_turbo"
+    ///
+    /// Base offers fast load (~1s) and transcription while maintaining
+    /// reasonable accuracy for voice commands.
+    public static let defaultModel = "openai_whisper-base"
 
     /// Root directory for WhisperKit models.
     public static let modelDirectory: URL = {
@@ -31,10 +34,21 @@ public enum WhisperKitModelManager {
     }()
 
     /// Path to a specific downloaded model under the given base directory.
+    ///
+    /// WhisperKit downloads to `<base>/models/argmaxinc/whisperkit-coreml/<variant>/`,
+    /// so we check both the nested path and a flat `<base>/<variant>/` for flexibility.
     internal static func modelPath(_ variant: String, baseDirectory: URL) -> String? {
-        let folder = baseDirectory.appendingPathComponent(variant)
-        let contents = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        return contents.isEmpty ? nil : folder.path
+        let nested = baseDirectory.appendingPathComponent(
+            "models/argmaxinc/whisperkit-coreml/\(variant)"
+        )
+        let nestedContents = (try? FileManager.default.contentsOfDirectory(atPath: nested.path)) ?? []
+        if !nestedContents.isEmpty {
+            return nested.path
+        }
+
+        let flat = baseDirectory.appendingPathComponent(variant)
+        let flatContents = (try? FileManager.default.contentsOfDirectory(atPath: flat.path)) ?? []
+        return flatContents.isEmpty ? nil : flat.path
     }
 
     /// Path to a specific downloaded model.

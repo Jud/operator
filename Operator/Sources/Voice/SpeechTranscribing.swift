@@ -18,4 +18,5 @@ public protocol SpeechTranscribing: AnyObject, Sendable {
     func startListening(contextualStrings: [String]) throws
     func stopListening() async -> String?
     func stopListeningWithTimeout(seconds: TimeInterval) async -> String?
+    func replaceEngine(_ newEngine: any TranscriptionEngine)
 }

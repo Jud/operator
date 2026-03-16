@@ -29,6 +29,8 @@ private final class TestSpeechTranscriber: SpeechTranscribing {
     func stopListeningWithTimeout(seconds _: TimeInterval) async -> String? {
         await stopListening()
     }
+
+    func replaceEngine(_ newEngine: any TranscriptionEngine) {}
 }
 
 @MainActor
