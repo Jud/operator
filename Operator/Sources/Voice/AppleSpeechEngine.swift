@@ -95,7 +95,7 @@ public final class AppleSpeechEngine: TranscriptionEngine, @unchecked Sendable {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
-        request.taskHint = .search
+        request.taskHint = .dictation
 
         if !contextualStrings.isEmpty {
             request.contextualStrings = contextualStrings
