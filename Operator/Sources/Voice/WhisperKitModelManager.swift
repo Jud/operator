@@ -19,7 +19,10 @@ public enum WhisperKitModelManager {
     ]
 
     /// Default model variant.
-    public static let defaultModel = "openai_whisper-large-v3_turbo"
+    ///
+    /// Base offers fast load (~1s) and transcription while maintaining
+    /// reasonable accuracy for voice commands.
+    public static let defaultModel = "openai_whisper-base"
 
     /// Root directory for WhisperKit models.
     public static let modelDirectory: URL = {

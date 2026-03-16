@@ -122,7 +122,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func bootstrap() async {
+    private func bootstrap() async {  // swiftlint:disable:this function_body_length
         Self.logger.info("Operator launching")
         bootstrapPrerequisites()
 
@@ -152,8 +152,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         bootstrapFeedbackPanel(traceStore: traceStore)
         bootstrapHTTPServer(reg: reg, aq: aq, tts: ttsManager, vm: vm)
-        let sttEngine = await bootstrapSTT()
-        bootstrapStateMachine(
+        let sttEngine = AppleSpeechEngine()
+        let transcriber = bootstrapStateMachine(
             stt: sttEngine,
             tts: ttsManager,
             aq: aq,
@@ -164,6 +164,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             vm: vm
         )
         bootstrapTrigger()
+        warmUpWhisperKit(transcriber: transcriber)
         bootstrapDiscovery(terminalBridge: terminalBridge, reg: reg, aq: aq, vm: vm)
         wireVoicePreview()
         ttsManager.speak("Operator is ready.", voice: vm.operatorVoice, prefix: "")
@@ -186,48 +187,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             Self.logger.info("Kokoro models not downloaded. Using Apple TTS.")
         }
         return (SpeechManager(), VoiceManager())
-    }
-
-    private func bootstrapSTT() async -> any TranscriptionEngine {
-        let preference =
-            STTEnginePreference(
-                rawValue: UserDefaults.standard.string(forKey: "sttEngine") ?? "auto"
-            ) ?? .auto
-        let model =
-            UserDefaults.standard.string(forKey: "whisperKitModel")
-            ?? WhisperKitModelManager.defaultModel
-
-        if preference == .apple {
-            Self.logger.info("STT engine: Apple Speech (user selected)")
-            return AppleSpeechEngine()
-        }
-
-        if let modelPath = WhisperKitModelManager.modelPath(model) {
-            do {
-                let engine = try await WhisperKitEngine.create(modelFolder: modelPath)
-                Self.logger.info("STT engine: WhisperKit (\(model))")
-                return engine
-            } catch {
-                Self.logger.warning("WhisperKit init failed: \(error). Falling back to Apple Speech.")
-            }
-        } else if preference == .whisperKit {
-            Self.logger.warning("WhisperKit selected but model \(model) not downloaded. Falling back to Apple Speech.")
-        } else {
-            Self.logger.info("STT engine: Apple Speech (WhisperKit model not yet downloaded)")
-            autoDownloadWhisperKitModel(model)
-        }
-
-        return AppleSpeechEngine()
-    }
-
-    /// Kick off a background download of the WhisperKit model so it's available on next launch.
-    private func autoDownloadWhisperKitModel(_ variant: String) {
-        guard !WhisperKitModelManager.modelAvailable(variant)
-        else { return }
-        Task.detached {
-            // WhisperKitModelManager.download logs start/completion internally.
-            try? await WhisperKitModelManager.download(variant: variant)
-        }
     }
 
     private func bootstrapPrerequisites() {
@@ -271,6 +230,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// Create the state machine, waveform panel, and menu bar model.
+    @discardableResult
     private func bootstrapStateMachine(  // swiftlint:disable:this function_parameter_count
         stt: any TranscriptionEngine,
         tts: any SpeechManaging,
@@ -280,7 +240,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         terminalBridge: any TerminalBridge,
         reg: SessionRegistry,
         vm: VoiceManager
-    ) {
+    ) -> OperatorCore.SpeechTranscriber {
         let levelMonitor = AudioLevelMonitor()
         let transcriber = SpeechTranscriber(engine: stt, levelMonitor: levelMonitor)
         let wp = WaveformPanel(levelMonitor: levelMonitor)
@@ -311,6 +271,43 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             dictationDelivery: dictDelivery,
             menuBarModel: mbm
         )
+        return transcriber
+    }
+
+    /// Load WhisperKit in the background and swap in when ready.
+    ///
+    /// Downloads the model first if not present.
+    private func warmUpWhisperKit(transcriber: OperatorCore.SpeechTranscriber) {
+        let preference =
+            STTEnginePreference(
+                rawValue: UserDefaults.standard.string(forKey: "sttEngine") ?? "auto"
+            ) ?? .auto
+        let model =
+            UserDefaults.standard.string(forKey: "whisperKitModel")
+            ?? WhisperKitModelManager.defaultModel
+
+        guard preference != .apple
+        else { return }
+
+        Task {
+            do {
+                // Download if needed.
+                var modelPath = WhisperKitModelManager.modelPath(model)
+                if modelPath == nil {
+                    let folder = try await WhisperKitModelManager.download(variant: model)
+                    modelPath = folder.path
+                }
+
+                guard let path = modelPath
+                else { return }
+
+                let engine = try await WhisperKitEngine.create(modelFolder: path)
+                transcriber.replaceEngine(engine)
+                Self.logger.notice("STT engine upgraded to WhisperKit (\(model, privacy: .public))")
+            } catch {
+                Self.logger.warning("WhisperKit warmup failed: \(error). Staying on Apple Speech.")
+            }
+        }
     }
 
     private func bootstrapFeedbackPanel(traceStore: RoutingTraceStore) {

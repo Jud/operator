@@ -32,7 +32,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
     // MARK: - Instance Properties
 
-    private let engine: any TranscriptionEngine
+    private var engine: any TranscriptionEngine
     private let audioEngine = AVAudioEngine()
 
     /// Whether the audio engine is currently capturing microphone input.
@@ -135,6 +135,16 @@ public final class SpeechTranscriber: SpeechTranscribing {
     }
 
     // MARK: - Public Methods
+
+    /// Replace the transcription engine (e.g. after async model loading).
+    ///
+    /// Safe to call between push-to-talk sessions. If called while listening,
+    /// the new engine takes effect on the next `startListening()` call.
+    public func replaceEngine(_ newEngine: any TranscriptionEngine) {
+        engine.cancel()
+        engine = newEngine
+        Self.logger.info("Transcription engine replaced")
+    }
 
     /// Begin capturing audio from the microphone and feeding it to the engine.
     ///
