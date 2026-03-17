@@ -1,5 +1,12 @@
 import Foundation
 
+/// A connected session for display in the menu bar.
+public struct MenuBarSession: Identifiable, Equatable {
+    public let id: String  // session name — unique per TTY
+    public let name: String
+    public let cwd: String
+}
+
 /// View model for the menu bar extra, tracking Operator state and connected sessions.
 ///
 /// Updated by StateMachine on state transitions and polls SessionRegistry
@@ -17,8 +24,8 @@ public final class MenuBarModel {
     /// The current state label shown in the menu bar.
     public var currentState: String = "Idle"
 
-    /// Connected sessions as (name, cwd) pairs for display.
-    public var sessions: [(name: String, cwd: String)] = []
+    /// Connected sessions for display.
+    public var sessions: [MenuBarSession] = []
 
     /// SF Symbol name for the current state.
     public var menuBarIcon: String {
@@ -92,6 +99,12 @@ public final class MenuBarModel {
         }
 
         let allSessions = await registry.allSessions()
-        sessions = allSessions.map { (name: $0.name, cwd: $0.cwd) }
+        let updated = allSessions.map { MenuBarSession(id: $0.name, name: $0.name, cwd: $0.cwd) }
+
+        // Only mutate if data changed — avoids triggering a SwiftUI re-render
+        // that could race with a concurrent state transition update.
+        if updated != sessions {
+            sessions = updated
+        }
     }
 }

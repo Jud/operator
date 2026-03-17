@@ -12,6 +12,9 @@ private enum BenchmarkTarget: String, CaseIterable {
     case tts
     case ttsRoundtrip = "tts-roundtrip"
     case play
+    case sttReplay = "stt-replay"
+    case sttReplayBatch = "stt-replay-batch"
+    case sttInspect = "stt-inspect"
 }
 
 private let benchmarkRunnerEnvKey = "OPERATOR_BENCHMARK_RUNNER"
@@ -26,13 +29,19 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  tts               Run TTS synthesis and speed control verification")
     print("  tts-roundtrip     Run TTS→STT roundtrip quality check")
     print("  play              Synthesize and play example phrases through speakers")
+    print("  stt-replay        Replay WAV through WhisperKitEngine with real-time streaming")
+    print("  stt-replay-batch  Replay WAV through WhisperKitEngine in one shot (no streaming)")
     if listOnly {
         return
     }
     print("")
+    print("Environment:")
+    print("  OPERATOR_STT_WAV    Path to WAV file for stt-replay (default: latest audio trace)")
+    print("")
     print("Examples:")
     print("  ./scripts/run-benchmarks.sh routing")
     print("  ./scripts/run-benchmarks.sh --no-build routing-accuracy")
+    print("  OPERATOR_STT_WAV=~/path/to/audio.wav ./scripts/run-benchmarks.sh stt-replay")
 }
 
 private func makeBenchmarkVoice() -> VoiceDescriptor? {
@@ -591,6 +600,388 @@ private func playExamples() async {
     }
 }
 
+// MARK: - STT Benchmark
+
+import WhisperKit
+
+/// Load a WhisperKit engine using the default model.
+private func loadWhisperKitEngine() async throws -> WhisperKitEngine {
+    let model = WhisperKitModelManager.defaultModel
+    guard let modelPath = WhisperKitModelManager.modelPath(model) else {
+        throw STTBenchError.modelNotFound(model)
+    }
+    return try await WhisperKitEngine.create(modelFolder: modelPath)
+}
+
+private enum STTBenchError: Error, CustomStringConvertible {
+    case modelNotFound(String)
+    case noWavFile
+    case loadFailed(String)
+
+    var description: String {
+        switch self {
+        case .modelNotFound(let m): return "Model not found: \(m). Run Operator once to download."
+        case .noWavFile: return "No WAV file found in audio-traces"
+        case .loadFailed(let p): return "Failed to load WAV: \(p)"
+        }
+    }
+}
+
+/// Resolve a WAV path from OPERATOR_STT_WAV env or the latest audio trace.
+private func resolveWavPath() throws -> String {
+    if let envPath = ProcessInfo.processInfo.environment["OPERATOR_STT_WAV"] {
+        let expanded = NSString(string: envPath).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: expanded) else {
+            throw STTBenchError.loadFailed(expanded)
+        }
+        return expanded
+    }
+
+    let traceDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+        .first!
+        .appendingPathComponent("Operator/audio-traces")
+
+    guard let files = try? FileManager.default.contentsOfDirectory(
+        at: traceDir,
+        includingPropertiesForKeys: [.contentModificationDateKey],
+        options: .skipsHiddenFiles
+    ) else {
+        throw STTBenchError.noWavFile
+    }
+
+    let wavs = files.filter { $0.pathExtension == "wav" }
+        .sorted { lhs, rhs in
+            let d1 = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let d2 = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            return d1 > d2
+        }
+
+    guard let latest = wavs.first else {
+        throw STTBenchError.noWavFile
+    }
+    return latest.path
+}
+
+/// Load a WAV file as 16kHz mono Float32 samples using WhisperKit's AudioProcessor.
+private func loadWavSamples(path: String) throws -> (samples: [Float], sampleRate: Int, originalSampleRate: Double) {
+    let url = URL(fileURLWithPath: path)
+    let audioFile = try AVAudioFile(forReading: url)
+    let originalRate = audioFile.processingFormat.sampleRate
+    let frameCount = AVAudioFrameCount(audioFile.length)
+
+    guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: frameCount) else {
+        throw STTBenchError.loadFailed(path)
+    }
+    try audioFile.read(into: buffer)
+
+    // Convert to 16kHz mono for direct transcription
+    let targetRate: Double = 16_000
+    guard let targetFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32, sampleRate: targetRate, channels: 1, interleaved: false
+    ) else {
+        throw STTBenchError.loadFailed("Cannot create 16kHz format")
+    }
+
+    guard let converter = AVAudioConverter(from: buffer.format, to: targetFormat) else {
+        throw STTBenchError.loadFailed("Cannot create converter")
+    }
+
+    let ratio = targetRate / originalRate
+    let outFrames = AVAudioFrameCount(Double(frameCount) * ratio) + 1
+    guard let outBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: outFrames) else {
+        throw STTBenchError.loadFailed("Cannot create output buffer")
+    }
+
+    var error: NSError?
+    var consumed = false
+    converter.convert(to: outBuffer, error: &error) { _, outStatus in
+        if consumed {
+            outStatus.pointee = .noDataNow
+            return nil
+        }
+        consumed = true
+        outStatus.pointee = .haveData
+        return buffer
+    }
+
+    if let error { throw error }
+
+    guard let channelData = outBuffer.floatChannelData?[0] else {
+        throw STTBenchError.loadFailed("No channel data after conversion")
+    }
+    let count = Int(outBuffer.frameLength)
+    let samples = Array(UnsafeBufferPointer(start: channelData, count: count))
+    return (samples, 16_000, originalRate)
+}
+
+/// Batch STT: load WAV, transcribe in one shot, measure latency.
+private func benchmarkSTTLatency(label: String, wavPath: String) async {
+    print("\n--- STT \(label) ---\n")
+    print("  WAV: \(wavPath)")
+
+    do {
+        let (samples, _, _) = try loadWavSamples(path: wavPath)
+        let audioDuration = Double(samples.count) / 16_000
+        print("  Audio: \(String(format: "%.1f", audioDuration))s (\(samples.count) samples @ 16kHz)")
+
+        let engine = try await loadWhisperKitEngine()
+        print("  Engine loaded")
+
+        // Warm up with a tiny slice
+        try engine.prepare(contextualStrings: [])
+        _ = await engine.finishAndTranscribe()
+
+        // Benchmark: batch transcription
+        try engine.prepare(contextualStrings: [])
+
+        // Feed all samples at once via a buffer
+        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+        let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
+        buf.frameLength = AVAudioFrameCount(samples.count)
+        samples.withUnsafeBufferPointer { src in
+            buf.floatChannelData![0].update(from: src.baseAddress!, count: samples.count)
+        }
+        engine.append(buf)
+
+        let start = ContinuousClock.now
+        let result = await engine.finishAndTranscribe()
+        let elapsed = ContinuousClock.now - start
+        let ms = Int(elapsed.components.seconds) * 1000 + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+
+        let rtf = Double(ms) / 1000.0 / audioDuration
+        print("  Result: \(ms)ms (\(String(format: "%.2f", rtf))x RT)")
+        if let text = result {
+            print("  Text: \"\(text.prefix(120))\"")
+        } else {
+            print("  Text: <empty>")
+        }
+    } catch {
+        print("  ERROR: \(error)")
+    }
+}
+
+/// Streaming STT: replay WAV through engine in real-time chunks, exercising the
+/// background retranscription loop and confirmation pipeline.
+///
+/// Matches the real mic tap exactly: 1024-frame buffers at the file's native
+/// sample rate (typically 48kHz), delivered at real-time pace (~21ms apart).
+private func benchmarkSTTStreaming(wavPath: String) async {
+    print("\n--- STT Replay ---\n")
+    print("  WAV: \(wavPath)")
+
+    do {
+        let url = URL(fileURLWithPath: wavPath)
+        let audioFile = try AVAudioFile(forReading: url)
+        let fileFormat = audioFile.processingFormat
+        let totalFrames = AVAudioFrameCount(audioFile.length)
+        let fileSampleRate = fileFormat.sampleRate
+        let audioDuration = Double(totalFrames) / fileSampleRate
+
+        // Match SpeechTranscriber's installTap(bufferSize: 1024)
+        let tapBufferSize: AVAudioFrameCount = 1_024
+        let chunkDuration = Double(tapBufferSize) / fileSampleRate
+        let totalChunks = Int(ceil(Double(totalFrames) / Double(tapBufferSize)))
+
+        print("  Audio:  \(String(format: "%.1f", audioDuration))s @ \(Int(fileSampleRate))Hz")
+        print("  Chunks: \(totalChunks) x \(tapBufferSize) frames (\(String(format: "%.1f", chunkDuration * 1000))ms each)")
+
+        let engine = try await loadWhisperKitEngine()
+        print("  Engine loaded\n")
+
+        // Warm up
+        try engine.prepare(contextualStrings: [])
+        _ = await engine.finishAndTranscribe()
+
+        // Start session
+        try engine.prepare(contextualStrings: [])
+
+        let sessionStart = ContinuousClock.now
+        var framesDelivered: AVAudioFrameCount = 0
+
+        // Feed 1024-frame chunks at real-time pace, matching the mic tap
+        while framesDelivered < totalFrames {
+            let remaining = totalFrames - framesDelivered
+            let thisChunk = min(tapBufferSize, remaining)
+
+            guard let buf = AVAudioPCMBuffer(pcmFormat: fileFormat, frameCapacity: thisChunk) else {
+                break
+            }
+            try audioFile.read(into: buf, frameCount: thisChunk)
+            engine.append(buf)
+            framesDelivered += thisChunk
+
+            // Pace to real-time: sleep until this chunk's wall-clock delivery time
+            let targetTime = Double(framesDelivered) / fileSampleRate
+            let wallTime = ContinuousClock.now - sessionStart
+            let wallSec = Double(wallTime.components.seconds) + Double(wallTime.components.attoseconds) / 1e18
+            let sleepNeeded = targetTime - wallSec
+            if sleepNeeded > 0.001 {
+                try await Task.sleep(nanoseconds: UInt64(sleepNeeded * 1_000_000_000))
+            }
+        }
+
+        let feedDone = ContinuousClock.now
+        let feedMs = durationMs(feedDone - sessionStart)
+
+        // Simulate key release
+        let releaseStart = ContinuousClock.now
+        let result = await engine.finishAndTranscribe()
+        let releaseMs = durationMs(ContinuousClock.now - releaseStart)
+        let totalMs = durationMs(ContinuousClock.now - sessionStart)
+
+        print("  Feed:     \(feedMs)ms (real-time delivery of \(String(format: "%.1f", audioDuration))s)")
+        print("  Release:  \(releaseMs)ms (post-release latency — what the user feels)")
+        print("  Total:    \(totalMs)ms")
+
+        if let text = result {
+            print("  Text:     \"\(text.prefix(120))\"")
+        } else {
+            print("  Text:     <empty>")
+        }
+
+        // Assess
+        let rating: String
+        if releaseMs < 500 {
+            rating = "FAST (< 500ms)"
+        } else if releaseMs < 1000 {
+            rating = "NORMAL (500ms-1s)"
+        } else if releaseMs < 2000 {
+            rating = "SLOW (1-2s)"
+        } else {
+            rating = "PROBLEM (> 2s)"
+        }
+        print("  Rating:   \(rating)")
+
+        // Verify: run a batch decode and compare to streaming result.
+        let (batchSamples, _, _) = try loadWavSamples(path: wavPath)
+        try engine.prepare(contextualStrings: [])
+        let batchFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false
+        )!
+        let batchBuf = AVAudioPCMBuffer(
+            pcmFormat: batchFormat, frameCapacity: AVAudioFrameCount(batchSamples.count)
+        )!
+        batchBuf.frameLength = AVAudioFrameCount(batchSamples.count)
+        batchSamples.withUnsafeBufferPointer { src in
+            batchBuf.floatChannelData![0].update(from: src.baseAddress!, count: batchSamples.count)
+        }
+        engine.append(batchBuf)
+        let batchResult = await engine.finishAndTranscribe()
+
+        let streamText = result ?? ""
+        let batchText = batchResult ?? ""
+        if streamText == batchText {
+            print("  Verify:   PASS (streaming == batch)")
+        } else {
+            let ratio = levenshteinRatio(streamText.lowercased(), batchText.lowercased())
+            let pct = String(format: "%.0f", ratio * 100)
+            if ratio > 0.9 {
+                print("  Verify:   OK (\(pct)% match)")
+            } else {
+                print("  Verify:   MISMATCH (\(pct)% match)")
+                print("  Batch:    \"\(batchText.prefix(120))\"")
+            }
+        }
+    } catch {
+        print("  ERROR: \(error)")
+    }
+}
+
+private func durationMs(_ d: Duration) -> Int {
+    Int(d.components.seconds) * 1000 + Int(d.components.attoseconds / 1_000_000_000_000_000)
+}
+
+/// Transcribe a WAV directly via WhisperKit pipe and dump per-segment quality metrics.
+private func inspectSTTSegments(wavPath: String) async {
+    print("\n--- STT Segment Inspector ---\n")
+    print("  WAV: \(wavPath)")
+
+    do {
+        let (samples, _, _) = try loadWavSamples(path: wavPath)
+        let audioDuration = Double(samples.count) / 16_000
+        print("  Audio: \(String(format: "%.1f", audioDuration))s (\(samples.count) samples @ 16kHz)\n")
+
+        let model = WhisperKitModelManager.defaultModel
+        guard let modelPath = WhisperKitModelManager.modelPath(model) else {
+            print("  ERROR: Model not found: \(model)")
+            return
+        }
+        let config = WhisperKitConfig(modelFolder: modelPath)
+        let pipe = try await WhisperKit(config)
+
+        var options = DecodingOptions()
+        options.language = "en"
+        options.skipSpecialTokens = true
+        options.chunkingStrategy = ChunkingStrategy.none
+        if audioDuration < 3 {
+            options.windowClipTime = 0
+        }
+
+        let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+        guard let result = results.first else {
+            print("  No transcription result")
+            return
+        }
+
+        print("  Segments: \(result.segments.count)")
+        print("")
+        print("  #  | Start  | End    | noSpeech | avgLogP  | compRatio | temp | Text")
+        print("  ---|--------|--------|----------|----------|-----------|------|-----")
+
+        for (i, seg) in result.segments.enumerated() {
+            let noSpeech = String(format: "%.3f", seg.noSpeechProb)
+            let avgLog = String(format: "%.3f", seg.avgLogprob)
+            let comp = String(format: "%.2f", seg.compressionRatio)
+            let temp = String(format: "%.1f", seg.temperature)
+            let text = String(seg.text.prefix(60)).trimmingCharacters(in: .whitespaces)
+            print("  \(String(format: "%2d", i)) | \(String(format: "%5.1fs", seg.start)) | \(String(format: "%5.1fs", seg.end)) | \(noSpeech)    | \(avgLog)  | \(comp)     | \(temp)  | \"\(text)\"")
+
+            // Per-token log probs
+            if seg.tokens.count == seg.tokenLogProbs.count, let tokenizer = pipe.tokenizer {
+                let specialBegin = tokenizer.specialTokens.specialTokenBegin
+                var entries: [(id: Int, logProb: Float)] = []
+                for (tokenId, logProbMap) in zip(seg.tokens, seg.tokenLogProbs) {
+                    guard tokenId < specialBegin else { continue }
+                    entries.append((tokenId, logProbMap.values.first ?? 0))
+                }
+                if !entries.isEmpty {
+                    let perToken = entries.map { e in
+                        let pct = exp(e.logProb) * 100
+                        return String(format: "%d:%.0f%%", e.id, pct)
+                    }
+                    print("       Tokens: \(perToken.joined(separator: " "))")
+                    // Flag tokens under 30% confidence
+                    let lowConf = entries.filter { exp($0.logProb) < 0.3 }
+                    if !lowConf.isEmpty {
+                        let flagged = lowConf.map { e in
+                            String(format: "id=%d (%.0f%%)", e.id, exp(e.logProb) * 100)
+                        }
+                        print("       ⚠ Low: \(flagged.joined(separator: ", "))")
+                    }
+                }
+            }
+        }
+
+        // Summary stats
+        let avgNoSpeech = result.segments.map(\.noSpeechProb).reduce(0, +) / Float(result.segments.count)
+        let avgLogP = result.segments.map(\.avgLogprob).reduce(0, +) / Float(result.segments.count)
+        let avgComp = result.segments.map(\.compressionRatio).reduce(0, +) / Float(result.segments.count)
+        let maxNoSpeech = result.segments.map(\.noSpeechProb).max() ?? 0
+        let minLogP = result.segments.map(\.avgLogprob).min() ?? 0
+        let maxComp = result.segments.map(\.compressionRatio).max() ?? 0
+
+        print("")
+        print("  Summary:")
+        print("    noSpeechProb:    avg=\(String(format: "%.3f", avgNoSpeech))  max=\(String(format: "%.3f", maxNoSpeech))")
+        print("    avgLogprob:      avg=\(String(format: "%.3f", avgLogP))  min=\(String(format: "%.3f", minLogP))")
+        print("    compressionRatio: avg=\(String(format: "%.2f", avgComp))  max=\(String(format: "%.2f", maxComp))")
+
+        print("\n  Full text: \"\(result.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: " "))\"")
+    } catch {
+        print("  ERROR: \(error)")
+    }
+}
+
 // MARK: - Main
 
 @main
@@ -635,6 +1026,31 @@ enum BenchmarkRunner {
 
         if targets.contains(.play) {
             await playExamples()
+        }
+
+        if targets.contains(.sttInspect) {
+            do {
+                let wavPath = try resolveWavPath()
+                await inspectSTTSegments(wavPath: wavPath)
+            } catch {
+                print("\nSTT ERROR: \(error)")
+            }
+        }
+
+        if targets.contains(.sttReplay) || targets.contains(.sttReplayBatch) {
+            do {
+                let wavPath = try resolveWavPath()
+
+                if targets.contains(.sttReplayBatch) {
+                    await benchmarkSTTLatency(label: "Batch", wavPath: wavPath)
+                }
+
+                if targets.contains(.sttReplay) {
+                    await benchmarkSTTStreaming(wavPath: wavPath)
+                }
+            } catch {
+                print("\nSTT ERROR: \(error)")
+            }
         }
 
         print("\nDone.")

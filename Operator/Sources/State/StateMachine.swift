@@ -175,20 +175,11 @@ public final class StateMachine {
 
         cancelInFlightWork()
 
-        // Stop any current speech and note the interruption point.
-        // We check SpeechManager directly (synchronous on @MainActor) rather than
-        // going through AudioQueue (async actor) to capture the interruption info
-        // immediately before it's lost.
+        // Stop any current speech. Interruption tracking is disabled —
+        // it was causing the next transcription to ask "did you want to hear
+        // the rest?" instead of routing normally.
         if speechManager.isSpeaking {
-            let info = speechManager.interrupt()
-            if !info.session.isEmpty {
-                routingState.storeInterruption(
-                    heardText: info.heardText,
-                    unheardText: info.unheardText,
-                    session: info.session
-                )
-                Self.logger.info("Noted interruption of \(info.session) at word boundary")
-            }
+            _ = speechManager.interrupt()
         }
 
         // Pause audio queue (mute-on-talk). This is a fire-and-forget call;

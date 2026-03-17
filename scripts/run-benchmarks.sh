@@ -21,10 +21,8 @@ Targets:
   tts               Run TTS time-to-first-audio benchmark
   tts-ttfa          Run only TTS time-to-first-audio benchmark
   tts-roundtrip     Run TTS→STT roundtrip quality check
-  stt               Run STT latency, long-utterance, and streaming benchmarks
-  stt-latency       Run only STT 5s transcription benchmark
-  stt-long          Run only STT long-utterance benchmark
-  stt-streaming     Run only STT streaming/finalize benchmark
+  stt-replay        Replay a WAV through WhisperKitEngine with real-time streaming
+  stt-replay-batch  Replay a WAV through WhisperKitEngine in one shot (no streaming)
   stt-soak          Run a long paced STT soak benchmark (use OPERATOR_STT_SOAK_MINUTES)
   memory            Run routing-model memory benchmark
   list              Show this target list
