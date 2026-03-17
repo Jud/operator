@@ -7,7 +7,7 @@ RESOURCES := $(CONTENTS)/Resources
 SWIFT_BUILD := Operator/.build/release
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo "0.1.0")
 
-.PHONY: all clean app zip verify bench bench-list bench-routing bench-routing-latency bench-routing-accuracy
+.PHONY: all clean app zip verify bench bench-list bench-routing bench-routing-latency bench-routing-accuracy restart
 
 all: app
 
@@ -57,6 +57,10 @@ app: swift-build
 swift-build:
 	@echo "==> Building Swift targets (release)"
 	cd Operator && swift build -c release --disable-sandbox
+
+# Build, kill, and restart the app
+restart:
+	./scripts/restart.sh
 
 # Create distributable zip
 zip: app

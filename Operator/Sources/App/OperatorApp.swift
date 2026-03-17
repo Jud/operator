@@ -73,7 +73,7 @@ public struct MenuBarContentView: View {
                 .foregroundStyle(.secondary)
         } else {
             Section("Sessions (\(model.sessions.count))") {
-                ForEach(model.sessions, id: \.name) { session in
+                ForEach(model.sessions) { session in
                     Text("\(session.name) - \(session.cwd)")
                 }
             }
