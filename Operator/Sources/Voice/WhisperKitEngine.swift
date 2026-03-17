@@ -127,6 +127,10 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let pendingTask = retranscribeTask
         retranscribeTask = nil
 
+        // Cancel the task so any in-flight pipe.transcribe() bails out at
+        // the next Task.checkCancellation() point, rather than running to
+        // completion. We still await to ensure the pipeline is free.
+        pendingTask?.cancel()
         await pendingTask?.value
         let awaitDuration = ContinuousClock.now - stopTime
 
