@@ -153,69 +153,49 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
         // Final pass from the last confirmed point.
         let finalStart = ContinuousClock.now
-        let fullText: String
+        var fullText: String
 
         if stream.useSegmentFallback {
-            // Segment fallback path: decode tail from segment clip point.
+            // Segment fallback: decode tail from segment clip point.
             let tailResult = await transcribeResult(
                 samples: samples,
                 clipStart: stream.segmentConfirmedEndSeconds
             )
             let tailText = tailResult?.text.trimmingCharacters(in: .whitespaces) ?? ""
-            Self.logger.notice("Segment final: confirmed=\"\(stream.segmentConfirmedText.prefix(40), privacy: .public)\" tail=\"\(tailText.prefix(60), privacy: .public)\"")
             if !stream.segmentConfirmedText.isEmpty && !tailText.isEmpty {
                 fullText = Self.cleanText(stream.segmentConfirmedText + " " + tailText)
-            } else if !stream.segmentConfirmedText.isEmpty {
-                // Tail decode failed — fall back to full decode from 0.0s.
-                Self.logger.notice("Tail empty — falling back to full decode")
-                let fullResult = await transcribeResult(samples: samples)
-                let fullDecode = fullResult?.text ?? ""
-                Self.logger.notice("Full decode: \"\(fullDecode.prefix(80), privacy: .public)\"")
-                fullText = Self.cleanText(fullDecode.isEmpty ? stream.segmentConfirmedText : fullDecode)
             } else {
-                fullText = Self.cleanText(tailText)
+                fullText = Self.cleanText(stream.segmentConfirmedText)
             }
         } else {
-            // Word-level path: decode from last agreed point with prefix context.
+            // Word-level: decode from last agreed point with prefix context.
             let finalResult = await transcribeResult(
                 samples: samples,
                 clipStart: stream.lastAgreedSeconds,
                 prefixTokens: stream.lastAgreedWords.flatMap { $0.tokens }
             )
-
-            var finalWords = stream.confirmedWords
-
+            let tailText: String
             if let result = finalResult, result.segments.first?.words != nil {
-                let finalPassWords = result.allWords
+                tailText = result.allWords
                     .filter { $0.start >= stream.lastAgreedSeconds }
-                finalWords.append(contentsOf: finalPassWords)
+                    .map(\.word).joined()
             } else {
-                finalWords.append(contentsOf: stream.lastAgreedWords)
-                if let text = finalResult?.text, !text.isEmpty {
-                    finalWords.append(WordTiming(
-                        word: text, tokens: [], start: stream.lastAgreedSeconds,
-                        end: Float(samples.count) / Float(WhisperKit.sampleRate),
-                        probability: 1.0
-                    ))
-                }
+                tailText = finalResult?.text ?? stream.lastAgreedWords.map(\.word).joined()
             }
+            fullText = Self.cleanText(stream.confirmedText + tailText)
+        }
 
-            var candidateText = Self.cleanText(finalWords.map(\.word).joined())
-
-            // Safety: if confirmed+final is suspiciously short relative to audio,
-            // the clip-based decode may have failed. Fall back to full decode.
-            let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
-            let wordsPerSec = Float(candidateText.split(separator: " ").count) / audioDur
-            if audioDur > 3 && wordsPerSec < 0.5 {
-                Self.logger.notice("Word result too short (\(candidateText.count) chars for \(audioSec)s) — full decode")
-                let fullResult = await transcribeResult(samples: samples)
-                let fullDecode = Self.cleanText(fullResult?.text ?? "")
-                if fullDecode.count > candidateText.count {
-                    candidateText = fullDecode
-                }
+        // Safety net: if result is too short for the audio, the clipped decode
+        // likely failed. Fall back to full decode from 0.0s.
+        let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
+        let wordCount = Float(fullText.split(separator: " ").count)
+        if audioDur > 3 && wordCount / audioDur < 0.5 && !fullText.isEmpty {
+            Self.logger.notice("Result too short (\(Int(wordCount)) words for \(audioSec)s) — full decode")
+            let fullResult = await transcribeResult(samples: samples)
+            let fullDecode = Self.cleanText(fullResult?.text ?? "")
+            if fullDecode.count > fullText.count {
+                fullText = fullDecode
             }
-
-            fullText = candidateText
         }
         let finalMs = Self.ms(ContinuousClock.now - finalStart)
 
@@ -338,11 +318,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             if state.useSegmentFallback {
                 runSegmentFallback(state: &state, result: result, passMs: passMs, audioSec: audioSec)
             } else {
-                runWordAgreement(state: &state, result: result, samples: samples, passMs: passMs, audioSec: audioSec)
+                runWordAgreement(state: &state, result: result, passMs: passMs, audioSec: audioSec)
             }
-
-            state.prevResult = result
-            state.lastPassSampleCount = samples.count
         }
     }
 
@@ -350,7 +327,6 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     private func runWordAgreement(
         state: inout StreamState,
         result: TranscriptionResult,
-        samples: [Float],
         passMs: Int,
         audioSec: String
     ) {
@@ -369,15 +345,15 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             let newAgreed = Array(commonPrefix.suffix(Self.agreementCountNeeded))
             let toConfirm = commonPrefix.prefix(commonPrefix.count - Self.agreementCountNeeded)
 
-            state.confirmedWords.append(contentsOf: toConfirm)
+            let newText = toConfirm.map(\.word).joined()
+            state.confirmedText += newText
             state.lastAgreedWords = newAgreed
             state.lastAgreedSeconds = newAgreed.first!.start
             state.consecutiveMisses = 0
 
             let agreedSec = String(format: "%.1f", state.lastAgreedSeconds)
             Self.logger.notice("Confirmed \(toConfirm.count) words to \(agreedSec)s in \(passMs)ms")
-            if !toConfirm.isEmpty {
-                let newText = toConfirm.map(\.word).joined()
+            if !newText.isEmpty {
                 Self.logger.notice("  new: \"\(newText.prefix(60), privacy: .public)\"")
             }
         } else {
@@ -387,7 +363,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
                 // Switch to segment-level fallback.
                 state.useSegmentFallback = true
                 // Carry over any confirmed words as text for the segment path.
-                let wordText = (state.confirmedWords + state.lastAgreedWords).map(\.word).joined()
+                let wordText = (state.confirmedText + state.lastAgreedWords.map(\.word).joined())
                     .trimmingCharacters(in: .whitespaces)
                 state.segmentConfirmedText = wordText
                 state.segmentConfirmedEndSeconds = state.lastAgreedSeconds
@@ -482,8 +458,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 // MARK: - Supporting Types
 
 private struct StreamState {
-    /// Words confirmed via word-level agreement across consecutive passes.
-    var confirmedWords: [WordTiming] = []
+    /// Accumulated text from word-level confirmed words.
+    var confirmedText: String = ""
 
     /// The last N agreed words used as decoder context (prefixTokens) for the next pass.
     var lastAgreedWords: [WordTiming] = []
@@ -493,12 +469,6 @@ private struct StreamState {
 
     /// Words from the previous background pass, used for agreement comparison.
     var prevWords: [WordTiming] = []
-
-    /// Full result from the previous pass (for suffix extraction in finishAndTranscribe).
-    var prevResult: TranscriptionResult?
-
-    /// Sample count at the time of the last background pass (for reuse detection).
-    var lastPassSampleCount: Int = 0
 
     /// Consecutive word-agreement misses. Resets on successful agreement.
     var consecutiveMisses: Int = 0
