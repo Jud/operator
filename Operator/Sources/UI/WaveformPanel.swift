@@ -297,12 +297,19 @@ public final class WaveformPanel: NSPanel {
     }
 
     private func positionAtTopCenter() {
-        guard let screen = NSScreen.main else {
-            return
-        }
+        // Use the screen containing the mouse pointer so the panel appears
+        // on whichever display the user is actively using.
+        let mouseLocation = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let screen else { return }
 
-        let x = (screen.frame.width - Self.panelWidth) / 2
-        let y = screen.frame.height - Self.panelHeight - 50
+        // screen.frame.origin accounts for multi-monitor layout;
+        // visibleFrame excludes the menu bar and Dock.
+        let visibleFrame = screen.visibleFrame
+        let x = visibleFrame.midX - Self.panelWidth / 2
+        let y = visibleFrame.maxY - Self.panelHeight - 10
 
         self.setFrameOrigin(NSPoint(x: x, y: y))
     }
