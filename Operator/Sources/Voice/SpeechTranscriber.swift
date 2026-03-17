@@ -1,7 +1,6 @@
 @preconcurrency import AVFoundation
 import Accelerate
 import AudioToolbox
-@preconcurrency import Speech
 import os
 
 /// Wraps a ``TranscriptionEngine`` and AVAudioEngine for on-device speech-to-text.
@@ -233,13 +232,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
         Self.logger.info("Audio engine started, listening for speech")
     }
 
-    /// Maximum audio duration (seconds) that routes to Apple Speech instead of WhisperKit.
-    ///
-    /// Very short utterances ("yes", "no", "stop") are better handled by Apple's
-    /// on-device recognizer, which has no minimum audio length and is optimized
-    /// for short commands.
-    private static let appleShortUtteranceThreshold: TimeInterval = 1.0
-
     /// Stop capturing audio and return the final transcription.
     ///
     /// - Returns: The transcribed text, or nil if transcription failed or was empty.
@@ -252,6 +244,8 @@ public final class SpeechTranscriber: SpeechTranscribing {
         tearDownAudioCapture()
         Self.logger.info("Audio engine stopped, processing transcription")
 
+        let result = await engine.finishAndTranscribe()
+
         let buffers = capturedBuffers.withLock { bufs -> [AVAudioPCMBuffer] in
             let snapshot = bufs
             bufs.removeAll()
@@ -259,23 +253,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
         }
         let format = capturedFormat
         capturedFormat = nil
-
-        // Check audio duration — use Apple Speech for very short utterances.
-        let totalFrames = buffers.reduce(0) { $0 + Int($1.frameLength) }
-        let sampleRate = format?.sampleRate ?? 48_000
-        let audioDuration = Double(totalFrames) / sampleRate
-
-        let result: String?
-        if audioDuration < Self.appleShortUtteranceThreshold && audioDuration > 0 {
-            Self.logger.notice(
-                "Short audio (\(String(format: "%.1f", audioDuration))s) — using Apple Speech"
-            )
-            engine.cancel()
-            nonisolated(unsafe) let appleBuffers = buffers
-            result = await Self.appleTranscribeBuffers(appleBuffers)
-        } else {
-            result = await engine.finishAndTranscribe()
-        }
 
         nonisolated(unsafe) let traceBuffers = buffers
         nonisolated(unsafe) let traceFormat = format
@@ -285,65 +262,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
             directory: Self.audioTraceDir
         )
         return result
-    }
-
-    /// Quick Apple Speech transcription from captured buffers.
-    nonisolated private static func appleTranscribeBuffers(
-        _ buffers: [AVAudioPCMBuffer]
-    ) async -> String? {
-        let log = Log.logger(for: "SpeechTranscriber")
-        guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
-              recognizer.isAvailable
-        else {
-            log.warning("Apple Speech recognizer unavailable for short utterance")
-            return nil
-        }
-
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.taskHint = .confirmation
-        if #available(macOS 15, *) {
-            request.requiresOnDeviceRecognition = true
-            request.addsPunctuation = false
-        }
-
-        for buffer in buffers {
-            request.append(buffer)
-        }
-        request.endAudio()
-
-        return await withCheckedContinuation { continuation in
-            let resumed = OSAllocatedUnfairLock(initialState: false)
-            let bestPartial = OSAllocatedUnfairLock<String?>(initialState: nil)
-            func claimOnce() -> Bool {
-                resumed.withLock { val in
-                    guard !val else { return false }
-                    val = true
-                    return true
-                }
-            }
-            let task = recognizer.recognitionTask(with: request) { result, error in
-                if let result {
-                    bestPartial.withLock { $0 = result.bestTranscription.formattedString }
-                    if result.isFinal {
-                        guard claimOnce() else { return }
-                        continuation.resume(returning: result.bestTranscription.formattedString)
-                    }
-                } else if error != nil {
-                    guard claimOnce() else { return }
-                    // Return best partial if we got one before the error
-                    continuation.resume(returning: bestPartial.withLock { $0 })
-                }
-            }
-            // Timeout: return best partial if final never arrives
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                guard claimOnce() else { return }
-                task.cancel()
-                let partial = bestPartial.withLock { $0 }
-                log.info("Apple Speech timeout, partial: \(partial ?? "<none>")")
-                continuation.resume(returning: partial)
-            }
-        }
     }
 
     /// Perform transcription with a timeout.
