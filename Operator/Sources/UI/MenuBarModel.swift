@@ -2,8 +2,11 @@ import Foundation
 
 /// A connected session for display in the menu bar.
 public struct MenuBarSession: Identifiable, Equatable {
-    public let id: String  // session name — unique per TTY
+    /// Unique identifier (TTY path).
+    public let id: String
+    /// Display name of the session.
     public let name: String
+    /// Working directory of the session.
     public let cwd: String
 }
 

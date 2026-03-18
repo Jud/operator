@@ -300,7 +300,8 @@ public final class WaveformPanel: NSPanel {
         // Use the screen containing the mouse pointer so the panel appears
         // on whichever display the user is actively using.
         let mouseLocation = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }
+        let screen =
+            NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
         guard let screen
