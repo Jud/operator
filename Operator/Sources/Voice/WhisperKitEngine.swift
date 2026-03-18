@@ -11,8 +11,6 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         var vocabulary: [String] = []
     }
 
-    // MARK: - Type Properties
-
     private static let logger = Log.logger(for: "WhisperKitEngine")
 
     /// Minimum new audio (in samples at 16 kHz) before triggering a background pass.
@@ -21,14 +19,14 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     /// Number of consecutive agreed words required before confirming.
     private static let agreementCountNeeded = 2
 
-    /// Convert a Duration to milliseconds for logging.
-    private static func ms(_ duration: Duration) -> Int {
-        let (seconds, attoseconds) = duration.components
-        let attoMs: Int64 = 1_000_000_000_000_000
-        return Int(seconds) * 1000 + Int(attoseconds / attoMs)
-    }
+    /// Consecutive word-level misses before falling back to segment-level confirmation.
+    private static let maxWordMisses = 3
 
-    // MARK: - Instance Properties
+    /// Known Whisper hallucination strings produced for silence or very short audio.
+    private static let blankPatterns: Set<String> = [
+        "[BLANK_AUDIO]", "(BLANK_AUDIO)", "[silence]", "(silence)",
+        "[no speech]", "(no speech)", "[inaudible]", "(inaudible)"
+    ]
 
     private let pipe: WhisperKit
     private let sessionLock = OSAllocatedUnfairLock<SessionState?>(initialState: nil)
@@ -52,13 +50,9 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     /// Previous session's task — new loop awaits it to prevent concurrent pipeline use.
     private var previousTask: Task<Void, Never>?
 
-    // MARK: - Initialization
-
     public init(pipe: WhisperKit) {
         self.pipe = pipe
     }
-
-    // MARK: - Type Methods
 
     public static func create(modelFolder: String) async throws -> WhisperKitEngine {
         let config = WhisperKitConfig(modelFolder: modelFolder)
@@ -67,16 +61,16 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         return WhisperKitEngine(pipe: pipe)
     }
 
-    /// Known Whisper hallucination strings produced for silence or very short audio.
-    private static let blankPatterns: Set<String> = [
-        "[BLANK_AUDIO]", "(BLANK_AUDIO)", "[silence]", "(silence)",
-        "[no speech]", "(no speech)", "[inaudible]", "(inaudible)"
-    ]
+    private static func ms(_ duration: Duration) -> Int {
+        let (seconds, attoseconds) = duration.components
+        return Int(seconds) * 1_000 + Int(attoseconds / 1_000_000_000_000_000)
+    }
 
     private static func cleanText(_ text: String) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if blankPatterns.contains(result) { return "" }
-        // Collapse double spaces from word-joining boundaries
+        if blankPatterns.contains(result) {
+            return ""
+        }
         while result.contains("  ") {
             result = result.replacingOccurrences(of: "  ", with: " ")
         }
@@ -103,16 +97,21 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     public func append(_ buffer: AVAudioPCMBuffer) {
         nonisolated(unsafe) let buf = buffer
         let converter: AudioFormatConverter? = sessionLock.withLock { state in
-            guard state != nil else { return nil }
-            if let existing = state?.converter { return existing }
+            guard state != nil
+            else { return nil }
+            if let existing = state?.converter {
+                return existing
+            }
             guard let conv = try? AudioFormatConverter(inputFormat: buf.format)
             else { return nil }
             state?.converter = conv
             return conv
         }
-        guard let converter else { return }
+        guard let converter
+        else { return }
         sessionLock.withLock { state in
-            guard var session = state else { return }
+            guard var session = state
+            else { return }
             _ = converter.appendConverted(buf, to: &session.audioSamples)
             state = session
         }
@@ -127,9 +126,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let pendingTask = retranscribeTask
         retranscribeTask = nil
 
-        // Cancel the task so any in-flight pipe.transcribe() bails out at
-        // the next Task.checkCancellation() point, rather than running to
-        // completion. We still await to ensure the pipeline is free.
+        // Cancel so any in-flight pipe.transcribe() bails at the next
+        // Task.checkCancellation() point. We still await to ensure the pipeline is free.
         pendingTask?.cancel()
         await pendingTask?.value
         let awaitDuration = ContinuousClock.now - stopTime
@@ -142,65 +140,42 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let samples = snapshot?.audioSamples ?? []
         let vocabulary = snapshot?.vocabulary ?? []
 
-        guard !samples.isEmpty else {
+        guard !samples.isEmpty
+        else {
             Self.logger.notice("No audio samples captured")
             return nil
         }
 
         let stream = streamLock.withLock { $0 }
         let awaitMs = Self.ms(awaitDuration)
-        let audioSec = String(format: "%.1f", Float(samples.count) / Float(WhisperKit.sampleRate))
+        let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
+        let audioSec = String(format: "%.1f", audioDur)
         let agreedSec = String(format: "%.1f", stream.lastAgreedSeconds)
         Self.logger.notice(
             "Stop: \(audioSec)s audio, agreed=\(agreedSec)s, await=\(awaitMs)ms"
         )
 
         let finalStart = ContinuousClock.now
-        var fullText: String
-
-        if stream.useSegmentFallback {
-            let tailResult = await transcribeResult(
-                samples: samples,
-                clipStart: stream.segmentConfirmedEndSeconds
-            )
-            let tailText = tailResult?.text.trimmingCharacters(in: .whitespaces) ?? ""
-            if !stream.segmentConfirmedText.isEmpty && !tailText.isEmpty {
-                fullText = Self.cleanText(stream.segmentConfirmedText + " " + tailText)
-            } else {
-                fullText = Self.cleanText(stream.segmentConfirmedText)
-            }
-        } else {
-            let finalResult = await transcribeResult(
-                samples: samples,
-                clipStart: stream.lastAgreedSeconds,
-                prefixTokens: stream.lastAgreedWords.flatMap { $0.tokens }
-            )
-            let tailText: String
-            if let result = finalResult, result.segments.first?.words != nil {
-                tailText = result.allWords
-                    .filter { $0.start >= stream.lastAgreedSeconds }
-                    .map(\.word).joined()
-            } else {
-                tailText = finalResult?.text ?? stream.lastAgreedWords.map(\.word).joined()
-            }
-            fullText = Self.cleanText(stream.confirmedText + tailText)
-        }
+        var fullText = await decodeFinalText(stream: stream, samples: samples)
 
         // Safety net: if result is too short for the audio, the clipped decode
         // likely failed. Fall back to full decode from 0.0s.
-        let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
         let wordCount = Float(fullText.split(separator: " ").count)
         if audioDur > 3 && wordCount / audioDur < 0.5 && !fullText.isEmpty {
-            Self.logger.notice("Result too short (\(Int(wordCount)) words for \(audioSec)s) — full decode")
-            let fullResult = await transcribeResult(samples: samples)
-            let fullDecode = Self.cleanText(fullResult?.text ?? "")
-            if fullDecode.count > fullText.count {
-                fullText = fullDecode
+            Self.logger.notice(
+                "Result too short (\(Int(wordCount)) words for \(audioSec)s) — full decode"
+            )
+            if let rescue = await transcribeResult(samples: samples) {
+                let rescueText = Self.cleanText(rescue.text)
+                if rescueText.count > fullText.count {
+                    fullText = rescueText
+                }
             }
         }
         let finalMs = Self.ms(ContinuousClock.now - finalStart)
 
-        guard !fullText.isEmpty else {
+        guard !fullText.isEmpty
+        else {
             Self.logger.notice("Transcription empty (final=\(finalMs)ms)")
             return nil
         }
@@ -217,13 +192,15 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     public func cancel() {
         stopLoop.withLock { $0 = true }
         wakeSleep()
-        if let old = retranscribeTask { previousTask = old }
+        if let old = retranscribeTask {
+            previousTask = old
+        }
         retranscribeTask = nil
         sessionLock.withLock { $0 = nil }
         streamLock.withLock { $0 = StreamState() }
     }
 
-    // MARK: - Background Loop
+    // MARK: - Private — Background Loop
 
     private func startRetranscriptionLoop() {
         stopLoop.withLock { $0 = false }
@@ -251,7 +228,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
                     passCount += 1
                 }
 
-                guard !self.stopLoop.withLock({ $0 }) else { return }
+                guard !self.stopLoop.withLock({ $0 })
+                else { return }
                 let intervalNs: UInt64 = passCount <= 1 ? 500_000_000 : 1_000_000_000
                 await self.interruptibleSleep(nanoseconds: intervalNs)
             }
@@ -282,10 +260,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 
-    // MARK: - Word-Level Streaming
-
-    /// Consecutive word-level misses before falling back to segment-level confirmation.
-    private static let maxWordMisses = 3
+    // MARK: - Private — Tiered Confirmation
 
     /// Run a background transcription pass with tiered confirmation:
     /// 1. Word-level agreement (primary — granular, fast)
@@ -304,39 +279,41 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             clipStart: clipStart,
             prefixTokens: stream.useSegmentFallback
                 ? []
-                : stream.lastAgreedWords.flatMap { $0.tokens }
+                : stream.lastAgreedWords.flatMap(\.tokens)
         )
 
         let passMs = Self.ms(ContinuousClock.now - passStart)
-        let audioSec = String(format: "%.1f", Float(samples.count) / Float(WhisperKit.sampleRate))
+        let audioFmt = String(format: "%.1f", Float(samples.count) / Float(WhisperKit.sampleRate))
 
-        guard let result else {
-            Self.logger.notice("Background: no result in \(passMs)ms (audio=\(audioSec)s)")
+        guard let result
+        else {
+            Self.logger.notice("Background: no result in \(passMs)ms (audio=\(audioFmt)s)")
             return
         }
 
         streamLock.withLock { state in
             if state.useSegmentFallback {
-                runSegmentFallback(state: &state, result: result, passMs: passMs, audioSec: audioSec)
+                confirmSegments(state: &state, result: result, passMs: passMs, audioSec: audioFmt)
             } else {
-                runWordAgreement(state: &state, result: result, passMs: passMs, audioSec: audioSec)
+                confirmWords(state: &state, result: result, passMs: passMs, audioSec: audioFmt)
             }
         }
     }
 
-    private func runWordAgreement(
+    // swiftlint:disable:next function_body_length
+    private func confirmWords(
         state: inout StreamState,
         result: TranscriptionResult,
         passMs: Int,
         audioSec: String
     ) {
-        guard result.segments.first?.words != nil else {
+        guard result.segments.first?.words != nil
+        else {
             Self.logger.notice("Background: no words in \(passMs)ms (audio=\(audioSec)s)")
             return
         }
 
         let hypothesisWords = result.allWords.filter { $0.start >= state.lastAgreedSeconds }
-
         let commonPrefix = TranscriptionUtilities.findLongestCommonPrefix(
             state.prevWords, hypothesisWords
         )
@@ -348,48 +325,52 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             let newText = toConfirm.map(\.word).joined()
             state.confirmedText += newText
             state.lastAgreedWords = newAgreed
-            state.lastAgreedSeconds = newAgreed.first!.start
+            if let first = newAgreed.first {
+                state.lastAgreedSeconds = first.start
+            }
             state.consecutiveMisses = 0
 
-            let agreedSec = String(format: "%.1f", state.lastAgreedSeconds)
-            Self.logger.notice("Confirmed \(toConfirm.count) words to \(agreedSec)s in \(passMs)ms")
+            let sec = String(format: "%.1f", state.lastAgreedSeconds)
+            Self.logger.notice("Confirmed \(toConfirm.count) words to \(sec)s in \(passMs)ms")
             if !newText.isEmpty {
                 Self.logger.notice("  new: \"\(newText.prefix(60), privacy: .public)\"")
             }
         } else {
             state.consecutiveMisses += 1
+            let misses = state.consecutiveMisses
 
-            if state.consecutiveMisses >= Self.maxWordMisses {
+            if misses >= Self.maxWordMisses {
                 state.useSegmentFallback = true
-                let wordText = (state.confirmedText + state.lastAgreedWords.map(\.word).joined())
-                    .trimmingCharacters(in: .whitespaces)
-                state.segmentConfirmedText = wordText
+                let wordText = state.confirmedText
+                    + state.lastAgreedWords.map(\.word).joined()
+                state.segmentConfirmedText = wordText.trimmingCharacters(in: .whitespaces)
                 state.segmentConfirmedEndSeconds = state.lastAgreedSeconds
 
-                let misses = state.consecutiveMisses
                 Self.logger.notice(
-                    "Word agreement stalled (\(misses) misses) — switching to segment fallback"
+                    "Word agreement stalled (\(misses) misses) — segment fallback"
                 )
             } else {
-                let misses = state.consecutiveMisses
+                let wc = hypothesisWords.count
+                let ac = commonPrefix.count
                 Self.logger.notice(
-                    "Background: \(hypothesisWords.count) words, \(commonPrefix.count) agreed, miss \(misses)/\(Self.maxWordMisses) in \(passMs)ms"
+                    "Background: \(wc) words, \(ac) agreed, miss \(misses)/\(Self.maxWordMisses) in \(passMs)ms"
                 )
             }
         }
 
-        let clipSeconds = state.lastAgreedSeconds
-        state.prevWords = hypothesisWords.filter { $0.start >= clipSeconds }
+        let clip = state.lastAgreedSeconds
+        state.prevWords = hypothesisWords.filter { $0.start >= clip }
     }
 
-    private func runSegmentFallback(
+    private func confirmSegments(
         state: inout StreamState,
         result: TranscriptionResult,
         passMs: Int,
         audioSec: String
     ) {
         let segments = result.segments
-        guard segments.count >= 2 else {
+        guard segments.count >= 2
+        else {
             Self.logger.notice(
                 "Segment fallback: \(segments.count) seg in \(passMs)ms (audio=\(audioSec)s)"
             )
@@ -397,11 +378,14 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
 
         let toConfirm = Array(segments.prefix(segments.count - 1))
-        let newText = toConfirm.map(\.text).joined(separator: " ")
+        let newText = toConfirm
+            .map(\.text)
+            .joined(separator: " ")
             .trimmingCharacters(in: .whitespaces)
         let newEnd = toConfirm.last?.end ?? state.segmentConfirmedEndSeconds
 
-        guard newEnd > state.segmentConfirmedEndSeconds else { return }
+        guard newEnd > state.segmentConfirmedEndSeconds
+        else { return }
 
         if state.segmentConfirmedText.isEmpty {
             state.segmentConfirmedText = newText
@@ -416,7 +400,38 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         )
     }
 
-    // MARK: - Transcription
+    // MARK: - Private — Transcription
+
+    private func decodeFinalText(stream: StreamState, samples: [Float]) async -> String {
+        if stream.useSegmentFallback {
+            let tail = await transcribeResult(
+                samples: samples,
+                clipStart: stream.segmentConfirmedEndSeconds
+            )
+            let tailText = tail?.text.trimmingCharacters(in: .whitespaces) ?? ""
+            if !stream.segmentConfirmedText.isEmpty && !tailText.isEmpty {
+                return Self.cleanText(stream.segmentConfirmedText + " " + tailText)
+            }
+            return Self.cleanText(stream.segmentConfirmedText)
+        }
+
+        let finalResult = await transcribeResult(
+            samples: samples,
+            clipStart: stream.lastAgreedSeconds,
+            prefixTokens: stream.lastAgreedWords.flatMap(\.tokens)
+        )
+        let tailText: String
+        if let result = finalResult, result.segments.first?.words != nil {
+            tailText = result.allWords
+                .filter { $0.start >= stream.lastAgreedSeconds }
+                .map(\.word)
+                .joined()
+        } else {
+            tailText = finalResult?.text
+                ?? stream.lastAgreedWords.map(\.word).joined()
+        }
+        return Self.cleanText(stream.confirmedText + tailText)
+    }
 
     private func transcribeResult(
         samples: [Float],
