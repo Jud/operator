@@ -68,9 +68,18 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         return Int(seconds) * 1_000 + Int(attoseconds / 1_000_000_000_000_000)
     }
 
+    /// Regex matching text that is entirely parenthesized or bracketed non-speech annotations.
+    ///
+    /// WhisperKit emits things like "(air whooshes)", "[clicking]", "(popping sound)" when
+    /// it hears non-speech audio. These should be treated as empty transcriptions.
+    nonisolated(unsafe) private static let nonSpeechPattern = /^\s*[\(\[].+[\)\]]\s*$/
+
     private static func cleanText(_ text: String) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if blankPatterns.contains(result) {
+            return ""
+        }
+        if result.wholeMatch(of: nonSpeechPattern) != nil {
             return ""
         }
         while result.contains("  ") {
@@ -153,10 +162,18 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let stream = streamLock.withLock { $0 }
         let awaitMs = Self.ms(awaitDuration)
         let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
-        let audioSec = String(format: "%.1f", audioDur)
-        let agreedSec = String(format: "%.1f", stream.lastAgreedSeconds)
+        let confirmedWordCount = stream.confirmedText.split(separator: " ").count
+        let agreedWordTexts = stream.lastAgreedWords.map(\.word).joined()
+        let prefixTokens = stream.lastAgreedWords.flatMap(\.tokens)
+        let unconfirmedTail = audioDur - stream.lastAgreedSeconds
+        let zp = stream.consecutiveZeroProgress
+        let seg = stream.useSegmentFallback
+        let agreed = stream.lastAgreedSeconds
         Self.logger.notice(
-            "Stop: \(audioSec)s audio, agreed=\(agreedSec)s, await=\(awaitMs)ms"
+            "Stop: \(audioDur, privacy: .public)s audio, agreed=\(agreed, privacy: .public)s, await=\(awaitMs)ms"
+        )
+        Self.logger.notice(
+            "Stop: confirmed=\(confirmedWordCount) words, zp=\(zp), seg=\(seg)"
         )
 
         let finalStart = ContinuousClock.now
@@ -167,7 +184,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let wordCount = Float(fullText.split(separator: " ").count)
         if audioDur > 3 && wordCount / audioDur < 0.5 && !fullText.isEmpty {
             Self.logger.notice(
-                "Result too short (\(Int(wordCount)) words for \(audioSec)s) — full decode"
+                "Result too short (\(Int(wordCount)) words for \(audioDur, privacy: .public)s) — full decode"
             )
             if let rescue = await transcribeResult(samples: samples) {
                 let rescueText = Self.cleanText(rescue.text)
@@ -179,7 +196,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let finalMs = Self.ms(ContinuousClock.now - finalStart)
 
         if fullText.isEmpty && audioDur > 1 {
-            Self.logger.notice("Empty result on \(audioSec)s audio — full decode rescue")
+            Self.logger.notice("Empty result on \(audioDur, privacy: .public)s audio — full decode rescue")
             if let rescue = await transcribeResult(samples: samples) {
                 fullText = Self.cleanText(rescue.text)
             }
@@ -328,6 +345,20 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             hypothesisWords
         )
 
+        if !state.prevWords.isEmpty {
+            let prevSnippet = String(state.prevWords.prefix(6).map(\.word).joined().prefix(40))
+            let hypoSnippet = String(hypothesisWords.prefix(6).map(\.word).joined().prefix(40))
+            let pc = state.prevWords.count
+            let hc = hypothesisWords.count
+            let cc = commonPrefix.count
+            Self.logger.notice(
+                "Word compare: prev=\(pc)[\"\(prevSnippet, privacy: .public)\"] common=\(cc)"
+            )
+            Self.logger.notice(
+                "Word compare: hypo=\(hc)[\"\(hypoSnippet, privacy: .public)\"]"
+            )
+        }
+
         if commonPrefix.count >= Self.agreementCountNeeded {
             let newAgreed = Array(commonPrefix.suffix(Self.agreementCountNeeded))
             let toConfirm = commonPrefix.prefix(commonPrefix.count - Self.agreementCountNeeded)
@@ -340,8 +371,16 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             }
             state.consecutiveMisses = 0
 
-            let sec = String(format: "%.1f", state.lastAgreedSeconds)
-            Self.logger.notice("Confirmed \(toConfirm.count) words to \(sec)s in \(passMs)ms")
+            if toConfirm.isEmpty {
+                state.consecutiveZeroProgress += 1
+            } else {
+                state.consecutiveZeroProgress = 0
+            }
+
+            let agreedAt = state.lastAgreedSeconds
+            let zp = state.consecutiveZeroProgress
+            let confMsg = "Confirmed \(toConfirm.count) words to \(agreedAt)s in \(passMs)ms (zeroProgress=\(zp))"
+            Self.logger.notice("\(confMsg, privacy: .public)")
             if !newText.isEmpty {
                 Self.logger.notice("  new: \"\(newText.prefix(60), privacy: .public)\"")
             }
@@ -396,8 +435,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
         state.segmentConfirmedEndSeconds = newEnd
 
-        let endFmt = String(format: "%.1f", newEnd)
-        Self.logger.notice("Segment confirmed \(toConfirm.count) seg to \(endFmt)s in \(passMs)ms")
+        Self.logger.notice("Segment confirmed \(toConfirm.count) seg to \(newEnd, privacy: .public)s in \(passMs)ms")
     }
 
     // MARK: - Transcription
@@ -419,14 +457,35 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         )
         let tailText: String
         if let result = finalResult, result.segments.first?.words != nil {
-            tailText = result.allWords
-                .filter { $0.start >= stream.lastAgreedSeconds }
-                .map(\.word)
-                .joined()
+            let allWords = result.allWords
+            let filtered = allWords.filter { $0.start >= stream.lastAgreedSeconds }
+            tailText = filtered.map(\.word).joined()
+            if allWords.count != filtered.count {
+                let droppedCount = allWords.count - filtered.count
+                let droppedText = allWords.filter { $0.start < stream.lastAgreedSeconds }.map(\.word).joined()
+                Self.logger.notice(
+                    "Final decode: \(allWords.count) words, \(droppedCount) filtered"
+                )
+            }
+            let tailSnippet = String(tailText.prefix(80))
+            Self.logger.notice(
+                "Final tail: \(filtered.count) words from \(stream.lastAgreedSeconds, privacy: .public)s"
+            )
+            Self.logger.notice("  \"\(tailSnippet, privacy: .public)\"")
         } else {
             tailText = finalResult?.text ?? stream.lastAgreedWords.map(\.word).joined()
+            Self.logger.notice(
+                "Final tail (no words): \"\(tailText.prefix(80), privacy: .public)\""
+            )
         }
-        return Self.cleanText(stream.confirmedText + tailText)
+        let combined = Self.cleanText(stream.confirmedText + tailText)
+        let combinedSnippet = String(combined.prefix(80))
+        let cc = stream.confirmedText.count
+        let tc = tailText.count
+        Self.logger.notice(
+            "Final combined: confirmed=\(cc) chars + tail=\(tc) chars = \"\(combinedSnippet, privacy: .public)\""
+        )
+        return combined
     }
 
     private func transcribeResult(
@@ -468,6 +527,7 @@ private struct StreamState {
     var lastAgreedSeconds: Float = 0
     var prevWords: [WordTiming] = []
     var consecutiveMisses: Int = 0
+    var consecutiveZeroProgress: Int = 0
     var useSegmentFallback: Bool = false
     var segmentConfirmedText: String = ""
     var segmentConfirmedEndSeconds: Float = 0

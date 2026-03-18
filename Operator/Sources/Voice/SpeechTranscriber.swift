@@ -232,7 +232,24 @@ public final class SpeechTranscriber: SpeechTranscribing {
         Self.logger.info("Audio engine started, listening for speech")
     }
 
+    /// RMS threshold below which audio is considered silence.
+    ///
+    /// Typical speech RMS is 0.02–0.2; system tones and background noise sit
+    /// well below 0.01. This prevents WhisperKit from hallucinating on feedback
+    /// tones or ambient room noise.
+    private static let silenceThreshold: Float = 0.008
+
+    /// Seconds of audio to skip at the start when computing RMS.
+    ///
+    /// The feedback tone (listening cue) plays when recording starts and gets
+    /// picked up by the microphone. Skipping this window prevents the tone from
+    /// inflating the RMS and fooling silence detection.
+    private static let feedbackToneSkipSeconds: Float = 0.4
+
     /// Stop capturing audio and return the final transcription.
+    ///
+    /// Returns nil early if the captured audio is below the silence threshold,
+    /// skipping the transcription engine entirely.
     ///
     /// - Returns: The transcribed text, or nil if transcription failed or was empty.
     public func stopListening() async -> String? {
@@ -244,8 +261,6 @@ public final class SpeechTranscriber: SpeechTranscribing {
         tearDownAudioCapture()
         Self.logger.info("Audio engine stopped, processing transcription")
 
-        let result = await engine.finishAndTranscribe()
-
         let buffers = capturedBuffers.withLock { bufs -> [AVAudioPCMBuffer] in
             let snapshot = bufs
             bufs.removeAll()
@@ -253,6 +268,22 @@ public final class SpeechTranscriber: SpeechTranscribing {
         }
         let format = capturedFormat
         capturedFormat = nil
+
+        let rms = Self.computeRMS(buffers, skippingSeconds: Self.feedbackToneSkipSeconds)
+        if rms < Self.silenceThreshold {
+            Self.logger.info("Silence detected (RMS=\(rms, format: .fixed(precision: 4))); skipping transcription")
+            engine.cancel()
+            nonisolated(unsafe) let traceBuffers = buffers
+            nonisolated(unsafe) let traceFormat = format
+            lastAudioFileURL = await Self.writeAudioFile(
+                buffers: traceBuffers,
+                format: traceFormat,
+                directory: Self.audioTraceDir
+            )
+            return nil
+        }
+
+        let result = await engine.finishAndTranscribe()
 
         nonisolated(unsafe) let traceBuffers = buffers
         nonisolated(unsafe) let traceFormat = format
@@ -312,6 +343,51 @@ public final class SpeechTranscriber: SpeechTranscribing {
             tearDownAudioCapture()
             Self.logger.debug("Stopped running audio engine from previous cycle")
         }
+    }
+
+    /// Compute the RMS (root mean square) energy of captured audio buffers,
+    /// skipping the initial feedback tone window.
+    ///
+    /// Measures overall loudness after the skip window. Returns 0 if no
+    /// samples remain after skipping.
+    nonisolated private static func computeRMS(
+        _ buffers: [AVAudioPCMBuffer],
+        skippingSeconds: Float = 0.4
+    ) -> Float {
+        guard let sampleRate = buffers.first?.format.sampleRate else {
+            return 0
+        }
+        var framesToSkip = Int(Float(sampleRate) * skippingSeconds)
+        var sumSquares: Double = 0
+        var totalFrames: Int = 0
+
+        for buffer in buffers {
+            guard let channelData = buffer.floatChannelData else {
+                continue
+            }
+            let frames = Int(buffer.frameLength)
+            let samples = channelData[0]
+
+            let start: Int
+            if framesToSkip >= frames {
+                framesToSkip -= frames
+                continue
+            } else {
+                start = framesToSkip
+                framesToSkip = 0
+            }
+
+            for i in start..<frames {
+                let sample = Double(samples[i])
+                sumSquares += sample * sample
+            }
+            totalFrames += frames - start
+        }
+
+        guard totalFrames > 0 else {
+            return 0
+        }
+        return Float((sumSquares / Double(totalFrames)).squareRoot())
     }
 
     /// Stop the audio engine, remove the input tap, and clear the listening flag.

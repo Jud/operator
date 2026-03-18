@@ -134,6 +134,7 @@ private func buildContext(
         bimodalEngine: bde,
         dictationDelivery: dictation
     )
+    sm.minimumRecordingDuration = .zero
     return BimodalTestContext(
         stateMachine: sm,
         mockTranscriber: transcriber,
@@ -166,6 +167,7 @@ internal struct StateMachineBimodalDictationTests {
 
         #expect(ctx.mockDictation.deliverCallCount == 1)
         #expect(ctx.mockDictation.lastDeliveredText == "hello world")
+        #expect(ctx.mockFeedback.playedCues.contains(.processing))
         #expect(ctx.mockFeedback.playedCues.contains(.dictation))
         #expect(ctx.stateMachine.currentState == .idle)
     }
@@ -332,8 +334,8 @@ internal struct StateMachineDoubleTapTests {
 @Suite("StateMachine - Dictation Feedback")
 @MainActor
 internal struct StateMachineDictationFeedbackTests {
-    @Test("successful dictation plays dictation tone not spoken confirmation")
-    func dictationPlaysSubtleTone() async throws {
+    @Test("successful dictation plays processing then dictation tone, no spoken confirmation")
+    func dictationPlaysBothTones() async throws {
         let ctx = makeBimodalContext(isTerminal: false, isTextField: true)
 
         ctx.mockTranscriber.nextTranscription = "hello world"
@@ -342,6 +344,7 @@ internal struct StateMachineDictationFeedbackTests {
 
         try await Task.sleep(nanoseconds: 500_000_000)
 
+        #expect(ctx.mockFeedback.playedCues.contains(.processing))
         #expect(ctx.mockFeedback.playedCues.contains(.dictation))
         // Should NOT have spoken a delivery confirmation
         let hasDeliveryConfirmation = ctx.mockSpeechManager.spokenMessages.contains {
@@ -370,7 +373,7 @@ internal struct StateMachineDictationFeedbackTests {
         #expect(ctx.stateMachine.currentState == .idle)
     }
 
-    @Test("empty transcription returns to idle with spoken message")
+    @Test("empty transcription returns to idle with dismissed tone")
     func emptyTranscriptionReturnsToIdle() async throws {
         let ctx = makeBimodalContext()
 
@@ -382,10 +385,6 @@ internal struct StateMachineDictationFeedbackTests {
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
         #expect(ctx.stateMachine.currentState == .idle)
-        #expect(
-            ctx.mockSpeechManager.spokenMessages.contains {
-                $0.text.contains("didn't catch")
-            }
-        )
+        #expect(ctx.mockFeedback.playedCues.contains(.dismissed))
     }
 }

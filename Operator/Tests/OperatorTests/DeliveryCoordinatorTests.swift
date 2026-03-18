@@ -27,6 +27,7 @@ internal final class MockAudioFeedback: AudioFeedbackProviding {
     var playedCues: [AudioCue] = []
 
     func play(_ cue: AudioCue) { playedCues.append(cue) }
+    func playAfterCurrent(_ cue: AudioCue) { playedCues.append(cue) }
 }
 
 // MARK: - DeliveryCoordinator Tests

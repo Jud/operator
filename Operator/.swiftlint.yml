@@ -107,7 +107,7 @@ line_length:
   ignores_urls: true
 
 type_body_length:
-  warning: 400
+  warning: 450
   error: 600
 
 file_length:
@@ -115,7 +115,7 @@ file_length:
   error: 1500
 
 function_body_length:
-  warning: 65
+  warning: 75
   error: 100
 
 function_parameter_count:

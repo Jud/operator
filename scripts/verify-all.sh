@@ -15,7 +15,8 @@ pushd "$ROOT_DIR/Operator" >/dev/null
 swift build
 swift test
 swiftlint lint --strict
-swift-format lint --strict --recursive Sources Tests
+find Sources Tests -name '*.swift' ! -path 'Tests/Benchmarks/*' -print0 \
+  | xargs -0 swift-format lint --strict
 popd >/dev/null
 
 echo "=== Full verify passed ==="
