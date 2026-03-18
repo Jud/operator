@@ -163,11 +163,18 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             reg: reg,
             vm: vm
         )
-        bootstrapTrigger()
         warmUpWhisperKit(transcriber: transcriber)
         bootstrapDiscovery(terminalBridge: terminalBridge, reg: reg, aq: aq, vm: vm)
         wireVoicePreview()
-        ttsManager.speak("Operator is ready.", voice: vm.operatorVoice, prefix: "")
+        bootstrapTrigger()
+        await aq.enqueue(
+            AudioQueue.QueuedMessage(
+                sessionName: "Operator",
+                text: "ready.",
+                priority: .normal,
+                voice: vm.operatorVoice
+            )
+        )
         Self.logger.info("Operator startup complete")
     }
 
@@ -372,12 +379,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let service = SessionDiscoveryService(
             terminalBridge: terminalBridge,
             registry: reg
-        ) { name in
+        ) { _ in
             Task {
                 await aq.enqueue(
                     AudioQueue.QueuedMessage(
                         sessionName: "Operator",
-                        text: "\(name) disconnected.",
+                        text: "disconnected.",
                         priority: .urgent,
                         voice: vm.operatorVoice
                     )
