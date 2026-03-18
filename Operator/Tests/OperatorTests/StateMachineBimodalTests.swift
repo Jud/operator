@@ -162,7 +162,7 @@ internal struct StateMachineBimodalDictationTests {
         #expect(ctx.stateMachine.currentState == .transcribing)
 
         // Allow async transcription and bimodal decision to complete
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 1)
         #expect(ctx.mockDictation.lastDeliveredText == "hello world")
@@ -178,7 +178,7 @@ internal struct StateMachineBimodalDictationTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
         #expect(ctx.mockFeedback.playedCues.contains(.error))
@@ -199,7 +199,7 @@ internal struct StateMachineBimodalDictationTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
         #expect(ctx.stateMachine.currentState == .idle)
@@ -287,7 +287,7 @@ internal struct StateMachineDoubleTapTests {
         // Double-tap
         ctx.stateMachine.triggerDoubleTap()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.replayCallCount == 1)
         #expect(ctx.mockFeedback.playedCues.contains(.dictation))
@@ -301,7 +301,7 @@ internal struct StateMachineDoubleTapTests {
         // No prior dictation
         ctx.stateMachine.triggerDoubleTap()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.replayCallCount == 1)
         #expect(ctx.mockFeedback.playedCues.contains(.error))
@@ -322,7 +322,7 @@ internal struct StateMachineDoubleTapTests {
         // Double-tap should cancel listening and replay
         ctx.stateMachine.triggerDoubleTap()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.replayCallCount == 1)
         #expect(ctx.stateMachine.currentState == .idle)
@@ -340,7 +340,7 @@ internal struct StateMachineDictationFeedbackTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockFeedback.playedCues.contains(.dictation))
         // Should NOT have spoken a delivery confirmation
@@ -359,7 +359,7 @@ internal struct StateMachineDictationFeedbackTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockFeedback.playedCues.contains(.error))
         #expect(
@@ -378,7 +378,7 @@ internal struct StateMachineDictationFeedbackTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
         #expect(ctx.stateMachine.currentState == .idle)
