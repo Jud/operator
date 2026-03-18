@@ -257,8 +257,6 @@ public final class StateMachine {
 
         transition(to: .transcribing)
 
-        feedback.play(.processing)
-
         // Redundant timeout (belt and suspenders with transcriber's internal 30s timeout).
         startTimeout(seconds: 30)
 
@@ -267,9 +265,20 @@ public final class StateMachine {
                 return
             }
 
-            let text = await self.transcriber.stopListeningWithTimeout(seconds: 30)
+            let hasSpeech = await self.transcriber.stopAndCheckSilence()
 
-            await self.handleTranscriptionResult(text)
+            guard !Task.isCancelled, self.currentState == .transcribing else {
+                return
+            }
+
+            if hasSpeech {
+                self.feedback.play(.processing)
+                let text = await self.transcriber.finishTranscription()
+                await self.handleTranscriptionResult(text)
+            } else {
+                self.feedback.play(.dismissed)
+                self.enterIdle()
+            }
         }
     }
 

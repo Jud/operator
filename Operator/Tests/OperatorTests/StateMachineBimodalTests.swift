@@ -30,6 +30,17 @@ private final class TestSpeechTranscriber: SpeechTranscribing {
         await stopListening()
     }
 
+    func stopAndCheckSilence() async -> Bool {
+        isListening = false
+        return nextTranscription != nil
+    }
+
+    func finishTranscription() async -> String? {
+        let result = nextTranscription
+        nextTranscription = nil
+        return result
+    }
+
     func replaceEngine(_ newEngine: any TranscriptionEngine) {}
 }
 
