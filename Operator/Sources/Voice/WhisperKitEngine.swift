@@ -175,6 +175,13 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
         let finalMs = Self.ms(ContinuousClock.now - finalStart)
 
+        if fullText.isEmpty && audioDur > 1 {
+            Self.logger.notice("Empty result on \(audioSec)s audio — full decode rescue")
+            if let rescue = await transcribeResult(samples: samples) {
+                fullText = Self.cleanText(rescue.text)
+            }
+        }
+
         guard !fullText.isEmpty
         else {
             Self.logger.notice("Transcription empty (final=\(finalMs)ms)")
