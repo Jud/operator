@@ -87,7 +87,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Jud/swift-bart-g2p.git",
       "state" : {
-        "revision" : "347fa1eecf1f20f0c98252ae262fbef975ad8db0",
+        "revision" : "1ed781e05fba7b4042212aecb6124a3aab83ce45",
         "version" : "0.4.0"
       }
     },
