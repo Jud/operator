@@ -1,4 +1,3 @@
-// swiftlint:disable file_length
 import AVFoundation
 import AppKit
 import KokoroTTS
@@ -80,7 +79,6 @@ public struct MenuBarContentView: View {
         }
     }
 
-    // swiftlint:disable:next type_contents_order
     private static func relaunch() {
         let url = Bundle.main.bundleURL
         let task = Process()
@@ -96,7 +94,6 @@ public struct MenuBarContentView: View {
     }
 }
 
-// swiftlint:disable type_body_length
 /// Application delegate that bootstraps all Operator daemon components.
 @MainActor
 public class AppDelegate: NSObject, NSApplicationDelegate {
@@ -122,7 +119,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func bootstrap() async {  // swiftlint:disable:this function_body_length
+    private func bootstrap() async {
         Self.logger.info("Operator launching")
         bootstrapPrerequisites()
 
@@ -238,7 +235,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Create the state machine, waveform panel, and menu bar model.
     @discardableResult
-    private func bootstrapStateMachine(  // swiftlint:disable:this function_parameter_count
+    private func bootstrapStateMachine(
         stt: any TranscriptionEngine,
         tts: any SpeechManaging,
         aq: AudioQueue,
@@ -468,4 +465,4 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         onboardingWindowDelegate = delegate
         return window
     }
-}  // swiftlint:enable type_body_length
+}
