@@ -1,10 +1,11 @@
 // swiftlint:disable file_length
+// swiftlint:disable type_body_length
 import AVFoundation
 import VocabularyCorrector
 import WhisperKit
 import os
 
-// swiftlint:disable:next type_body_length
+/// WhisperKit-based speech-to-text with word-level streaming confirmation.
 public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     private struct SessionState: @unchecked Sendable {
         var audioSamples: [Float] = []
@@ -51,10 +52,12 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     /// Previous session's task — new loop awaits it to prevent concurrent pipeline use.
     private var previousTask: Task<Void, Never>?
 
+    /// Create with a pre-loaded WhisperKit pipeline.
     public init(pipe: WhisperKit) {
         self.pipe = pipe
     }
 
+    /// Load a WhisperKit model from disk and create an engine.
     public static func create(modelFolder: String) async throws -> WhisperKitEngine {
         let config = WhisperKitConfig(modelFolder: modelFolder)
         let pipe = try await WhisperKit(config)
@@ -121,8 +124,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     /// Finish recording and return the transcribed text.
-    // swiftlint:disable:next function_body_length
-    public func finishAndTranscribe() async -> String? {
+    public func finishAndTranscribe() async -> String? {  // swiftlint:disable:this function_body_length
         let stopTime = ContinuousClock.now
 
         stopLoop.withLock { $0 = true }
@@ -460,6 +462,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 }
+// swiftlint:enable type_body_length
 
 // MARK: - Stream State
 
