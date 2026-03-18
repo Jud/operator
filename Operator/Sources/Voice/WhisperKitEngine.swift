@@ -1,5 +1,3 @@
-// swiftlint:disable file_length
-// swiftlint:disable type_body_length
 import AVFoundation
 import VocabularyCorrector
 import WhisperKit
@@ -124,7 +122,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     /// Finish recording and return the transcribed text.
-    public func finishAndTranscribe() async -> String? {  // swiftlint:disable:this function_body_length
+    public func finishAndTranscribe() async -> String? {
         let stopTime = ContinuousClock.now
 
         stopLoop.withLock { $0 = true }
@@ -312,7 +310,6 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 
-    // swiftlint:disable:next function_body_length
     private func confirmWords(
         state: inout StreamState,
         result: TranscriptionResult,
@@ -462,7 +459,6 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 }
-// swiftlint:enable type_body_length
 
 // MARK: - Stream State
 

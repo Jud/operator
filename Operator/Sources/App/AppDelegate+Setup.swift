@@ -1,6 +1,5 @@
 import Foundation
 
-// swiftlint:disable type_contents_order
 // MARK: - Auth, CLI Symlinks, and Plugin Registration
 
 extension AppDelegate {
@@ -97,7 +96,7 @@ extension AppDelegate {
     private static func runProcess(
         _ path: String,
         _ arguments: [String]
-    ) -> (status: Int32, output: String, error: String) {  // swiftlint:disable:this large_tuple
+    ) -> (status: Int32, output: String, error: String) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
@@ -120,4 +119,3 @@ extension AppDelegate {
         )
     }
 }
-// swiftlint:enable type_contents_order

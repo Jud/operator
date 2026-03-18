@@ -105,7 +105,7 @@ private func makeBimodalContext(
 }
 
 @MainActor
-private func buildContext(  // swiftlint:disable:this function_parameter_count
+private func buildContext(
     transcriber: TestSpeechTranscriber,
     speechMgr: TestSpeechManager,
     feedback: MockAudioFeedback,

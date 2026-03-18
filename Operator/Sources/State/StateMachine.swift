@@ -1,4 +1,3 @@
-// swiftlint:disable file_length
 import Foundation
 
 /// Operational states of the Operator daemon.
