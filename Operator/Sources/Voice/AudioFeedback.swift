@@ -46,11 +46,13 @@ public final class AudioFeedback: AudioFeedbackProviding {
 
     private let players: [AudioCue: AVAudioPlayer]
 
-    /// The most recently started cue and when it will finish.
-    private var currentCueEnd: Date = .distantPast
+    /// Earliest time a follow-up cue (via `playAfterCurrent`) should start.
+    ///
+    /// Set to the later of: current cue's end time, or current cue's start + minimumSpacing.
+    private var nextAllowedPlayTime: Date = .distantPast
 
-    /// Minimum gap between consecutive cues (seconds).
-    private static let cueGap: TimeInterval = 0.08
+    /// Minimum time between the start of one cue and the start of the next.
+    private static let minimumSpacing: TimeInterval = 0.3
 
     /// Creates a new audio feedback player, pre-loading all tone files.
     public init() {
@@ -85,7 +87,11 @@ public final class AudioFeedback: AudioFeedbackProviding {
         }
         player.currentTime = 0
         player.play()
-        currentCueEnd = Date().addingTimeInterval(player.duration)
+        let now = Date()
+        nextAllowedPlayTime = max(
+            now.addingTimeInterval(player.duration),
+            now.addingTimeInterval(Self.minimumSpacing)
+        )
         Self.logger.debug("Playing cue: \(cue.rawValue)")
     }
 
@@ -94,14 +100,10 @@ public final class AudioFeedback: AudioFeedbackProviding {
     /// If nothing is playing, plays immediately. Otherwise schedules playback
     /// after the current cue's remaining duration plus a small gap.
     public func playAfterCurrent(_ cue: AudioCue) {
-        guard UserDefaults.standard.bool(forKey: "feedbackSoundsEnabled") else {
-            return
-        }
-        let remaining = currentCueEnd.timeIntervalSinceNow
-        if remaining <= 0 {
+        let delay = nextAllowedPlayTime.timeIntervalSinceNow
+        if delay <= 0 {
             play(cue)
         } else {
-            let delay = remaining + Self.cueGap
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 self?.play(cue)

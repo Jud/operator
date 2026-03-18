@@ -194,17 +194,11 @@ internal struct StateMachineBimodalDictationTests {
         try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
-        #expect(ctx.mockFeedback.playedCues.contains(.error))
+        #expect(ctx.mockFeedback.playedCues.contains(.dismissed))
         #expect(ctx.stateMachine.currentState == .idle)
-        // Should have spoken an error message about no text field
-        #expect(
-            ctx.mockSpeechManager.spokenMessages.contains {
-                $0.text.contains("text field")
-            }
-        )
     }
 
-    @Test("transcription with permission denied produces error")
+    @Test("transcription with permission denied produces error tone")
     func transcriptionPermissionDenied() async throws {
         let ctx = makeBimodalContext(hasPermission: false)
 
@@ -216,11 +210,7 @@ internal struct StateMachineBimodalDictationTests {
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
         #expect(ctx.stateMachine.currentState == .idle)
-        #expect(
-            ctx.mockSpeechManager.spokenMessages.contains {
-                $0.text.contains("Accessibility")
-            }
-        )
+        #expect(ctx.mockFeedback.playedCues.contains(.error))
     }
 }
 
@@ -364,8 +354,8 @@ internal struct StateMachineDictationFeedbackTests {
         #expect(!hasDeliveryConfirmation)
     }
 
-    @Test("dictation paste failure speaks error message")
-    func dictationPasteFailureSpeaksError() async throws {
+    @Test("dictation paste failure plays error tone")
+    func dictationPasteFailurePlaysError() async throws {
         let ctx = makeBimodalContext(isTerminal: false, isTextField: true)
         ctx.mockDictation.deliverResult = .pasteFailed("CGEvent creation failed")
 
@@ -376,11 +366,6 @@ internal struct StateMachineDictationFeedbackTests {
         try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockFeedback.playedCues.contains(.error))
-        #expect(
-            ctx.mockSpeechManager.spokenMessages.contains {
-                $0.text.contains("cursor")
-            }
-        )
         #expect(ctx.stateMachine.currentState == .idle)
     }
 

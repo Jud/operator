@@ -205,7 +205,7 @@ public final class StateMachine {
             try transcriber.startListening(contextualStrings: cachedContextualStrings)
         } catch {
             Self.logger.error("Failed to start audio capture: \(error)")
-            speakOperator("I can't access the microphone. Check System Settings.")
+            Self.logger.error("Microphone access denied")
             transition(to: .error)
             scheduleErrorRecovery()
         }
@@ -388,15 +388,12 @@ extension StateMachine {
 
         case .noTextField:
             await postBimodalTrace(text: text, result: .noSessions, audioFile: audioFile)
-            speakOperator("No text field detected. Move your cursor to a text input.")
-            feedback.play(.error)
+            feedback.play(.dismissed)
             enterIdle()
 
         case .permissionRequired:
             await postBimodalTrace(text: text, result: .noSessions, audioFile: audioFile)
-            speakOperator(
-                "Operator needs Accessibility permission for dictation. Check System Settings."
-            )
+            feedback.play(.error)
             enterIdle()
         }
     }
@@ -419,11 +416,9 @@ extension StateMachine {
 
         case .pasteFailed(let reason):
             Self.logger.error("Dictation paste failed: \(reason)")
-            speakOperator("Couldn't insert text at the cursor.")
             feedback.play(.error)
 
         case .noTextField:
-            speakOperator("No text field detected.")
             feedback.play(.error)
 
         case .noLastDictation:
@@ -939,11 +934,9 @@ extension StateMachine {
 
         case .pasteFailed(let reason):
             Self.logger.error("Dictation paste failed: \(reason)")
-            speakOperator("Couldn't insert text at the cursor.")
             feedback.play(.error)
 
         case .noTextField:
-            speakOperator("No text field detected.")
             feedback.play(.error)
         }
     }
