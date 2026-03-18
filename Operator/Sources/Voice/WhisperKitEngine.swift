@@ -16,7 +16,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     private static let logger = Log.logger(for: "WhisperKitEngine")
 
     /// Minimum new audio (in samples at 16 kHz) before triggering a background pass.
-    private static let retranscribeThreshold = 16_000  // 1 second
+    private static let retranscribeThreshold = 16_000
 
     /// Number of consecutive agreed words required before confirming.
     private static let agreementCountNeeded = 2
@@ -155,12 +155,10 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             "Stop: \(audioSec)s audio, agreed=\(agreedSec)s, await=\(awaitMs)ms"
         )
 
-        // Final pass from the last confirmed point.
         let finalStart = ContinuousClock.now
         var fullText: String
 
         if stream.useSegmentFallback {
-            // Segment fallback: decode tail from segment clip point.
             let tailResult = await transcribeResult(
                 samples: samples,
                 clipStart: stream.segmentConfirmedEndSeconds
@@ -172,7 +170,6 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
                 fullText = Self.cleanText(stream.segmentConfirmedText)
             }
         } else {
-            // Word-level: decode from last agreed point with prefix context.
             let finalResult = await transcribeResult(
                 samples: samples,
                 clipStart: stream.lastAgreedSeconds,
@@ -327,7 +324,6 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 
-    /// Word-level agreement path.
     private func runWordAgreement(
         state: inout StreamState,
         result: TranscriptionResult,
@@ -364,9 +360,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             state.consecutiveMisses += 1
 
             if state.consecutiveMisses >= Self.maxWordMisses {
-                // Switch to segment-level fallback.
                 state.useSegmentFallback = true
-                // Carry over any confirmed words as text for the segment path.
                 let wordText = (state.confirmedText + state.lastAgreedWords.map(\.word).joined())
                     .trimmingCharacters(in: .whitespaces)
                 state.segmentConfirmedText = wordText
@@ -388,7 +382,6 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         state.prevWords = hypothesisWords.filter { $0.start >= clipSeconds }
     }
 
-    /// Segment-level confirmation fallback.
     private func runSegmentFallback(
         state: inout StreamState,
         result: TranscriptionResult,
