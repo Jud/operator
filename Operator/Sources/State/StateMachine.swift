@@ -80,6 +80,14 @@ public final class StateMachine {
     /// complete in time.
     private var timeoutTask: Task<Void, Never>?
 
+    /// Timestamp when listening started, used to detect very short recordings.
+    private var listeningStartTime: ContinuousClock.Instant?
+
+    /// Minimum recording duration before transcription is attempted.
+    ///
+    /// Recordings shorter than this are dismissed silently. Set to zero in tests.
+    public var minimumRecordingDuration: Duration = .milliseconds(500)
+
     /// Cached contextual strings for speech recognition, refreshed from the registry.
     private var cachedContextualStrings: [String] = []
 
@@ -189,6 +197,7 @@ public final class StateMachine {
         }
 
         transition(to: .listening)
+        listeningStartTime = .now
         feedback.play(.listening)
         waveformPanel?.show()
 
@@ -223,11 +232,25 @@ public final class StateMachine {
 
     /// Called when push-to-talk key is released (FN up).
     ///
-    /// Transitions to TRANSCRIBING and kicks off async transcription with a 30s timeout.
+    /// If the recording was very short (< 500ms), skips transcription entirely
+    /// and plays a gentle dismissed tone. Otherwise transitions to TRANSCRIBING.
     public func triggerStop() {
         guard currentState == .listening else {
             Self.logger.warning("Trigger STOP ignored: not in LISTENING state (current: \(self.currentState))")
             return
+        }
+
+        // Very short recordings can't contain meaningful speech and
+        // would just pick up feedback tones. Dismiss silently.
+        if let start = listeningStartTime {
+            let elapsed = ContinuousClock.now - start
+            if elapsed < minimumRecordingDuration {
+                Self.logger.info("Trigger STOP: recording too short (\(elapsed)); dismissing")
+                cancelInFlightWork()
+                feedback.play(.dismissed)
+                enterIdle()
+                return
+            }
         }
 
         Self.logger.info("Trigger STOP: entering TRANSCRIBING")
@@ -316,7 +339,7 @@ extension StateMachine {
                 result: .notConfident(""),
                 audioFile: audioFile
             )
-            speakOperator("I didn't catch that. Try again?")
+            feedback.play(.dismissed)
             enterIdle()
             return
         }
@@ -381,7 +404,22 @@ extension StateMachine {
             return
         }
 
-        handleDictationResult(result)
+        switch result {
+        case .success:
+            feedback.playAfterCurrent(.dictation)
+
+        case .pasteFailed(let reason):
+            Self.logger.error("Dictation paste failed: \(reason)")
+            speakOperator("Couldn't insert text at the cursor.")
+            feedback.play(.error)
+
+        case .noTextField:
+            speakOperator("No text field detected.")
+            feedback.play(.error)
+
+        case .noLastDictation:
+            break
+        }
         enterIdle()
     }
 

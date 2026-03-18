@@ -8,6 +8,7 @@ public enum AudioCue: String, CaseIterable, Sendable {
     case error
     case pending
     case dictation
+    case dismissed
 }
 
 /// Protocol for playing non-verbal audio feedback tones.
@@ -15,8 +16,14 @@ public enum AudioCue: String, CaseIterable, Sendable {
 /// Extracted to enable silent mock implementations in tests.
 @MainActor
 public protocol AudioFeedbackProviding: Sendable {
-    /// Play an audio feedback tone.
+    /// Play an audio feedback tone immediately.
     func play(_ cue: AudioCue)
+
+    /// Play an audio feedback tone after any currently playing cue finishes.
+    ///
+    /// If nothing is playing, plays immediately. Otherwise schedules playback
+    /// after the current cue's remaining duration plus a small gap.
+    func playAfterCurrent(_ cue: AudioCue)
 }
 
 /// Plays non-verbal audio feedback tones at state transitions.
@@ -28,6 +35,7 @@ public protocol AudioFeedbackProviding: Sendable {
 /// - error: descending two-tone on any error
 /// - pending: subtle notification when returning to IDLE with queued messages
 /// - dictation: short, subtle high-pitched chime confirming text insertion at cursor
+/// - dismissed: gentle soft pop when recording is empty or too short (no error)
 ///
 /// Each tone is pre-loaded via AVAudioPlayer.prepareToPlay() for zero-latency playback.
 /// The play method resets currentTime to 0 before playing, allowing rapid re-trigger
@@ -37,6 +45,12 @@ public final class AudioFeedback: AudioFeedbackProviding {
     private static let logger = Log.logger(for: "AudioFeedback")
 
     private let players: [AudioCue: AVAudioPlayer]
+
+    /// The most recently started cue and when it will finish.
+    private var currentCueEnd: Date = .distantPast
+
+    /// Minimum gap between consecutive cues (seconds).
+    private static let cueGap: TimeInterval = 0.08
 
     /// Creates a new audio feedback player, pre-loading all tone files.
     public init() {
@@ -58,7 +72,7 @@ public final class AudioFeedback: AudioFeedbackProviding {
         players = loaded
     }
 
-    /// Play an audio feedback tone.
+    /// Play an audio feedback tone immediately.
     ///
     /// Resets playback position to allow rapid re-triggering.
     public func play(_ cue: AudioCue) {
@@ -71,6 +85,27 @@ public final class AudioFeedback: AudioFeedbackProviding {
         }
         player.currentTime = 0
         player.play()
+        currentCueEnd = Date().addingTimeInterval(player.duration)
         Self.logger.debug("Playing cue: \(cue.rawValue)")
+    }
+
+    /// Play an audio feedback tone after any currently playing cue finishes.
+    ///
+    /// If nothing is playing, plays immediately. Otherwise schedules playback
+    /// after the current cue's remaining duration plus a small gap.
+    public func playAfterCurrent(_ cue: AudioCue) {
+        guard UserDefaults.standard.bool(forKey: "feedbackSoundsEnabled") else {
+            return
+        }
+        let remaining = currentCueEnd.timeIntervalSinceNow
+        if remaining <= 0 {
+            play(cue)
+        } else {
+            let delay = remaining + Self.cueGap
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                self?.play(cue)
+            }
+        }
     }
 }

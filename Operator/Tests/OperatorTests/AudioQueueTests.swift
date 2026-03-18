@@ -29,6 +29,7 @@ private final class MockFeedback: AudioFeedbackProviding {
     var playedCues: [AudioCue] = []
 
     func play(_ cue: AudioCue) { playedCues.append(cue) }
+    func playAfterCurrent(_ cue: AudioCue) { playedCues.append(cue) }
 }
 
 // MARK: - Helpers
