@@ -392,7 +392,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
             return 0
         }
         var framesToSkip = Int(Float(sampleRate) * skippingSeconds)
-        var sumSquares: Double = 0
+        var meanSquare: Float = 0
         var totalFrames: Int = 0
 
         for buffer in buffers {
@@ -400,28 +400,27 @@ public final class SpeechTranscriber: SpeechTranscribing {
                 continue
             }
             let frames = Int(buffer.frameLength)
-            let samples = channelData[0]
 
-            let start: Int
             if framesToSkip >= frames {
                 framesToSkip -= frames
                 continue
-            } else {
-                start = framesToSkip
-                framesToSkip = 0
             }
 
-            for i in start..<frames {
-                let sample = Double(samples[i])
-                sumSquares += sample * sample
-            }
-            totalFrames += frames - start
+            let start = framesToSkip
+            framesToSkip = 0
+            let count = frames - start
+            guard count > 0 else { continue }
+
+            var bufferMeanSquare: Float = 0
+            vDSP_measqv(channelData[0] + start, 1, &bufferMeanSquare, vDSP_Length(count))
+            meanSquare += bufferMeanSquare * Float(count)
+            totalFrames += count
         }
 
         guard totalFrames > 0 else {
             return 0
         }
-        return Float((sumSquares / Double(totalFrames)).squareRoot())
+        return (meanSquare / Float(totalFrames)).squareRoot()
     }
 
     /// Stop the audio engine, remove the input tap, and clear the listening flag.
