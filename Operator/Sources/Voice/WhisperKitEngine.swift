@@ -1,3 +1,4 @@
+// swiftlint:disable file_length
 import AVFoundation
 import VocabularyCorrector
 import WhisperKit
@@ -200,7 +201,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         streamLock.withLock { $0 = StreamState() }
     }
 
-    // MARK: - Private — Background Loop
+    // MARK: - Background Loop
 
     private func startRetranscriptionLoop() {
         stopLoop.withLock { $0 = false }
@@ -260,12 +261,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 
-    // MARK: - Private — Tiered Confirmation
+    // MARK: - Tiered Confirmation
 
-    /// Run a background transcription pass with tiered confirmation:
-    /// 1. Word-level agreement (primary — granular, fast)
-    /// 2. Segment-level confirmation (fallback after 3 word misses)
-    /// 3. Full decode on final pass (when neither can confirm)
     private func runBackgroundPass(samples: [Float]) async {
         let passStart = ContinuousClock.now
         let stream = streamLock.withLock { $0 }
@@ -302,10 +299,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
     // swiftlint:disable:next function_body_length
     private func confirmWords(
-        state: inout StreamState,
-        result: TranscriptionResult,
-        passMs: Int,
-        audioSec: String
+        state: inout StreamState, result: TranscriptionResult, passMs: Int, audioSec: String
     ) {
         guard result.segments.first?.words != nil
         else {
@@ -341,14 +335,11 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
             if misses >= Self.maxWordMisses {
                 state.useSegmentFallback = true
-                let wordText = state.confirmedText
-                    + state.lastAgreedWords.map(\.word).joined()
+                let wordText = state.confirmedText + state.lastAgreedWords.map(\.word).joined()
                 state.segmentConfirmedText = wordText.trimmingCharacters(in: .whitespaces)
                 state.segmentConfirmedEndSeconds = state.lastAgreedSeconds
 
-                Self.logger.notice(
-                    "Word agreement stalled (\(misses) misses) — segment fallback"
-                )
+                Self.logger.notice("Word agreement stalled (\(misses) misses) — segment fallback")
             } else {
                 let wc = hypothesisWords.count
                 let ac = commonPrefix.count
@@ -363,25 +354,17 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     private func confirmSegments(
-        state: inout StreamState,
-        result: TranscriptionResult,
-        passMs: Int,
-        audioSec: String
+        state: inout StreamState, result: TranscriptionResult, passMs: Int, audioSec: String
     ) {
         let segments = result.segments
         guard segments.count >= 2
         else {
-            Self.logger.notice(
-                "Segment fallback: \(segments.count) seg in \(passMs)ms (audio=\(audioSec)s)"
-            )
+            Self.logger.notice("Segment fallback: \(segments.count) seg in \(passMs)ms (audio=\(audioSec)s)")
             return
         }
 
         let toConfirm = Array(segments.prefix(segments.count - 1))
-        let newText = toConfirm
-            .map(\.text)
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespaces)
+        let newText = toConfirm.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespaces)
         let newEnd = toConfirm.last?.end ?? state.segmentConfirmedEndSeconds
 
         guard newEnd > state.segmentConfirmedEndSeconds
@@ -395,19 +378,14 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         state.segmentConfirmedEndSeconds = newEnd
 
         let endFmt = String(format: "%.1f", newEnd)
-        Self.logger.notice(
-            "Segment confirmed \(toConfirm.count) seg to \(endFmt)s in \(passMs)ms"
-        )
+        Self.logger.notice("Segment confirmed \(toConfirm.count) seg to \(endFmt)s in \(passMs)ms")
     }
 
-    // MARK: - Private — Transcription
+    // MARK: - Transcription
 
     private func decodeFinalText(stream: StreamState, samples: [Float]) async -> String {
         if stream.useSegmentFallback {
-            let tail = await transcribeResult(
-                samples: samples,
-                clipStart: stream.segmentConfirmedEndSeconds
-            )
+            let tail = await transcribeResult(samples: samples, clipStart: stream.segmentConfirmedEndSeconds)
             let tailText = tail?.text.trimmingCharacters(in: .whitespaces) ?? ""
             if !stream.segmentConfirmedText.isEmpty && !tailText.isEmpty {
                 return Self.cleanText(stream.segmentConfirmedText + " " + tailText)
@@ -427,16 +405,13 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
                 .map(\.word)
                 .joined()
         } else {
-            tailText = finalResult?.text
-                ?? stream.lastAgreedWords.map(\.word).joined()
+            tailText = finalResult?.text ?? stream.lastAgreedWords.map(\.word).joined()
         }
         return Self.cleanText(stream.confirmedText + tailText)
     }
 
     private func transcribeResult(
-        samples: [Float],
-        clipStart: Float = 0,
-        prefixTokens: [Int] = []
+        samples: [Float], clipStart: Float = 0, prefixTokens: [Int] = []
     ) async -> TranscriptionResult? {
         do {
             let audioDuration = Float(samples.count) / Float(WhisperKit.sampleRate)
@@ -455,10 +430,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
                 options.prefixTokens = prefixTokens
             }
 
-            let results = try await pipe.transcribe(
-                audioArray: samples,
-                decodeOptions: options
-            )
+            let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
             return results.first
         } catch {
             Self.logger.error("Transcription failed: \(error)")
@@ -467,30 +439,15 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     }
 }
 
-// MARK: - Supporting Types
+// MARK: - Stream State
 
 private struct StreamState {
-    /// Accumulated text from word-level confirmed words.
     var confirmedText: String = ""
-
-    /// The last N agreed words used as decoder context (prefixTokens) for the next pass.
     var lastAgreedWords: [WordTiming] = []
-
-    /// Timestamp (seconds) of the first last-agreed word — used as clipTimestamps origin.
     var lastAgreedSeconds: Float = 0
-
-    /// Words from the previous background pass, used for agreement comparison.
     var prevWords: [WordTiming] = []
-
-    /// Consecutive word-agreement misses. Resets on successful agreement.
     var consecutiveMisses: Int = 0
-
-    /// When true, word-level agreement has stalled and we use segment-level confirmation.
     var useSegmentFallback: Bool = false
-
-    /// Combined text from segment-level confirmation (used when in fallback mode).
     var segmentConfirmedText: String = ""
-
-    /// End timestamp of last segment-level confirmation.
     var segmentConfirmedEndSeconds: Float = 0
 }

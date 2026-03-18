@@ -3,6 +3,7 @@ import KokoroTTS
 import OperatorCore
 @preconcurrency import Speech
 import VocabularyCorrector
+import WhisperKit
 import os
 
 private enum BenchmarkTarget: String, CaseIterable {
@@ -602,8 +603,6 @@ private func playExamples() async {
 
 // MARK: - STT Benchmark
 
-import WhisperKit
-
 /// Load a WhisperKit engine using the default model.
 private func loadWhisperKitEngine() async throws -> WhisperKitEngine {
     let model = WhisperKitModelManager.defaultModel
@@ -641,18 +640,24 @@ private func resolveWavPath() throws -> String {
         .first!
         .appendingPathComponent("Operator/audio-traces")
 
-    guard let files = try? FileManager.default.contentsOfDirectory(
-        at: traceDir,
-        includingPropertiesForKeys: [.contentModificationDateKey],
-        options: .skipsHiddenFiles
-    ) else {
+    guard
+        let files = try? FileManager.default.contentsOfDirectory(
+            at: traceDir,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: .skipsHiddenFiles
+        )
+    else {
         throw STTBenchError.noWavFile
     }
 
     let wavs = files.filter { $0.pathExtension == "wav" }
         .sorted { lhs, rhs in
-            let d1 = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-            let d2 = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+            let d1 =
+                (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            let d2 =
+                (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
             return d1 > d2
         }
 
@@ -676,9 +681,14 @@ private func loadWavSamples(path: String) throws -> (samples: [Float], sampleRat
 
     // Convert to 16kHz mono for direct transcription
     let targetRate: Double = 16_000
-    guard let targetFormat = AVAudioFormat(
-        commonFormat: .pcmFormatFloat32, sampleRate: targetRate, channels: 1, interleaved: false
-    ) else {
+    guard
+        let targetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: targetRate,
+            channels: 1,
+            interleaved: false
+        )
+    else {
         throw STTBenchError.loadFailed("Cannot create 16kHz format")
     }
 
@@ -735,7 +745,12 @@ private func benchmarkSTTLatency(label: String, wavPath: String) async {
         try engine.prepare(contextualStrings: [])
 
         // Feed all samples at once via a buffer
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        )!
         let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
         buf.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { src in
@@ -783,7 +798,9 @@ private func benchmarkSTTStreaming(wavPath: String) async {
         let totalChunks = Int(ceil(Double(totalFrames) / Double(tapBufferSize)))
 
         print("  Audio:  \(String(format: "%.1f", audioDuration))s @ \(Int(fileSampleRate))Hz")
-        print("  Chunks: \(totalChunks) x \(tapBufferSize) frames (\(String(format: "%.1f", chunkDuration * 1000))ms each)")
+        print(
+            "  Chunks: \(totalChunks) x \(tapBufferSize) frames (\(String(format: "%.1f", chunkDuration * 1000))ms each)"
+        )
 
         let engine = try await loadWhisperKitEngine()
         print("  Engine loaded\n")
@@ -856,10 +873,14 @@ private func benchmarkSTTStreaming(wavPath: String) async {
         let (batchSamples, _, _) = try loadWavSamples(path: wavPath)
         try engine.prepare(contextualStrings: [])
         let batchFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
         )!
         let batchBuf = AVAudioPCMBuffer(
-            pcmFormat: batchFormat, frameCapacity: AVAudioFrameCount(batchSamples.count)
+            pcmFormat: batchFormat,
+            frameCapacity: AVAudioFrameCount(batchSamples.count)
         )!
         batchBuf.frameLength = AVAudioFrameCount(batchSamples.count)
         batchSamples.withUnsafeBufferPointer { src in
@@ -934,7 +955,9 @@ private func inspectSTTSegments(wavPath: String) async {
             let comp = String(format: "%.2f", seg.compressionRatio)
             let temp = String(format: "%.1f", seg.temperature)
             let text = String(seg.text.prefix(60)).trimmingCharacters(in: .whitespaces)
-            print("  \(String(format: "%2d", i)) | \(String(format: "%5.1fs", seg.start)) | \(String(format: "%5.1fs", seg.end)) | \(noSpeech)    | \(avgLog)  | \(comp)     | \(temp)  | \"\(text)\"")
+            print(
+                "  \(String(format: "%2d", i)) | \(String(format: "%5.1fs", seg.start)) | \(String(format: "%5.1fs", seg.end)) | \(noSpeech)    | \(avgLog)  | \(comp)     | \(temp)  | \"\(text)\""
+            )
 
             // Per-token log probs
             if seg.tokens.count == seg.tokenLogProbs.count, let tokenizer = pipe.tokenizer {
@@ -972,11 +995,15 @@ private func inspectSTTSegments(wavPath: String) async {
 
         print("")
         print("  Summary:")
-        print("    noSpeechProb:    avg=\(String(format: "%.3f", avgNoSpeech))  max=\(String(format: "%.3f", maxNoSpeech))")
+        print(
+            "    noSpeechProb:    avg=\(String(format: "%.3f", avgNoSpeech))  max=\(String(format: "%.3f", maxNoSpeech))"
+        )
         print("    avgLogprob:      avg=\(String(format: "%.3f", avgLogP))  min=\(String(format: "%.3f", minLogP))")
         print("    compressionRatio: avg=\(String(format: "%.2f", avgComp))  max=\(String(format: "%.2f", maxComp))")
 
-        print("\n  Full text: \"\(result.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: " "))\"")
+        print(
+            "\n  Full text: \"\(result.segments.map { $0.text.trimmingCharacters(in: .whitespaces) }.joined(separator: " "))\""
+        )
     } catch {
         print("  ERROR: \(error)")
     }
