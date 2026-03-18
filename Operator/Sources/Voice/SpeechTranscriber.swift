@@ -246,53 +246,87 @@ public final class SpeechTranscriber: SpeechTranscribing {
     /// inflating the RMS and fooling silence detection.
     private static let feedbackToneSkipSeconds: Float = 0.4
 
-    /// Stop capturing audio and return the final transcription.
+    /// Captured buffers and format from the most recent stopAndCheckSilence() call.
     ///
-    /// Returns nil early if the captured audio is below the silence threshold,
-    /// skipping the transcription engine entirely.
+    /// Held between stopAndCheckSilence() and finishTranscription() so the caller
+    /// can play feedback tones in between.
+    private var pendingBuffers: [AVAudioPCMBuffer] = []
+    private var pendingFormat: AVAudioFormat?
+
+    /// Stop audio capture and check whether the recording contains speech.
     ///
-    /// - Returns: The transcribed text, or nil if transcription failed or was empty.
-    public func stopListening() async -> String? {
+    /// Tears down the audio engine and computes RMS energy (skipping the initial
+    /// feedback tone window). If the audio is silence, cancels the engine and
+    /// writes the trace file immediately.
+    ///
+    /// - Returns: `true` if the audio contains speech and should be transcribed,
+    ///   `false` if it was silence (already handled).
+    public func stopAndCheckSilence() async -> Bool {
         guard isListening else {
-            Self.logger.warning("stopListening called but not currently listening")
-            return nil
+            Self.logger.warning("stopAndCheckSilence called but not currently listening")
+            return false
         }
 
         tearDownAudioCapture()
-        Self.logger.info("Audio engine stopped, processing transcription")
+        Self.logger.info("Audio engine stopped, checking for speech")
 
-        let buffers = capturedBuffers.withLock { bufs -> [AVAudioPCMBuffer] in
+        pendingBuffers = capturedBuffers.withLock { bufs -> [AVAudioPCMBuffer] in
             let snapshot = bufs
             bufs.removeAll()
             return snapshot
         }
-        let format = capturedFormat
+        pendingFormat = capturedFormat
         capturedFormat = nil
 
-        let rms = Self.computeRMS(buffers, skippingSeconds: Self.feedbackToneSkipSeconds)
+        let rms = Self.computeRMS(pendingBuffers, skippingSeconds: Self.feedbackToneSkipSeconds)
         if rms < Self.silenceThreshold {
             Self.logger.info("Silence detected (RMS=\(rms, format: .fixed(precision: 4))); skipping transcription")
             engine.cancel()
-            nonisolated(unsafe) let traceBuffers = buffers
-            nonisolated(unsafe) let traceFormat = format
+            nonisolated(unsafe) let traceBuffers = pendingBuffers
+            nonisolated(unsafe) let traceFormat = pendingFormat
+            pendingBuffers = []
+            pendingFormat = nil
             lastAudioFileURL = await Self.writeAudioFile(
                 buffers: traceBuffers,
                 format: traceFormat,
                 directory: Self.audioTraceDir
             )
-            return nil
+            return false
         }
+        return true
+    }
 
+    /// Run the transcription engine on the audio captured by the last session.
+    ///
+    /// Must be called after ``stopAndCheckSilence()`` returns `true`.
+    /// Writes the audio trace file after transcription completes.
+    ///
+    /// - Returns: The transcribed text, or nil if transcription failed or was empty.
+    public func finishTranscription() async -> String? {
         let result = await engine.finishAndTranscribe()
 
-        nonisolated(unsafe) let traceBuffers = buffers
-        nonisolated(unsafe) let traceFormat = format
+        nonisolated(unsafe) let traceBuffers = pendingBuffers
+        nonisolated(unsafe) let traceFormat = pendingFormat
+        pendingBuffers = []
+        pendingFormat = nil
         lastAudioFileURL = await Self.writeAudioFile(
             buffers: traceBuffers,
             format: traceFormat,
             directory: Self.audioTraceDir
         )
         return result
+    }
+
+    /// Stop capturing audio and return the final transcription.
+    ///
+    /// Convenience that combines ``stopAndCheckSilence()`` and ``finishTranscription()``.
+    ///
+    /// - Returns: The transcribed text, or nil if transcription failed or was empty.
+    public func stopListening() async -> String? {
+        let hasSpeech = await stopAndCheckSilence()
+        guard hasSpeech
+        else { return nil }
+        return await finishTranscription()
     }
 
     /// Perform transcription with a timeout.
