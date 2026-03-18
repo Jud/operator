@@ -41,22 +41,15 @@ public struct Heartbeat: Sendable {
     /// Run the heartbeat registration loop.
     ///
     /// Sends the first heartbeat immediately, then repeats every 5 seconds.
-    /// After the first successful heartbeat, sends a startup greeting via `/speak`.
+    /// The daemon handles the startup greeting when a new session is registered,
+    /// so the MCP server does not send one.
     /// When the daemon response includes `needs_terminal_id: true`, delegates to
     /// the `GhosttyResolver` for one-shot terminal ID resolution.
     ///
     /// This method runs indefinitely until the task is cancelled.
     public func heartbeatLoop() async {
-        var greetingSent = false
-
         while !Task.isCancelled {
-            let succeeded = await sendHeartbeat()
-
-            if succeeded, !greetingSent {
-                greetingSent = true
-                await sendGreeting()
-            }
-
+            _ = await sendHeartbeat()
             try? await Task.sleep(for: .seconds(5))
         }
     }
@@ -87,15 +80,5 @@ public struct Heartbeat: Sendable {
         }
 
         return true
-    }
-
-    /// Send the startup greeting message via the daemon's `/speak` endpoint.
-    private func sendGreeting() async {
-        let request = SpeakRequest(
-            message: "\(sessionName) connected.",
-            session: sessionName,
-            priority: "normal"
-        )
-        _ = await client.postRaw(path: "/speak", body: request)
     }
 }
