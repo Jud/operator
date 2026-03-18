@@ -80,6 +80,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
     // MARK: - TranscriptionEngine
 
+    /// Prepare a new transcription session with optional vocabulary biasing.
     public func prepare(contextualStrings: [String]) throws {
         cancel()
 
@@ -95,6 +96,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         Self.logger.notice("Session started")
     }
 
+    /// Append an audio buffer from the microphone tap.
     public func append(_ buffer: AVAudioPCMBuffer) {
         nonisolated(unsafe) let buf = buffer
         let converter: AudioFormatConverter? = sessionLock.withLock { state in
@@ -118,6 +120,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         }
     }
 
+    /// Finish recording and return the transcribed text.
     // swiftlint:disable:next function_body_length
     public func finishAndTranscribe() async -> String? {
         let stopTime = ContinuousClock.now
@@ -197,6 +200,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         return corrected
     }
 
+    /// Cancel any in-progress session and release resources.
     public func cancel() {
         stopLoop.withLock { $0 = true }
         wakeSleep()
@@ -225,7 +229,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
                 }
 
                 let stream = self.streamLock.withLock { $0 }
-                let clipSec = stream.useSegmentFallback
+                let clipSec =
+                    stream.useSegmentFallback
                     ? stream.segmentConfirmedEndSeconds
                     : stream.lastAgreedSeconds
                 let processedSamples = Int(clipSec * Float(WhisperKit.sampleRate))
@@ -274,7 +279,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let passStart = ContinuousClock.now
         let stream = streamLock.withLock { $0 }
 
-        let clipStart = stream.useSegmentFallback
+        let clipStart =
+            stream.useSegmentFallback
             ? stream.segmentConfirmedEndSeconds
             : stream.lastAgreedSeconds
 
@@ -306,7 +312,10 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
     // swiftlint:disable:next function_body_length
     private func confirmWords(
-        state: inout StreamState, result: TranscriptionResult, passMs: Int, audioSec: String
+        state: inout StreamState,
+        result: TranscriptionResult,
+        passMs: Int,
+        audioSec: String
     ) {
         guard result.segments.first?.words != nil
         else {
@@ -316,7 +325,8 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
         let hypothesisWords = result.allWords.filter { $0.start >= state.lastAgreedSeconds }
         let commonPrefix = TranscriptionUtilities.findLongestCommonPrefix(
-            state.prevWords, hypothesisWords
+            state.prevWords,
+            hypothesisWords
         )
 
         if commonPrefix.count >= Self.agreementCountNeeded {
@@ -361,7 +371,10 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     private func confirmSegments(
-        state: inout StreamState, result: TranscriptionResult, passMs: Int, audioSec: String
+        state: inout StreamState,
+        result: TranscriptionResult,
+        passMs: Int,
+        audioSec: String
     ) {
         let segments = result.segments
         guard segments.count >= 2
@@ -418,7 +431,9 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     }
 
     private func transcribeResult(
-        samples: [Float], clipStart: Float = 0, prefixTokens: [Int] = []
+        samples: [Float],
+        clipStart: Float = 0,
+        prefixTokens: [Int] = []
     ) async -> TranscriptionResult? {
         do {
             let audioDuration = Float(samples.count) / Float(WhisperKit.sampleRate)

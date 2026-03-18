@@ -636,9 +636,12 @@ private func resolveWavPath() throws -> String {
         return expanded
     }
 
-    let traceDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
-        .first!
-        .appendingPathComponent("Operator/audio-traces")
+    guard
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    else {
+        throw STTBenchError.noWavFile
+    }
+    let traceDir = appSupport.appendingPathComponent("Operator/audio-traces")
 
     guard
         let files = try? FileManager.default.contentsOfDirectory(
@@ -745,16 +748,23 @@ private func benchmarkSTTLatency(label: String, wavPath: String) async {
         try engine.prepare(contextualStrings: [])
 
         // Feed all samples at once via a buffer
-        let format = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 16_000,
-            channels: 1,
-            interleaved: false
-        )!
-        let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))!
+        guard
+            let format = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 16_000,
+                channels: 1,
+                interleaved: false
+            ),
+            let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count))
+        else {
+            print("  ERROR: Could not create audio buffer")
+            return
+        }
         buf.frameLength = AVAudioFrameCount(samples.count)
         samples.withUnsafeBufferPointer { src in
-            buf.floatChannelData![0].update(from: src.baseAddress!, count: samples.count)
+            guard let channelData = buf.floatChannelData, let baseAddr = src.baseAddress
+            else { return }
+            channelData[0].update(from: baseAddr, count: samples.count)
         }
         engine.append(buf)
 
@@ -872,19 +882,26 @@ private func benchmarkSTTStreaming(wavPath: String) async {
         // Verify: run a batch decode and compare to streaming result.
         let (batchSamples, _, _) = try loadWavSamples(path: wavPath)
         try engine.prepare(contextualStrings: [])
-        let batchFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: 16_000,
-            channels: 1,
-            interleaved: false
-        )!
-        let batchBuf = AVAudioPCMBuffer(
-            pcmFormat: batchFormat,
-            frameCapacity: AVAudioFrameCount(batchSamples.count)
-        )!
+        guard
+            let batchFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 16_000,
+                channels: 1,
+                interleaved: false
+            ),
+            let batchBuf = AVAudioPCMBuffer(
+                pcmFormat: batchFormat,
+                frameCapacity: AVAudioFrameCount(batchSamples.count)
+            )
+        else {
+            print("  Verify:   SKIP (buffer creation failed)")
+            return
+        }
         batchBuf.frameLength = AVAudioFrameCount(batchSamples.count)
         batchSamples.withUnsafeBufferPointer { src in
-            batchBuf.floatChannelData![0].update(from: src.baseAddress!, count: batchSamples.count)
+            guard let channelData = batchBuf.floatChannelData, let baseAddr = src.baseAddress
+            else { return }
+            channelData[0].update(from: baseAddr, count: batchSamples.count)
         }
         engine.append(batchBuf)
         let batchResult = await engine.finishAndTranscribe()
@@ -963,8 +980,8 @@ private func inspectSTTSegments(wavPath: String) async {
             if seg.tokens.count == seg.tokenLogProbs.count, let tokenizer = pipe.tokenizer {
                 let specialBegin = tokenizer.specialTokens.specialTokenBegin
                 var entries: [(id: Int, logProb: Float)] = []
-                for (tokenId, logProbMap) in zip(seg.tokens, seg.tokenLogProbs) {
-                    guard tokenId < specialBegin else { continue }
+                for (tokenId, logProbMap) in zip(seg.tokens, seg.tokenLogProbs)
+                where tokenId < specialBegin {
                     entries.append((tokenId, logProbMap.values.first ?? 0))
                 }
                 if !entries.isEmpty {
