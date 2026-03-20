@@ -45,7 +45,6 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     /// where 0.5 is the Apple default. A value of 1.0 here means "normal" (Apple rate 0.55).
     public var speechRate: Float = 1.0
 
-    // swiftlint:disable type_contents_order
     override public init() {
         let (stream, continuation) = AsyncStream<Void>.makeStream()
         self.finishedSpeaking = stream
@@ -60,7 +59,6 @@ public final class SpeechManager: NSObject, SpeechManaging, AVSpeechSynthesizerD
     deinit {
         finishedContinuation.finish()
     }
-    // swiftlint:enable type_contents_order
 
     /// Speak text with an agent name prefix and the specified voice.
     ///

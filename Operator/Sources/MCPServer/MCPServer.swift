@@ -120,7 +120,8 @@ public struct MCPServer: Sendable {
         let tool: JSONValue = .object([
             "name": .string("speak"),
             "description": .string(
-                "Speak a message to the user through Operator's audio queue. Use this instead of the say command."
+                "Send a short voice status update to the user. Call at end of every turn and at key milestones."
+                    + " One sentence max — like a walkie-talkie, not a presentation."
             ),
             "inputSchema": inputSchema
         ])
@@ -162,7 +163,7 @@ public struct MCPServer: Sendable {
             priority: priority
         )
 
-        guard let responseData = await client.postRaw(path: "/speak", body: speakRequest) else {
+        guard await client.postRaw(path: "/speak", body: speakRequest) != nil else {
             let errorContent = toolResultContent(
                 text: "Operator daemon unreachable",
                 isError: true
@@ -170,8 +171,8 @@ public struct MCPServer: Sendable {
             return .success(id: id, result: errorContent)
         }
 
-        let responseText = String(data: responseData, encoding: .utf8) ?? "{}"
-        let content = toolResultContent(text: responseText, isError: false)
+        // Return empty content to avoid triggering follow-up from the agent.
+        let content = toolResultContent(text: "", isError: false)
         return .success(id: id, result: content)
     }
 

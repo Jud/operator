@@ -1,4 +1,3 @@
-// swiftlint:disable file_length
 import Foundation
 
 /// Operational states of the Operator daemon.
@@ -80,6 +79,14 @@ public final class StateMachine {
     /// starts a timeout task that transitions to ERROR if the work does not
     /// complete in time.
     private var timeoutTask: Task<Void, Never>?
+
+    /// Timestamp when listening started, used to detect very short recordings.
+    private var listeningStartTime: ContinuousClock.Instant?
+
+    /// Minimum recording duration before transcription is attempted.
+    ///
+    /// Recordings shorter than this are dismissed silently. Set to zero in tests.
+    public var minimumRecordingDuration: Duration = .milliseconds(500)
 
     /// Cached contextual strings for speech recognition, refreshed from the registry.
     private var cachedContextualStrings: [String] = []
@@ -175,20 +182,11 @@ public final class StateMachine {
 
         cancelInFlightWork()
 
-        // Stop any current speech and note the interruption point.
-        // We check SpeechManager directly (synchronous on @MainActor) rather than
-        // going through AudioQueue (async actor) to capture the interruption info
-        // immediately before it's lost.
+        // Stop any current speech. Interruption tracking is disabled —
+        // it was causing the next transcription to ask "did you want to hear
+        // the rest?" instead of routing normally.
         if speechManager.isSpeaking {
-            let info = speechManager.interrupt()
-            if !info.session.isEmpty {
-                routingState.storeInterruption(
-                    heardText: info.heardText,
-                    unheardText: info.unheardText,
-                    session: info.session
-                )
-                Self.logger.info("Noted interruption of \(info.session) at word boundary")
-            }
+            _ = speechManager.interrupt()
         }
 
         // Pause audio queue (mute-on-talk). This is a fire-and-forget call;
@@ -199,6 +197,7 @@ public final class StateMachine {
         }
 
         transition(to: .listening)
+        listeningStartTime = .now
         feedback.play(.listening)
         waveformPanel?.show()
 
@@ -206,7 +205,7 @@ public final class StateMachine {
             try transcriber.startListening(contextualStrings: cachedContextualStrings)
         } catch {
             Self.logger.error("Failed to start audio capture: \(error)")
-            speakOperator("I can't access the microphone. Check System Settings.")
+            Self.logger.error("Microphone access denied")
             transition(to: .error)
             scheduleErrorRecovery()
         }
@@ -233,18 +232,30 @@ public final class StateMachine {
 
     /// Called when push-to-talk key is released (FN up).
     ///
-    /// Transitions to TRANSCRIBING and kicks off async transcription with a 30s timeout.
+    /// If the recording was very short (< 500ms), skips transcription entirely
+    /// and plays a gentle dismissed tone. Otherwise transitions to TRANSCRIBING.
     public func triggerStop() {
         guard currentState == .listening else {
             Self.logger.warning("Trigger STOP ignored: not in LISTENING state (current: \(self.currentState))")
             return
         }
 
+        // Very short recordings can't contain meaningful speech and
+        // would just pick up feedback tones. Dismiss silently.
+        if let start = listeningStartTime {
+            let elapsed = ContinuousClock.now - start
+            if elapsed < minimumRecordingDuration {
+                Self.logger.info("Trigger STOP: recording too short (\(elapsed)); dismissing")
+                cancelInFlightWork()
+                feedback.play(.dismissed)
+                enterIdle()
+                return
+            }
+        }
+
         Self.logger.info("Trigger STOP: entering TRANSCRIBING")
 
         transition(to: .transcribing)
-
-        feedback.play(.processing)
 
         // Redundant timeout (belt and suspenders with transcriber's internal 30s timeout).
         startTimeout(seconds: 30)
@@ -254,9 +265,20 @@ public final class StateMachine {
                 return
             }
 
-            let text = await self.transcriber.stopListeningWithTimeout(seconds: 30)
+            let hasSpeech = await self.transcriber.stopAndCheckSilence()
 
-            await self.handleTranscriptionResult(text)
+            guard !Task.isCancelled, self.currentState == .transcribing else {
+                return
+            }
+
+            if hasSpeech {
+                self.feedback.play(.processing)
+                let text = await self.transcriber.finishTranscription()
+                await self.handleTranscriptionResult(text)
+            } else {
+                self.feedback.play(.dismissed)
+                self.enterIdle()
+            }
         }
     }
 
@@ -326,7 +348,7 @@ extension StateMachine {
                 result: .notConfident(""),
                 audioFile: audioFile
             )
-            speakOperator("I didn't catch that. Try again?")
+            feedback.play(.dismissed)
             enterIdle()
             return
         }
@@ -366,15 +388,12 @@ extension StateMachine {
 
         case .noTextField:
             await postBimodalTrace(text: text, result: .noSessions, audioFile: audioFile)
-            speakOperator("No text field detected. Move your cursor to a text input.")
-            feedback.play(.error)
+            feedback.play(.dismissed)
             enterIdle()
 
         case .permissionRequired:
             await postBimodalTrace(text: text, result: .noSessions, audioFile: audioFile)
-            speakOperator(
-                "Operator needs Accessibility permission for dictation. Check System Settings."
-            )
+            feedback.play(.error)
             enterIdle()
         }
     }
@@ -391,7 +410,20 @@ extension StateMachine {
             return
         }
 
-        handleDictationResult(result)
+        switch result {
+        case .success:
+            feedback.playAfterCurrent(.dictation)
+
+        case .pasteFailed(let reason):
+            Self.logger.error("Dictation paste failed: \(reason)")
+            feedback.play(.error)
+
+        case .noTextField:
+            feedback.play(.error)
+
+        case .noLastDictation:
+            break
+        }
         enterIdle()
     }
 
@@ -902,11 +934,9 @@ extension StateMachine {
 
         case .pasteFailed(let reason):
             Self.logger.error("Dictation paste failed: \(reason)")
-            speakOperator("Couldn't insert text at the cursor.")
             feedback.play(.error)
 
         case .noTextField:
-            speakOperator("No text field detected.")
             feedback.play(.error)
         }
     }

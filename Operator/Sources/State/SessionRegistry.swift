@@ -12,6 +12,18 @@ import Foundation
 ///
 /// Reference: technical-spec.md Component 5; design.md Section 3.1.10
 public actor SessionRegistry {
+    /// Result of a session-start hook.
+    public struct SessionStartResult: Sendable {
+        /// Whether the operation succeeded.
+        public let ok: Bool
+        /// Whether Ghostty terminal ID resolution is needed.
+        public let needsTerminalId: Bool
+        /// Whether this is a newly registered session (vs. an update to an existing one).
+        public let isNew: Bool
+        /// The display name assigned to the session.
+        public let displayName: String
+    }
+
     // MARK: - Type Properties
 
     private static let logger = Log.logger(for: "SessionRegistry")
@@ -175,17 +187,16 @@ public actor SessionRegistry {
     ///   - tty: The TTY device path for the session.
     ///   - cwd: The working directory of the session.
     ///   - terminalType: The terminal emulator type. Defaults to `.iterm`.
-    /// - Returns: Tuple indicating success and whether terminal ID resolution is needed.
+    /// - Returns: Result indicating success, whether terminal ID resolution is needed, and whether this is a new session.
     @discardableResult
     public func handleSessionStart(
         sessionId: String,
         tty: String,
         cwd: String,
         terminalType: TerminalType = .iterm
-    ) -> (ok: Bool, needsTerminalId: Bool) {
+    ) -> SessionStartResult {
         // Avoid collision with the reserved "operator" name used for system speech.
         let baseName = sessionId.lowercased() == "operator" ? "op-agent" : sessionId
-
         let id = resolveIdentifier(forTTY: tty)
         let displayName = deduplicatedName(baseName, forIdentifier: id)
 
@@ -198,26 +209,35 @@ public actor SessionRegistry {
             existing.lastActivity = Date()
             sessions[id] = existing
             Self.logger.info("Hook session-start: updated session ID for \(id)")
-        } else {
-            let voice = voiceManager.nextAgentVoice()
-            let state = SessionState(
-                name: displayName,
-                identifier: id,
-                cwd: cwd,
-                context: "",
-                recentMessages: [],
-                status: .idle,
-                lastActivity: Date(),
-                voice: voice,
-                pitchMultiplier: 1.0,
-                sessionId: sessionId
+            return SessionStartResult(
+                ok: true,
+                needsTerminalId: terminalType == .ghostty && ttyToGhosttyId[tty] == nil,
+                isNew: false,
+                displayName: existing.name
             )
-            sessions[id] = state
-            Self.logger.info("Hook session-start: registered new session \(displayName) at \(id)")
         }
 
-        let needsTerminalId = terminalType == .ghostty && ttyToGhosttyId[tty] == nil
-        return (ok: true, needsTerminalId: needsTerminalId)
+        let voice = voiceManager.nextAgentVoice()
+        let state = SessionState(
+            name: displayName,
+            identifier: id,
+            cwd: cwd,
+            context: "",
+            recentMessages: [],
+            status: .idle,
+            lastActivity: Date(),
+            voice: voice,
+            pitchMultiplier: 1.0,
+            sessionId: sessionId
+        )
+        sessions[id] = state
+        Self.logger.info("Hook session-start: registered new session \(displayName) at \(id)")
+        return SessionStartResult(
+            ok: true,
+            needsTerminalId: terminalType == .ghostty && ttyToGhosttyId[tty] == nil,
+            isNew: true,
+            displayName: displayName
+        )
     }
 
     /// Handle a Claude Code stop hook.
@@ -349,7 +369,7 @@ public actor SessionRegistry {
         return .tty(tty)
     }
 
-    /// Return a unique display name by appending "-2", "-3", etc. if `name`
+    /// Return a unique display name by appending " 2", " 3", etc. if `name`
     /// is already used by a different terminal identifier.
     private func deduplicatedName(_ name: String, forIdentifier id: TerminalIdentifier) -> String {
         let taken = sessions.filter { $0.key != id }.values.map(\.name)
@@ -357,8 +377,8 @@ public actor SessionRegistry {
             return name
         }
         var suffix = 2
-        while taken.contains("\(name)-\(suffix)") { suffix += 1 }
-        return "\(name)-\(suffix)"
+        while taken.contains("\(name) \(suffix)") { suffix += 1 }
+        return "\(name) \(suffix)"
     }
 
     /// Remove cached TTY-to-Ghostty mapping when a Ghostty session is removed.

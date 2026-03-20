@@ -30,6 +30,17 @@ private final class TestSpeechTranscriber: SpeechTranscribing {
         await stopListening()
     }
 
+    func stopAndCheckSilence() async -> Bool {
+        isListening = false
+        return nextTranscription != nil
+    }
+
+    func finishTranscription() async -> String? {
+        let result = nextTranscription
+        nextTranscription = nil
+        return result
+    }
+
     func replaceEngine(_ newEngine: any TranscriptionEngine) {}
 }
 
@@ -105,7 +116,7 @@ private func makeBimodalContext(
 }
 
 @MainActor
-private func buildContext(  // swiftlint:disable:this function_parameter_count
+private func buildContext(
     transcriber: TestSpeechTranscriber,
     speechMgr: TestSpeechManager,
     feedback: MockAudioFeedback,
@@ -134,6 +145,7 @@ private func buildContext(  // swiftlint:disable:this function_parameter_count
         bimodalEngine: bde,
         dictationDelivery: dictation
     )
+    sm.minimumRecordingDuration = .zero
     return BimodalTestContext(
         stateMachine: sm,
         mockTranscriber: transcriber,
@@ -162,10 +174,11 @@ internal struct StateMachineBimodalDictationTests {
         #expect(ctx.stateMachine.currentState == .transcribing)
 
         // Allow async transcription and bimodal decision to complete
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 1)
         #expect(ctx.mockDictation.lastDeliveredText == "hello world")
+        #expect(ctx.mockFeedback.playedCues.contains(.processing))
         #expect(ctx.mockFeedback.playedCues.contains(.dictation))
         #expect(ctx.stateMachine.currentState == .idle)
     }
@@ -178,20 +191,14 @@ internal struct StateMachineBimodalDictationTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
-        #expect(ctx.mockFeedback.playedCues.contains(.error))
+        #expect(ctx.mockFeedback.playedCues.contains(.dismissed))
         #expect(ctx.stateMachine.currentState == .idle)
-        // Should have spoken an error message about no text field
-        #expect(
-            ctx.mockSpeechManager.spokenMessages.contains {
-                $0.text.contains("text field")
-            }
-        )
     }
 
-    @Test("transcription with permission denied produces error")
+    @Test("transcription with permission denied produces error tone")
     func transcriptionPermissionDenied() async throws {
         let ctx = makeBimodalContext(hasPermission: false)
 
@@ -199,15 +206,11 @@ internal struct StateMachineBimodalDictationTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
         #expect(ctx.stateMachine.currentState == .idle)
-        #expect(
-            ctx.mockSpeechManager.spokenMessages.contains {
-                $0.text.contains("Accessibility")
-            }
-        )
+        #expect(ctx.mockFeedback.playedCues.contains(.error))
     }
 }
 
@@ -287,7 +290,7 @@ internal struct StateMachineDoubleTapTests {
         // Double-tap
         ctx.stateMachine.triggerDoubleTap()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.replayCallCount == 1)
         #expect(ctx.mockFeedback.playedCues.contains(.dictation))
@@ -301,7 +304,7 @@ internal struct StateMachineDoubleTapTests {
         // No prior dictation
         ctx.stateMachine.triggerDoubleTap()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.replayCallCount == 1)
         #expect(ctx.mockFeedback.playedCues.contains(.error))
@@ -322,7 +325,7 @@ internal struct StateMachineDoubleTapTests {
         // Double-tap should cancel listening and replay
         ctx.stateMachine.triggerDoubleTap()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.replayCallCount == 1)
         #expect(ctx.stateMachine.currentState == .idle)
@@ -332,16 +335,17 @@ internal struct StateMachineDoubleTapTests {
 @Suite("StateMachine - Dictation Feedback")
 @MainActor
 internal struct StateMachineDictationFeedbackTests {
-    @Test("successful dictation plays dictation tone not spoken confirmation")
-    func dictationPlaysSubtleTone() async throws {
+    @Test("successful dictation plays processing then dictation tone, no spoken confirmation")
+    func dictationPlaysBothTones() async throws {
         let ctx = makeBimodalContext(isTerminal: false, isTextField: true)
 
         ctx.mockTranscriber.nextTranscription = "hello world"
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
+        #expect(ctx.mockFeedback.playedCues.contains(.processing))
         #expect(ctx.mockFeedback.playedCues.contains(.dictation))
         // Should NOT have spoken a delivery confirmation
         let hasDeliveryConfirmation = ctx.mockSpeechManager.spokenMessages.contains {
@@ -350,8 +354,8 @@ internal struct StateMachineDictationFeedbackTests {
         #expect(!hasDeliveryConfirmation)
     }
 
-    @Test("dictation paste failure speaks error message")
-    func dictationPasteFailureSpeaksError() async throws {
+    @Test("dictation paste failure plays error tone")
+    func dictationPasteFailurePlaysError() async throws {
         let ctx = makeBimodalContext(isTerminal: false, isTextField: true)
         ctx.mockDictation.deliverResult = .pasteFailed("CGEvent creation failed")
 
@@ -359,18 +363,13 @@ internal struct StateMachineDictationFeedbackTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockFeedback.playedCues.contains(.error))
-        #expect(
-            ctx.mockSpeechManager.spokenMessages.contains {
-                $0.text.contains("cursor")
-            }
-        )
         #expect(ctx.stateMachine.currentState == .idle)
     }
 
-    @Test("empty transcription returns to idle with spoken message")
+    @Test("empty transcription returns to idle with dismissed tone")
     func emptyTranscriptionReturnsToIdle() async throws {
         let ctx = makeBimodalContext()
 
@@ -378,14 +377,10 @@ internal struct StateMachineDictationFeedbackTests {
         ctx.stateMachine.triggerStart()
         ctx.stateMachine.triggerStop()
 
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 500_000_000)
 
         #expect(ctx.mockDictation.deliverCallCount == 0)
         #expect(ctx.stateMachine.currentState == .idle)
-        #expect(
-            ctx.mockSpeechManager.spokenMessages.contains {
-                $0.text.contains("didn't catch")
-            }
-        )
+        #expect(ctx.mockFeedback.playedCues.contains(.dismissed))
     }
 }

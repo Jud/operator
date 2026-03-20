@@ -130,7 +130,7 @@ server.registerTool(
     "speak",
     {
         description:
-            "Speak a message to the user through Operator's audio queue. Use this instead of the say command.",
+            "Send a short voice status update to the user. Call at end of every turn and at key milestones. One sentence max — like a walkie-talkie, not a presentation.",
         inputSchema: {
             message: z.string().describe("Message to speak"),
             priority: z
@@ -173,18 +173,9 @@ async function heartbeat(): Promise<void> {
     }
 }
 
-// Register immediately, announce, then keep pinging.
-void heartbeat().then(async () => {
-    try {
-        await daemonPost("/speak", {
-            message: `${SESSION_NAME} connected.`,
-            priority: "normal",
-            session: SESSION_NAME,
-        });
-    } catch {
-        // Daemon unavailable — greeting is best-effort.
-    }
-});
+// Register immediately, then keep pinging.
+// Greeting is handled by the Swift Heartbeat to avoid duplicates.
+void heartbeat();
 setInterval(() => void heartbeat(), 5_000);
 
 const transport = new StdioServerTransport();

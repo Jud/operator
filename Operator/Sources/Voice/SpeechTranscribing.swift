@@ -18,5 +18,16 @@ public protocol SpeechTranscribing: AnyObject, Sendable {
     func startListening(contextualStrings: [String]) throws
     func stopListening() async -> String?
     func stopListeningWithTimeout(seconds: TimeInterval) async -> String?
+
+    /// Stop audio capture and check whether the recording contains speech.
+    ///
+    /// - Returns: `true` if speech detected, `false` if silence.
+    func stopAndCheckSilence() async -> Bool
+
+    /// Run the transcription engine on audio from the last session.
+    ///
+    /// Must be called after ``stopAndCheckSilence()`` returns `true`.
+    func finishTranscription() async -> String?
+
     func replaceEngine(_ newEngine: any TranscriptionEngine)
 }
