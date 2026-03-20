@@ -1,7 +1,8 @@
 import WhisperKit
 
-/// Context available to filters. Provides access to the full
-/// audio state so filters can derive whatever they need.
+/// Context available to filters.
+///
+/// Provides access to the full audio state so filters can derive whatever they need.
 public struct FilterContext: Sendable {
     /// Full accumulated audio samples (16kHz mono Float32).
     public let samples: [Float]
@@ -17,6 +18,7 @@ public struct FilterContext: Sendable {
         Float(samples.count) / Float(sampleRate)
     }
 
+    /// Creates a new filter context.
     public init(samples: [Float], sampleRate: Int, frontier: Float) {
         self.samples = samples
         self.sampleRate = sampleRate
@@ -24,10 +26,12 @@ public struct FilterContext: Sendable {
     }
 }
 
-/// A filter that transforms a transcription result before it
-/// reaches the session or final assembly. Each filter is
-/// independently testable.
+/// A filter that transforms a transcription result.
+///
+/// Applied before the result reaches the session or final assembly.
+/// Each filter is independently testable.
 public protocol TranscriptionFilter: Sendable {
+    /// Apply the filter to a transcription result.
     func filter(
         _ transcription: TranscriptionResult,
         context: FilterContext
@@ -35,10 +39,13 @@ public protocol TranscriptionFilter: Sendable {
 }
 
 /// Removes words with timestamps at or beyond the audio duration.
+///
 /// These are hallucinations from WhisperKit's zero-padded silence.
 public struct HallucinationTimestampFilter: TranscriptionFilter, Sendable {
+    /// Creates a new hallucination timestamp filter.
     public init() {}
 
+    /// Remove words whose timestamps exceed the audio duration.
     public func filter(
         _ transcription: TranscriptionResult,
         context: FilterContext

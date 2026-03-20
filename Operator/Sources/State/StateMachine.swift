@@ -248,8 +248,8 @@ public final class StateMachine {
         // Very short recordings can't contain meaningful speech and
         // would just pick up feedback tones. Dismiss silently.
         let elapsed: Duration? = listeningStartTime.map { ContinuousClock.now - $0 }
-        let listenMs: Int64? = elapsed.map { d in
-            d.components.seconds * 1_000 + d.components.attoseconds / 1_000_000_000_000_000
+        let listenMs: Int64? = elapsed.map { duration in
+            duration.components.seconds * 1_000 + duration.components.attoseconds / 1_000_000_000_000_000
         }
         if let elapsed, elapsed < minimumRecordingDuration {
             Self.logger.info("Trigger STOP: recording too short (\(elapsed)); dismissing")

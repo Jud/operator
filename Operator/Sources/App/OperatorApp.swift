@@ -197,7 +197,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// Download Kokoro models in the background and hot-swap when ready.
     private func startKokoroDownload() {
         KokoroDownloadModel.shared.downloadIfNeeded { [weak self] engine in
-            guard let self else { return }
+            guard let self
+            else { return }
             let mgr = KokoroSpeechManager(engine: engine)
             let vm = VoiceManager(kokoroVoices: engine.availableVoices)
             self.speechManager = mgr

@@ -59,7 +59,8 @@ public final class VoiceManager: Sendable {
         let voices = Self.kokoroVoices
         // Skip index 0 (operator voice) for agents
         let agentVoices = Array(voices.dropFirst())
-        guard !agentVoices.isEmpty else { return operatorVoice }
+        guard !agentVoices.isEmpty
+        else { return operatorVoice }
         let hash = abs(name.hashValue)
         let idx = hash % agentVoices.count
         return .kokoro(name: agentVoices[idx])

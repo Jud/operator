@@ -111,7 +111,8 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
                         Self.logger.warning("Chunk failed: \(error)")
                     }
                 }
-                guard let self, !Task.isCancelled else { return }
+                guard let self, !Task.isCancelled
+                else { return }
                 self.scheduleCompletionCallback()
             }
         } catch {

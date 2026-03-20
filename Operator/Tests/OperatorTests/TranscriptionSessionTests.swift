@@ -10,8 +10,8 @@ import WhisperKit
 private func makeWindowTranscription(
     words: [(word: String, start: Float, end: Float)]
 ) -> TranscriptionResult {
-    let wordTimings = words.map { w in
-        WordTiming(word: w.word, tokens: [1], start: w.start, end: w.end, probability: 1.0)
+    let wordTimings = words.map { wt in
+        WordTiming(word: wt.word, tokens: [1], start: wt.start, end: wt.end, probability: 1.0)
     }
     let text = wordTimings.map(\.word).joined()
     let segment = TranscriptionSegment(
@@ -32,12 +32,12 @@ private func makeWindowTranscription(
 private func makeWindowTranscription(
     segments: [(text: String, start: Float, end: Float)]
 ) -> TranscriptionResult {
-    let segs = segments.enumerated().map { i, s in
+    let segs = segments.enumerated().map { idx, seg in
         TranscriptionSegment(
-            id: i,
-            start: s.start,
-            end: s.end,
-            text: s.text
+            id: idx,
+            start: seg.start,
+            end: seg.end,
+            text: seg.text
         )
     }
     let fullText = segs.map(\.text).joined(separator: " ")
@@ -53,8 +53,8 @@ private func makeWindowTranscription(
 private func makeWindowTranscription(
     words: [(word: String, tokens: [Int], start: Float, end: Float)]
 ) -> TranscriptionResult {
-    let wordTimings = words.map { w in
-        WordTiming(word: w.word, tokens: w.tokens, start: w.start, end: w.end, probability: 1.0)
+    let wordTimings = words.map { wt in
+        WordTiming(word: wt.word, tokens: wt.tokens, start: wt.start, end: wt.end, probability: 1.0)
     }
     let text = wordTimings.map(\.word).joined()
     let segment = TranscriptionSegment(
@@ -74,7 +74,7 @@ private func makeWindowTranscription(
 // MARK: - Tests
 
 @Suite("TranscriptionSession")
-struct TranscriptionSessionTests {
+internal struct TranscriptionSessionTests {
     // 1. Boundary matching extends transcript
     @Test("first call matchFailed, second call with matching words extends")
     func testBoundaryMatchingExtends() {
@@ -87,7 +87,7 @@ struct TranscriptionSessionTests {
         ])
         let outcome1 = session.extendTranscript(with: window1)
         #expect(outcome1 == .matchFailed)
-        #expect(session.transcript == "")
+        #expect(session.transcript.isEmpty)
         #expect(session.frontier == 0.0)
 
         // Second transcription — same words at boundary, new words after
@@ -151,8 +151,8 @@ struct TranscriptionSessionTests {
         // First establishes prevWords, second/third/fourth are mismatches
         // But first call is also a miss (no prevWords), so we need 3 total misses
         for i in 0..<3 {
-            let w = makeWindowTranscription(words: [("word\(i)", 0, 1)])
-            _ = session.extendTranscript(with: w)
+            let window = makeWindowTranscription(words: [("word\(i)", 0, 1)])
+            _ = session.extendTranscript(with: window)
         }
 
         #expect(session.strategy == .segmentLevel)
@@ -187,17 +187,17 @@ struct TranscriptionSessionTests {
     // 5. Clean text filters hallucinations
     @Test("cleanText removes all hallucination patterns")
     func testCleanTextFiltersHallucinations() {
-        #expect(TranscriptionSession.cleanText("[BLANK_AUDIO]") == "")
-        #expect(TranscriptionSession.cleanText("(BLANK_AUDIO)") == "")
-        #expect(TranscriptionSession.cleanText("[silence]") == "")
-        #expect(TranscriptionSession.cleanText("(silence)") == "")
-        #expect(TranscriptionSession.cleanText("[no speech]") == "")
-        #expect(TranscriptionSession.cleanText("(no speech)") == "")
-        #expect(TranscriptionSession.cleanText("[inaudible]") == "")
-        #expect(TranscriptionSession.cleanText("(inaudible)") == "")
-        #expect(TranscriptionSession.cleanText("(air whooshes)") == "")
-        #expect(TranscriptionSession.cleanText("[clicking]") == "")
-        #expect(TranscriptionSession.cleanText("  [BLANK_AUDIO]  ") == "")
+        #expect(TranscriptionSession.cleanText("[BLANK_AUDIO]").isEmpty)
+        #expect(TranscriptionSession.cleanText("(BLANK_AUDIO)").isEmpty)
+        #expect(TranscriptionSession.cleanText("[silence]").isEmpty)
+        #expect(TranscriptionSession.cleanText("(silence)").isEmpty)
+        #expect(TranscriptionSession.cleanText("[no speech]").isEmpty)
+        #expect(TranscriptionSession.cleanText("(no speech)").isEmpty)
+        #expect(TranscriptionSession.cleanText("[inaudible]").isEmpty)
+        #expect(TranscriptionSession.cleanText("(inaudible)").isEmpty)
+        #expect(TranscriptionSession.cleanText("(air whooshes)").isEmpty)
+        #expect(TranscriptionSession.cleanText("[clicking]").isEmpty)
+        #expect(TranscriptionSession.cleanText("  [BLANK_AUDIO]  ").isEmpty)
         #expect(TranscriptionSession.cleanText("Hello  world") == "Hello world")
         #expect(TranscriptionSession.cleanText("Hello world") == "Hello world")
     }
