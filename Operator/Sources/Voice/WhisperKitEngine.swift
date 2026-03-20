@@ -212,16 +212,21 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         )
 
         #if DEBUG
-            let debugSamples = samples
-            let debugResult = corrected
-            let debugPipe = self.pipe
-            Task.detached {
-                await Self.compareGroundTruth(
-                    streamingResult: debugResult,
-                    samples: debugSamples,
-                    audioDuration: audioDur,
-                    pipe: debugPipe
-                )
+            // Only run ground truth comparison in the live app, not test runners.
+            // Test runners trigger this code path and auto-capture garbage fixtures
+            // because the "most recent audio trace" belongs to a different session.
+            if Bundle.main.bundleIdentifier == "com.operator.app" {
+                let debugSamples = samples
+                let debugResult = corrected
+                let debugPipe = self.pipe
+                Task.detached {
+                    await Self.compareGroundTruth(
+                        streamingResult: debugResult,
+                        samples: debugSamples,
+                        audioDuration: audioDur,
+                        pipe: debugPipe
+                    )
+                }
             }
         #endif
 
