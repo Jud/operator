@@ -36,6 +36,7 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
     private var previousSchedulerTask: Task<Void, Never>?
 
     /// Tracks whether the last extendTranscript call produced zero new words.
+    ///
     /// When true, overlap tokens are dropped to avoid hallucination loops.
     private var lastExtensionWasZeroProgress: Bool = false
 
@@ -60,16 +61,18 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
 
     // MARK: - SchedulableEngine
 
+    /// Number of audio samples currently accumulated in the session.
     public var sampleCount: Int {
         sessionLock.withLock { $0?.audioSamples.count ?? 0 }
     }
 
+    /// Transcribe the current working window of audio samples.
     public func transcribeWorkingWindow(maxSampleCount: Int?) async {
         let passStart = ContinuousClock.now
 
         let samples = sessionLock.withLock { state -> [Float] in
-            let s = state?.audioSamples ?? []
-            return maxSampleCount.map { Array(s.prefix($0)) } ?? s
+            let allSamples = state?.audioSamples ?? []
+            return maxSampleCount.map { Array(allSamples.prefix($0)) } ?? allSamples
         }
 
         let frontier = session.frontier
@@ -100,10 +103,10 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
 
         switch outcome {
         case .extended(let newWords):
-            let f = session.frontier
+            let ftr = session.frontier
             let zp = lastExtensionWasZeroProgress
             Self.logger.notice(
-                "Confirmed \(newWords) words to \(f, privacy: .public)s in \(passMs)ms (zeroProgress=\(zp))"
+                "Confirmed \(newWords) words to \(ftr, privacy: .public)s in \(passMs)ms (zeroProgress=\(zp))"
             )
 
         case .matchFailed:
@@ -127,9 +130,9 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
 
         let vocab = contextualStrings
         sessionLock.withLock { state in
-            var s = SessionState(vocabulary: vocab)
-            s.audioSamples.reserveCapacity(480_000)
-            state = s
+            var newState = SessionState(vocabulary: vocab)
+            newState.audioSamples.reserveCapacity(480_000)
+            state = newState
         }
         session = TranscriptionSession()
         lastExtensionWasZeroProgress = false
@@ -139,7 +142,8 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         let sched = scheduler
         schedulerTask = Task { [weak self] in
             await taskToDrain?.value
-            guard let self else { return }
+            guard let self
+            else { return }
             await sched.start(engine: self)
         }
         Self.logger.notice("Session started")
@@ -149,15 +153,15 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
     public func append(_ buffer: AVAudioPCMBuffer) {
         nonisolated(unsafe) let buf = buffer
         sessionLock.withLock { state in
-            guard var s = state
+            guard var sess = state
             else { return }
-            if s.converter == nil {
-                s.converter = try? AudioFormatConverter(inputFormat: buf.format)
+            if sess.converter == nil {
+                sess.converter = try? AudioFormatConverter(inputFormat: buf.format)
             }
-            if let converter = s.converter {
-                _ = converter.appendConverted(buf, to: &s.audioSamples)
+            if let converter = sess.converter {
+                _ = converter.appendConverted(buf, to: &sess.audioSamples)
             }
-            state = s
+            state = sess
         }
     }
 
@@ -173,9 +177,9 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         let awaitDuration = ContinuousClock.now - stopTime
 
         let snapshot = sessionLock.withLock { state -> SessionState? in
-            let s = state
+            let captured = state
             state = nil
-            return s
+            return captured
         }
         let samples = snapshot?.audioSamples ?? []
         let vocabulary = snapshot?.vocabulary ?? []
@@ -186,9 +190,46 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
             return nil
         }
 
-        let frontier = session.frontier
         let awaitMs = Self.ms(awaitDuration)
         let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
+        logSessionSummary(audioDur: audioDur, awaitMs: awaitMs)
+
+        let finalStart = ContinuousClock.now
+        var fullText = await decodeTail(samples: samples, audioDur: audioDur)
+        let finalMs = Self.ms(ContinuousClock.now - finalStart)
+
+        guard !fullText.isEmpty
+        else {
+            Self.logger.notice("Transcription empty (final=\(finalMs)ms)")
+            return nil
+        }
+
+        let corrected = VocabularyCorrector.correct(text: fullText, vocabulary: vocabulary)
+        let totalMs = Self.ms(ContinuousClock.now - stopTime)
+        let preview = String(corrected.prefix(80))
+        Self.logger.notice(
+            "Result: \(totalMs)ms (await=\(awaitMs)ms final=\(finalMs)ms) \"\(preview, privacy: .public)\""
+        )
+
+        #if DEBUG
+            let debugSamples = samples
+            let debugResult = corrected
+            let debugPipe = self.pipe
+            Task.detached {
+                await Self.compareGroundTruth(
+                    streamingResult: debugResult,
+                    samples: debugSamples,
+                    audioDuration: audioDur,
+                    pipe: debugPipe
+                )
+            }
+        #endif
+
+        return corrected
+    }
+
+    private func logSessionSummary(audioDur: Float, awaitMs: Int) {
+        let frontier = session.frontier
         let confirmedWordCount = session.transcript.split(separator: " ").count
         let strategy = session.strategy
         Self.logger.notice(
@@ -197,10 +238,11 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         Self.logger.notice(
             "Stop: confirmed=\(confirmedWordCount) words, strategy=\(String(describing: strategy), privacy: .public)"
         )
+    }
 
-        let finalStart = ContinuousClock.now
+    private func decodeTail(samples: [Float], audioDur: Float) async -> String {
+        let frontier = session.frontier
 
-        // Tail transcription with VAD chunking
         let tailResult = await transcribeResult(
             samples: samples,
             clipStart: frontier,
@@ -218,8 +260,6 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
             frontier: frontier
         )
 
-        // Safety net: if result is too short for the audio, the clipped decode
-        // likely failed. Fall back to full decode from 0.0s.
         let wordCount = Float(fullText.split(separator: " ").count)
         if audioDur > 3 && wordCount / audioDur < 0.5 && !fullText.isEmpty {
             Self.logger.notice(
@@ -232,7 +272,6 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
                 }
             }
         }
-        let finalMs = Self.ms(ContinuousClock.now - finalStart)
 
         if fullText.isEmpty && audioDur > 1 {
             Self.logger.notice("Empty result on \(audioDur, privacy: .public)s audio -- full decode rescue")
@@ -241,37 +280,7 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
             }
         }
 
-        guard !fullText.isEmpty
-        else {
-            Self.logger.notice("Transcription empty (final=\(finalMs)ms)")
-            return nil
-        }
-
-        let corrected = VocabularyCorrector.correct(text: fullText, vocabulary: vocabulary)
-        let totalMs = Self.ms(ContinuousClock.now - stopTime)
-        let preview = String(corrected.prefix(80))
-        Self.logger.notice(
-            "Result: \(totalMs)ms (await=\(awaitMs)ms final=\(finalMs)ms) \"\(preview, privacy: .public)\""
-        )
-
-        #if DEBUG
-            // Fire-and-forget ground truth comparison. Runs a clean batch
-            // decode in the background and logs the similarity. Zero latency
-            // impact — the result is already returned to the user.
-            let debugSamples = samples
-            let debugResult = corrected
-            let debugPipe = self.pipe
-            Task.detached {
-                await Self.compareGroundTruth(
-                    streamingResult: debugResult,
-                    samples: debugSamples,
-                    audioDuration: audioDur,
-                    pipe: debugPipe
-                )
-            }
-        #endif
-
-        return corrected
+        return fullText
     }
 
     /// Cancel any in-progress session and release resources.
@@ -311,6 +320,7 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
     // MARK: - Result Assembly
 
     /// Coordinator-owned result assembly.
+    ///
     /// Stitches transcript + filtered tail words.
     private func assembleResult(
         transcript: String,
@@ -393,7 +403,8 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         private static let qualityLogger = Log.logger(for: "TranscriptionQuality")
 
         /// Run a clean batch decode and compare against the streaming result.
-        /// Called in a detached task — no latency impact on the user.
+        ///
+        /// Called in a detached task -- no latency impact on the user.
         private static func compareGroundTruth(
             streamingResult: String,
             samples: [Float],
@@ -454,6 +465,7 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         }
 
         /// Auto-capture a test fixture when quality drops below threshold.
+        ///
         /// Finds the most recent audio trace and copies it + ground truth
         /// to the test-fixtures directory.
         private static func autoCapture(
@@ -462,7 +474,12 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
             audioDuration: Float
         ) {
             let fm = FileManager.default
-            let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            guard
+                let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            else {
+                qualityLogger.warning("Auto-capture: no application support directory")
+                return
+            }
             let traceDir = appSupport.appendingPathComponent("Operator/audio-traces")
             let fixtureDir = appSupport.appendingPathComponent("Operator/test-fixtures")
 
@@ -521,27 +538,31 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         }
 
         /// Levenshtein similarity ratio (0.0 = completely different, 1.0 = identical).
-        private static func levenshteinSimilarity(_ a: String, _ b: String) -> Double {
-            let a = Array(a.lowercased())
-            let b = Array(b.lowercased())
-            let m = a.count
-            let n = b.count
-            if m == 0 && n == 0 { return 1.0 }
-            if m == 0 || n == 0 { return 0.0 }
+        private static func levenshteinSimilarity(_ lhs: String, _ rhs: String) -> Double {
+            let left = Array(lhs.lowercased())
+            let right = Array(rhs.lowercased())
+            let leftLen = left.count
+            let rightLen = right.count
+            if leftLen == 0 && rightLen == 0 {
+                return 1.0
+            }
+            if leftLen == 0 || rightLen == 0 {
+                return 0.0
+            }
 
-            var prev = Array(0...n)
-            var curr = [Int](repeating: 0, count: n + 1)
+            var prev = Array(0...rightLen)
+            var curr = [Int](repeating: 0, count: rightLen + 1)
 
-            for i in 1...m {
-                curr[0] = i
-                for j in 1...n {
-                    let cost = a[i - 1] == b[j - 1] ? 0 : 1
-                    curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+            for li in 1...leftLen {
+                curr[0] = li
+                for ri in 1...rightLen {
+                    let cost = left[li - 1] == right[ri - 1] ? 0 : 1
+                    curr[ri] = min(prev[ri] + 1, curr[ri - 1] + 1, prev[ri - 1] + cost)
                 }
                 swap(&prev, &curr)
             }
 
-            return 1.0 - Double(prev[n]) / Double(max(m, n))
+            return 1.0 - Double(prev[rightLen]) / Double(max(leftLen, rightLen))
         }
     #endif
 }

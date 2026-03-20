@@ -6,7 +6,7 @@ import os
 
 // MARK: - Mock
 
-final class MockSchedulableEngine: SchedulableEngine, @unchecked Sendable {
+internal final class MockSchedulableEngine: SchedulableEngine, @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock<MockState>(initialState: MockState())
 
     private struct MockState: @unchecked Sendable {
@@ -56,7 +56,7 @@ final class MockSchedulableEngine: SchedulableEngine, @unchecked Sendable {
 // MARK: - Tests
 
 @Suite("BackgroundLoopScheduler")
-struct BackgroundLoopSchedulerTests {
+internal struct BackgroundLoopSchedulerTests {
     @Test("No transcription fires before initial 1s delay")
     func testInitialDelay() async throws {
         let engine = MockSchedulableEngine()

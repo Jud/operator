@@ -121,6 +121,7 @@ public actor AudioQueue {
         await startListening()
     }
 
+    /// Start listening for speech-finished events from the speech manager.
     public func startListening() async {
         listenerTask?.cancel()
         let mgr = speechManager
@@ -161,7 +162,8 @@ public actor AudioQueue {
 
         let mgr = speechManager
         let info: InterruptInfo? = await MainActor.run {
-            guard mgr.isSpeaking else { return nil }
+            guard mgr.isSpeaking
+            else { return nil }
             return mgr.interrupt()
         }
         if let info {

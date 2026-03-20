@@ -19,10 +19,11 @@ import WhisperKit
 ///   swift run TranscriptionTests <name>        # Run a specific fixture
 
 private let fixtureDir: URL = {
-    let appSupport = FileManager.default.urls(
-        for: .applicationSupportDirectory,
-        in: .userDomainMask
-    ).first!
+    let appSupport =
+        FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.homeDirectoryForCurrentUser
     return appSupport.appendingPathComponent("Operator/test-fixtures", isDirectory: true)
 }()
 
@@ -169,28 +170,32 @@ private func loadEngine() async throws -> WhisperKitEngine {
 
 // MARK: - Levenshtein Similarity
 
-private func levenshteinRatio(_ a: String, _ b: String) -> Double {
-    let a = Array(a)
-    let b = Array(b)
-    let m = a.count
-    let n = b.count
-    if m == 0 && n == 0 { return 1.0 }
-    if m == 0 || n == 0 { return 0.0 }
+private func levenshteinRatio(_ lhs: String, _ rhs: String) -> Double {
+    let left = Array(lhs)
+    let right = Array(rhs)
+    let leftLen = left.count
+    let rightLen = right.count
+    if leftLen == 0 && rightLen == 0 {
+        return 1.0
+    }
+    if leftLen == 0 || rightLen == 0 {
+        return 0.0
+    }
 
-    var prev = Array(0...n)
-    var curr = [Int](repeating: 0, count: n + 1)
+    var prev = Array(0...rightLen)
+    var curr = [Int](repeating: 0, count: rightLen + 1)
 
-    for i in 1...m {
-        curr[0] = i
-        for j in 1...n {
-            let cost = a[i - 1] == b[j - 1] ? 0 : 1
-            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+    for li in 1...leftLen {
+        curr[0] = li
+        for ri in 1...rightLen {
+            let cost = left[li - 1] == right[ri - 1] ? 0 : 1
+            curr[ri] = min(prev[ri] + 1, curr[ri - 1] + 1, prev[ri - 1] + cost)
         }
         swap(&prev, &curr)
     }
 
-    let distance = prev[n]
-    return 1.0 - Double(distance) / Double(max(m, n))
+    let distance = prev[rightLen]
+    return 1.0 - Double(distance) / Double(max(leftLen, rightLen))
 }
 
 // MARK: - Test Runners
@@ -210,7 +215,19 @@ private func runBatchTest(engine: WhisperKitEngine, fixture: Fixture) async -> T
     let start = ContinuousClock.now
 
     try? engine.prepare(contextualStrings: [])
-    let (samples, _) = try! loadWavSamples(path: fixture.wavPath)
+    guard let loaded = try? loadWavSamples(path: fixture.wavPath) else {
+        return TestResult(
+            fixture: fixture.name,
+            mode: "batch",
+            passed: false,
+            similarity: 0,
+            resultText: "",
+            expectedText: fixture.expectedText,
+            durationMs: 0,
+            detail: "Failed to load WAV"
+        )
+    }
+    let (samples, _) = loaded
 
     guard
         let format = AVAudioFormat(
@@ -234,7 +251,9 @@ private func runBatchTest(engine: WhisperKitEngine, fixture: Fixture) async -> T
     }
     buf.frameLength = AVAudioFrameCount(samples.count)
     samples.withUnsafeBufferPointer { src in
-        buf.floatChannelData![0].update(from: src.baseAddress!, count: samples.count)
+        guard let channelData = buf.floatChannelData, let baseAddr = src.baseAddress
+        else { return }
+        channelData[0].update(from: baseAddr, count: samples.count)
     }
     engine.append(buf)
 
@@ -340,13 +359,51 @@ private func runStreamingTest(engine: WhisperKitEngine, fixture: Fixture) async 
 
 // MARK: - Entry Point
 
+private func runTestSuite(
+    label: String,
+    engine: WhisperKitEngine,
+    fixtures: [Fixture],
+    testRunner: (WhisperKitEngine, Fixture) async -> TestResult
+) async -> [TestResult] {
+    print("--- \(label) ---\n")
+    var results: [TestResult] = []
+    for fixture in fixtures {
+        let result = await testRunner(engine, fixture)
+        results.append(result)
+        let icon = result.passed ? "+" : "x"
+        print("  \(icon) \(fixture.name): \(result.detail)")
+        if !result.passed {
+            print("    Expected: \"\(result.expectedText.prefix(80))...\"")
+            print("    Got:      \"\(result.resultText.prefix(80))...\"")
+        }
+    }
+    print("")
+    return results
+}
+
+private func printSummary(_ results: [TestResult]) {
+    let passed = results.filter(\.passed).count
+    let total = results.count
+    let allPassed = passed == total
+
+    print("=== \(allPassed ? "ALL PASSED" : "FAILURES DETECTED") ===")
+    print("  \(passed)/\(total) tests passed")
+
+    if !allPassed {
+        print("\nFailed tests:")
+        for res in results where !res.passed {
+            print("  x \(res.fixture) (\(res.mode)): \(res.detail)")
+        }
+    }
+}
+
 @MainActor
-func runTranscriptionTests() async -> Int32 {
+internal func runTranscriptionTests() async -> Int32 {
     let args = CommandLine.arguments.dropFirst()
     let filter = args.first
 
-    let runBatch = filter == nil || filter == "batch"
-    let runStreaming = filter == nil || filter == "streaming"
+    let shouldRunBatch = filter == nil || filter == "batch"
+    let shouldRunStreaming = filter == nil || filter == "streaming"
     let fixtureFilter: String? = (filter != "batch" && filter != "streaming") ? filter : nil
 
     print("=== Transcription Regression Tests ===\n")
@@ -366,8 +423,8 @@ func runTranscriptionTests() async -> Int32 {
     }
 
     print("Fixtures: \(fixtures.count)")
-    for f in fixtures {
-        print("  \(f.name) (\(String(format: "%.1f", f.audioDuration))s)")
+    for fix in fixtures {
+        print("  \(fix.name) (\(String(format: "%.1f", fix.audioDuration))s)")
     }
 
     let engine: WhisperKitEngine
@@ -380,61 +437,34 @@ func runTranscriptionTests() async -> Int32 {
         return 1
     }
 
-    // Warm up
     try? engine.prepare(contextualStrings: [])
     _ = await engine.finishAndTranscribe()
 
     var results: [TestResult] = []
 
-    // Batch tests
-    if runBatch {
-        print("--- Batch Decode Tests ---\n")
-        for fixture in fixtures {
-            let result = await runBatchTest(engine: engine, fixture: fixture)
-            results.append(result)
-            let icon = result.passed ? "✓" : "✗"
-            print("  \(icon) \(fixture.name): \(result.detail)")
-            if !result.passed {
-                print("    Expected: \"\(result.expectedText.prefix(80))...\"")
-                print("    Got:      \"\(result.resultText.prefix(80))...\"")
-            }
-        }
-        print("")
+    if shouldRunBatch {
+        results += await runTestSuite(
+            label: "Batch Decode Tests",
+            engine: engine,
+            fixtures: fixtures,
+            testRunner: runBatchTest
+        )
     }
 
-    // Streaming tests
-    if runStreaming {
-        print("--- Streaming Pipeline Tests ---\n")
-        for fixture in fixtures {
-            let result = await runStreamingTest(engine: engine, fixture: fixture)
-            results.append(result)
-            let icon = result.passed ? "✓" : "✗"
-            print("  \(icon) \(fixture.name): \(result.detail)")
-            if !result.passed {
-                print("    Expected: \"\(result.expectedText.prefix(80))...\"")
-                print("    Got:      \"\(result.resultText.prefix(80))...\"")
-            }
-        }
-        print("")
+    if shouldRunStreaming {
+        results += await runTestSuite(
+            label: "Streaming Pipeline Tests",
+            engine: engine,
+            fixtures: fixtures,
+            testRunner: runStreamingTest
+        )
     }
 
-    // Summary
-    let passed = results.filter(\.passed).count
-    let total = results.count
-    let allPassed = passed == total
-
-    print("=== \(allPassed ? "ALL PASSED" : "FAILURES DETECTED") ===")
-    print("  \(passed)/\(total) tests passed")
-
-    if !allPassed {
-        print("\nFailed tests:")
-        for r in results where !r.passed {
-            print("  ✗ \(r.fixture) (\(r.mode)): \(r.detail)")
-        }
-    }
-
+    printSummary(results)
+    let allPassed = results.filter(\.passed).count == results.count
     return allPassed ? 0 : 1
 }
 
-let exitCode: Int32 = await runTranscriptionTests()
+internal let exitCode: Int32 = await runTranscriptionTests()
+
 exit(exitCode)

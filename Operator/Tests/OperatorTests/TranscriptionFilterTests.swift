@@ -9,8 +9,8 @@ import WhisperKit
 private func makeFilterTranscription(
     words: [(word: String, start: Float, end: Float)]
 ) -> TranscriptionResult {
-    let wordTimings = words.map { w in
-        WordTiming(word: w.word, tokens: [1], start: w.start, end: w.end, probability: 1.0)
+    let wordTimings = words.map { wt in
+        WordTiming(word: wt.word, tokens: [1], start: wt.start, end: wt.end, probability: 1.0)
     }
     let text = wordTimings.map(\.word).joined()
     let segment = TranscriptionSegment(
@@ -30,7 +30,7 @@ private func makeFilterTranscription(
 // MARK: - Tests
 
 @Suite("TranscriptionFilter")
-struct TranscriptionFilterTests {
+internal struct TranscriptionFilterTests {
     // 1. Hallucination filter removes words past audio duration
     @Test("removes words with timestamps at or beyond audio duration")
     func testHallucinationFilterRemovesWordsPastAudio() {

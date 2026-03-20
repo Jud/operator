@@ -165,27 +165,7 @@ extension SettingsView {
 
     private var kokoroSection: some View {
         Section("Text-to-Speech (Kokoro CoreML)") {
-            if kokoroModel.isDownloaded {
-                Label("Models downloaded", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-
-                Button("Preview Voice") {
-                    EngineSettingsModel.shared.onPreviewVoice?()
-                }
-            } else if kokoroModel.isDownloading {
-                HStack {
-                    Text("Downloading...")
-                    ProgressView(value: kokoroModel.progress)
-                        .frame(width: 120)
-                    Text("\(Int(kokoroModel.progress * 100))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Button("Download Kokoro Models") {
-                    kokoroModel.downloadIfNeeded()
-                }
-            }
+            kokoroStatusView
 
             if let error = kokoroModel.error {
                 Text(error)
@@ -200,6 +180,30 @@ extension SettingsView {
             )
             .font(.caption)
             .foregroundStyle(.tertiary)
+        }
+    }
+
+    @ViewBuilder private var kokoroStatusView: some View {
+        if kokoroModel.isDownloaded {
+            Label("Models downloaded", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+
+            Button("Preview Voice") {
+                EngineSettingsModel.shared.onPreviewVoice?()
+            }
+        } else if kokoroModel.isDownloading {
+            HStack {
+                Text("Downloading...")
+                ProgressView(value: kokoroModel.progress)
+                    .frame(width: 120)
+                Text("\(Int(kokoroModel.progress * 100))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Button("Download Kokoro Models") {
+                kokoroModel.downloadIfNeeded()
+            }
         }
     }
 

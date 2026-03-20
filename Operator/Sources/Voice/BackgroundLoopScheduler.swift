@@ -18,13 +18,16 @@ public final class BackgroundLoopScheduler: TranscriptionScheduler, @unchecked S
     private let sleepContinuation = OSAllocatedUnfairLock<UnsafeContinuation<Void, Never>?>(initialState: nil)
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
 
+    /// Creates a new background loop scheduler with default timing.
     public init() {}
 
+    /// Start the background transcription loop for the given engine.
     public func start(engine: SchedulableEngine) async {
         stopped.withLock { $0 = false }
 
         let task = Task { [weak self] in
-            guard let self else { return }
+            guard let self
+            else { return }
             await self.interruptibleSleep(nanoseconds: 1_000_000_000)
 
             var lastSampleCount = 0
@@ -38,7 +41,8 @@ public final class BackgroundLoopScheduler: TranscriptionScheduler, @unchecked S
                     transcriptionCount += 1
                 }
 
-                guard !self.stopped.withLock({ $0 }) else { return }
+                guard !self.stopped.withLock({ $0 })
+                else { return }
                 let intervalNs: UInt64 =
                     transcriptionCount <= 1
                     ? 500_000_000
@@ -50,6 +54,7 @@ public final class BackgroundLoopScheduler: TranscriptionScheduler, @unchecked S
         await task.value
     }
 
+    /// Stop the background loop and wait for any in-flight transcription to complete.
     public func stop() async {
         stopped.withLock { $0 = true }
         wakeSleep()

@@ -74,13 +74,15 @@ public final class SpeechTranscriber: SpeechTranscribing {
         from source: AVAudioPCMBuffer,
         monoFormat: AVAudioFormat
     ) -> AVAudioPCMBuffer? {
-        guard let srcChannels = source.floatChannelData else { return nil }
+        guard let srcChannels = source.floatChannelData
+        else { return nil }
         let frames = source.frameLength
         guard
             let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frames)
         else { return nil }
         mono.frameLength = frames
-        guard let dstData = mono.floatChannelData else { return nil }
+        guard let dstData = mono.floatChannelData
+        else { return nil }
         dstData[0].update(from: srcChannels[0], count: Int(frames))
         return mono
     }
@@ -237,8 +239,9 @@ public final class SpeechTranscriber: SpeechTranscribing {
             ) ?? tapFormat)
             : tapFormat
 
+        let extractNote = needsMonoExtract ? " -> mono extraction" : ""
         Self.logger.info(
-            "Recording format: \(tapFormat.sampleRate)Hz, \(tapFormat.channelCount)ch\(needsMonoExtract ? " → mono extraction" : "")"
+            "Recording format: \(tapFormat.sampleRate)Hz, \(tapFormat.channelCount)ch\(extractNote)"
         )
         capturedFormat = monoFormat
         let capturedEngine = engine
@@ -262,7 +265,8 @@ public final class SpeechTranscriber: SpeechTranscribing {
                 else { return }
                 monoBuffer = extracted
             } else {
-                guard let copy = Self.copyBuffer(buffer) else { return }
+                guard let copy = Self.copyBuffer(buffer)
+                else { return }
                 monoBuffer = copy
             }
 

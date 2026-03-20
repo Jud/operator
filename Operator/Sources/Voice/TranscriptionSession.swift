@@ -2,6 +2,7 @@ import WhisperKit
 
 // MARK: - Supporting Types
 
+/// Outcome of extending the transcript with a new window transcription.
 public enum ExtensionOutcome: Equatable, Sendable {
     /// Transcript was extended. newWords is the number of words
     /// locked into the transcript. May be 0 if boundaries matched
@@ -13,6 +14,7 @@ public enum ExtensionOutcome: Equatable, Sendable {
     case matchFailed
 }
 
+/// Strategy used to match window transcriptions against previous results.
 public enum MatchingStrategy: Equatable, Sendable {
     /// Word-level boundary matching. Default.
     /// Uses longest-common-prefix on word arrays. Requires
@@ -24,6 +26,7 @@ public enum MatchingStrategy: Equatable, Sendable {
     case segmentLevel
 }
 
+/// Configuration for transcription session matching behavior.
 public struct TranscriptionSessionConfig: Equatable, Sendable {
     /// Number of consecutive matching words required at the boundary.
     public var matchThreshold: Int
@@ -31,6 +34,7 @@ public struct TranscriptionSessionConfig: Equatable, Sendable {
     /// Consecutive match failures before switching to segment-level matching.
     public var maxMatchFailures: Int
 
+    /// Creates a session config with the given thresholds.
     public init(matchThreshold: Int = 2, maxMatchFailures: Int = 3) {
         self.matchThreshold = matchThreshold
         self.maxMatchFailures = maxMatchFailures
@@ -39,7 +43,8 @@ public struct TranscriptionSessionConfig: Equatable, Sendable {
 
 // MARK: - TranscriptionSession
 
-/// Pure value type. Tracks the state of one push-to-talk session.
+/// Pure value type tracking the state of one push-to-talk session.
+///
 /// No async, no locks, no audio-domain knowledge. Operates entirely
 /// on word timings and text.
 public struct TranscriptionSession: Sendable {
@@ -51,10 +56,14 @@ public struct TranscriptionSession: Sendable {
     /// The locked-in transcription text.
     public private(set) var transcript: String
 
-    /// Where confirmed audio ends (seconds). The working window starts here.
+    /// Where confirmed audio ends (seconds).
+    ///
+    /// The working window starts here.
     public private(set) var frontier: Float
 
-    /// Number of consecutive match failures. Reset to 0 on any successful match.
+    /// Number of consecutive match failures.
+    ///
+    /// Reset to 0 on any successful match.
     public private(set) var consecutiveMatchFailures: Int
 
     /// Words from the previous window transcription, used for boundary comparison.
@@ -64,6 +73,7 @@ public struct TranscriptionSession: Sendable {
     private var lastAgreedWords: [WordTiming]
 
     /// Decoder tokens from the last matched boundary words.
+    ///
     /// The coordinator may pass these to WhisperKit for continuity.
     /// Only meaningful in wordLevel strategy.
     public var overlapTokens: [Int] {
@@ -80,6 +90,7 @@ public struct TranscriptionSession: Sendable {
 
     // MARK: - Init
 
+    /// Creates a new transcription session with the given configuration.
     public init(config: TranscriptionSessionConfig = .init()) {
         self.config = config
         self.strategy = .wordLevel
@@ -190,7 +201,8 @@ public struct TranscriptionSession: Sendable {
             return .extended(newWords: 0)
         }
 
-        let newText = toConfirm.map(\.text).joined(separator: " ")
+        let newText = toConfirm.map(\.text)
+            .joined(separator: " ")
             .trimmingCharacters(in: .whitespaces)
 
         if segmentConfirmedText.isEmpty {

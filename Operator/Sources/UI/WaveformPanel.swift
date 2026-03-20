@@ -304,7 +304,8 @@ public final class WaveformPanel: NSPanel {
             NSScreen.screens.first { NSMouseInRect(mouseLocation, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
-        guard let screen else { return }
+        guard let screen
+        else { return }
 
         // screen.frame.origin accounts for multi-monitor layout;
         // visibleFrame excludes the menu bar and Dock.
