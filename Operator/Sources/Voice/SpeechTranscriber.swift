@@ -66,6 +66,27 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
     // MARK: - Type Methods
 
+    /// Extract channel 0 from a multi-channel buffer into a new mono buffer.
+    ///
+    /// Used when voice processing outputs 3-channel audio — channel 0 is the
+    /// echo-cancelled near-end speech.
+    nonisolated static func extractChannel0(
+        from source: AVAudioPCMBuffer,
+        monoFormat: AVAudioFormat
+    ) -> AVAudioPCMBuffer? {
+        guard let srcChannels = source.floatChannelData
+        else { return nil }
+        let frames = source.frameLength
+        guard
+            let mono = AVAudioPCMBuffer(pcmFormat: monoFormat, frameCapacity: frames)
+        else { return nil }
+        mono.frameLength = frames
+        guard let dstData = mono.floatChannelData
+        else { return nil }
+        dstData[0].update(from: srcChannels[0], count: Int(frames))
+        return mono
+    }
+
     /// Create a deep copy of an AVAudioPCMBuffer.
     nonisolated static func copyBuffer(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
         guard
@@ -192,11 +213,37 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
         try engine.prepare(contextualStrings: contextualStrings)
 
+        let inputNode = audioEngine.inputNode
+
+        // Voice processing (AEC) intentionally NOT used — it creates a
+        // system-wide aggregate audio device that degrades other apps' audio
+        // and forces Bluetooth into low-quality HFP mode. Push-to-talk with
+        // mute-on-talk means the speaker is silent during recording, so
+        // there is no echo to cancel. The feedback tone is handled by the
+        // RMS skip window in computeRMS().
+
         applyInputDevice()
 
-        let inputNode = audioEngine.inputNode
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-        capturedFormat = recordingFormat
+        let tapFormat = inputNode.outputFormat(forBus: 0)
+
+        // Without voice processing the input is typically mono. Handle
+        // multi-channel gracefully in case an external device provides it.
+        let needsMonoExtract = tapFormat.channelCount > 1
+        let monoFormat =
+            needsMonoExtract
+            ? (AVAudioFormat(
+                commonFormat: tapFormat.commonFormat,
+                sampleRate: tapFormat.sampleRate,
+                channels: 1,
+                interleaved: false
+            ) ?? tapFormat)
+            : tapFormat
+
+        let extractNote = needsMonoExtract ? " -> mono extraction" : ""
+        Self.logger.info(
+            "Recording format: \(tapFormat.sampleRate)Hz, \(tapFormat.channelCount)ch\(extractNote)"
+        )
+        capturedFormat = monoFormat
         let capturedEngine = engine
         let buffers = capturedBuffers
         let monitor = levelMonitor
@@ -204,24 +251,30 @@ public final class SpeechTranscriber: SpeechTranscribing {
             monitor != nil
             ? SpectrumAnalyzer(
                 frameCount: 1_024,
-                sampleRate: Float(recordingFormat.sampleRate)
+                sampleRate: Float(monoFormat.sampleRate)
             ) : nil
 
         inputNode.installTap(
             onBus: 0,
             bufferSize: 1_024,
-            format: recordingFormat
+            format: tapFormat
         ) { @Sendable buffer, _ in
-            // Deep-copy first — AVAudioEngine recycles buffer memory after tap returns.
-            // Share the copy between the recognizer and WAV export.
-            if let copy = Self.copyBuffer(buffer) {
-                capturedEngine.append(copy)
-                buffers.withLock { $0.append(copy) }
+            let monoBuffer: AVAudioPCMBuffer
+            if needsMonoExtract {
+                guard let extracted = Self.extractChannel0(from: buffer, monoFormat: monoFormat)
+                else { return }
+                monoBuffer = extracted
+            } else {
+                guard let copy = Self.copyBuffer(buffer)
+                else { return }
+                monoBuffer = copy
             }
 
-            // Analyzer reads original buffer (valid for the tap callback's duration).
+            capturedEngine.append(monoBuffer)
+            buffers.withLock { $0.append(monoBuffer) }
+
             if let monitor, let analyzer {
-                let bands = analyzer.analyze(buffer)
+                let bands = analyzer.analyze(monoBuffer)
                 monitor.pushBands(bands)
             }
         }

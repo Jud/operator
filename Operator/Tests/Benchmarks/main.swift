@@ -1,5 +1,5 @@
 import AVFoundation
-import KokoroTTS
+import KokoroCoreML
 import OperatorCore
 @preconcurrency import Speech
 import VocabularyCorrector
@@ -16,6 +16,7 @@ private enum BenchmarkTarget: String, CaseIterable {
     case sttReplay = "stt-replay"
     case sttReplayBatch = "stt-replay-batch"
     case sttInspect = "stt-inspect"
+    case sttPrefixTest = "stt-prefix-test"
 }
 
 private let benchmarkRunnerEnvKey = "OPERATOR_BENCHMARK_RUNNER"
@@ -32,6 +33,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  play              Synthesize and play example phrases through speakers")
     print("  stt-replay        Replay WAV through WhisperKitEngine with real-time streaming")
     print("  stt-replay-batch  Replay WAV through WhisperKitEngine in one shot (no streaming)")
+    print("  stt-prefix-test   Test prefix token impact on clipped decode truncation")
     if listOnly {
         return
     }
@@ -277,8 +279,8 @@ private func runAccuracyBenchmark(sessions: [SessionState]) async {
 private func benchmarkTTS() {
     print("\n=== TTS BENCHMARK ===\n")
 
-    let modelDir = ModelManager.defaultDirectory(for: "com.operator")
-    guard ModelManager.modelsAvailable(at: modelDir) else {
+    let modelDir = KokoroEngine.defaultModelDirectory
+    guard KokoroEngine.isDownloaded(at: modelDir) else {
         print("SKIP: Models not found at \(modelDir.path)")
         return
     }
@@ -368,8 +370,8 @@ private func benchmarkTTS() {
 private func benchmarkTTSRoundtrip() async {
     print("\n=== TTS→STT ROUNDTRIP ===\n")
 
-    let modelDir = ModelManager.defaultDirectory(for: "com.operator")
-    guard ModelManager.modelsAvailable(at: modelDir) else {
+    let modelDir = KokoroEngine.defaultModelDirectory
+    guard KokoroEngine.isDownloaded(at: modelDir) else {
         print("SKIP: Models not found at \(modelDir.path)")
         return
     }
@@ -534,15 +536,15 @@ private func levenshteinRatio(_ lhs: String, _ rhs: String) -> Double {
 private func playExamples() async {
     print("\n=== KOKORO TTS PLAYBACK ===\n")
 
-    let modelDir = ModelManager.defaultDirectory(for: "com.operator")
-    guard ModelManager.modelsAvailable(at: modelDir) else {
+    let modelDir = KokoroEngine.defaultModelDirectory
+    guard KokoroEngine.isDownloaded(at: modelDir) else {
         print("SKIP: Models not found at \(modelDir.path)")
         return
     }
 
     do {
         let engine = try KokoroEngine(modelDirectory: modelDir)
-        engine.warmUp()
+        // Warmup is automatic in KokoroCoreML
         let voices = ["af_heart", "af_bella", "am_adam", "bf_emma"]
             .filter { engine.availableVoices.contains($0) }
         let phrase =
@@ -709,7 +711,7 @@ private func loadWavSamples(path: String) throws -> (samples: [Float], sampleRat
     var consumed = false
     converter.convert(to: outBuffer, error: &error) { _, outStatus in
         if consumed {
-            outStatus.pointee = .noDataNow
+            outStatus.pointee = .endOfStream
             return nil
         }
         consumed = true
@@ -776,7 +778,7 @@ private func benchmarkSTTLatency(label: String, wavPath: String) async {
         let rtf = Double(ms) / 1000.0 / audioDuration
         print("  Result: \(ms)ms (\(String(format: "%.2f", rtf))x RT)")
         if let text = result {
-            print("  Text: \"\(text.prefix(120))\"")
+            print("  Text: \"\(text)\"")
         } else {
             print("  Text: <empty>")
         }
@@ -1026,6 +1028,132 @@ private func inspectSTTSegments(wavPath: String) async {
     }
 }
 
+// MARK: - Prefix Token Test
+
+/// Test whether prefix tokens cause truncation on clipped decodes.
+/// Decodes the same audio three ways:
+///   1. Full decode (no clip, no prefix) — ground truth
+///   2. Clipped at 1.1s WITH prefix tokens — word-level path (suspected buggy)
+///   3. Clipped at 1.1s WITHOUT prefix tokens — segment fallback path
+private func testPrefixTokenImpact(wavPath: String) async {
+    print("\n--- Prefix Token Impact Test ---\n")
+    print("  WAV: \(wavPath)")
+
+    do {
+        let (samples, _, _) = try loadWavSamples(path: wavPath)
+        let audioDuration = Double(samples.count) / 16_000
+        print("  Audio: \(String(format: "%.1f", audioDuration))s\n")
+
+        let model = WhisperKitModelManager.defaultModel
+        guard let modelPath = WhisperKitModelManager.modelPath(model) else {
+            print("  ERROR: Model not found: \(model)")
+            return
+        }
+        let config = WhisperKitConfig(modelFolder: modelPath)
+        let pipe = try await WhisperKit(config)
+
+        // --- Pass 1: Full decode (ground truth) ---
+        var opts1 = DecodingOptions()
+        opts1.language = "en"
+        opts1.skipSpecialTokens = true
+        opts1.wordTimestamps = true
+        opts1.chunkingStrategy = ChunkingStrategy.none
+
+        let start1 = ContinuousClock.now
+        let results1 = try await pipe.transcribe(audioArray: samples, decodeOptions: opts1)
+        let ms1 = elapsedMs(start1)
+        let text1 = results1.first?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? "<empty>"
+        print("  1) FULL DECODE (ground truth)")
+        print("     \(ms1)ms | \"\(text1)\"\n")
+
+        // Extract words starting around 1.0-1.2s to find natural prefix tokens
+        let allWords = results1.first?.allWords ?? []
+        let wordsNear1s = allWords.filter { $0.start >= 0.8 && $0.start < 1.5 }
+        let clipStart: Float = wordsNear1s.first?.start ?? 1.1
+
+        // Find 2 words right at clipStart to use as prefix tokens (simulating lastAgreedWords)
+        let wordsFromClip = allWords.filter { $0.start >= clipStart }
+        let prefixWords = Array(wordsFromClip.prefix(2))
+        let prefixTokens = prefixWords.flatMap(\.tokens)
+        let prefixText = prefixWords.map(\.word).joined()
+
+        print("  Clip point: \(String(format: "%.2f", clipStart))s")
+        print("  Prefix words: \"\(prefixText)\" (\(prefixTokens.count) tokens: \(prefixTokens))\n")
+
+        // --- Pass 2: Clipped WITH prefix tokens (word-level path) ---
+        var opts2 = DecodingOptions()
+        opts2.language = "en"
+        opts2.skipSpecialTokens = true
+        opts2.wordTimestamps = true
+        opts2.chunkingStrategy = ChunkingStrategy.none
+        opts2.clipTimestamps = [clipStart]
+        opts2.prefixTokens = prefixTokens
+
+        let start2 = ContinuousClock.now
+        let results2 = try await pipe.transcribe(audioArray: samples, decodeOptions: opts2)
+        let ms2 = elapsedMs(start2)
+        let text2 = results2.first?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? "<empty>"
+        let allWords2 = results2.first?.allWords ?? []
+        let filteredWords2 = allWords2.filter { $0.start >= clipStart }
+        print("  2) CLIPPED + PREFIX TOKENS (word-level path)")
+        print("     \(ms2)ms | raw=\(allWords2.count) words, filtered=\(filteredWords2.count) | \"\(text2)\"")
+        print("     All word timestamps:")
+        for w in allWords2 {
+            let marker = w.start < clipStart ? " ← BEFORE clip, would be filtered" : ""
+            print(
+                "       [\(String(format: "%5.2f", w.start))-\(String(format: "%5.2f", w.end))] \"\(w.word)\"\(marker)"
+            )
+        }
+        let filteredText2 = filteredWords2.map(\.word).joined()
+        print("     After filter: \"\(filteredText2.trimmingCharacters(in: .whitespaces))\"")
+        print()
+
+        // --- Pass 3: Clipped WITHOUT prefix tokens (segment fallback path) ---
+        var opts3 = DecodingOptions()
+        opts3.language = "en"
+        opts3.skipSpecialTokens = true
+        opts3.wordTimestamps = true
+        opts3.chunkingStrategy = ChunkingStrategy.none
+        opts3.clipTimestamps = [clipStart]
+
+        let start3 = ContinuousClock.now
+        let results3 = try await pipe.transcribe(audioArray: samples, decodeOptions: opts3)
+        let ms3 = elapsedMs(start3)
+        let text3 = results3.first?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? "<empty>"
+        let words3 = results3.first?.allWords.filter { $0.start >= clipStart } ?? []
+        print("  3) CLIPPED, NO PREFIX (segment fallback path)")
+        print("     \(ms3)ms | \(words3.count) words | \"\(text3)\"\n")
+
+        // --- Verdict ---
+        let fullWords = text1.split(separator: " ").count
+        let prefixPathWords = text2.split(separator: " ").count
+        let segmentPathWords = text3.split(separator: " ").count
+
+        print("  VERDICT:")
+        print("    Full decode:       \(fullWords) words")
+        print(
+            "    With prefix:       \(prefixPathWords) words (\(prefixPathWords < fullWords / 2 ? "⚠ TRUNCATED" : "OK"))"
+        )
+        print(
+            "    Without prefix:    \(segmentPathWords) words (\(segmentPathWords < fullWords / 2 ? "⚠ TRUNCATED" : "OK"))"
+        )
+
+        if prefixPathWords < segmentPathWords {
+            print("\n    → PREFIX TOKENS CAUSE TRUNCATION")
+            print("    → Segment fallback path recovers \(segmentPathWords - prefixPathWords) more words")
+        } else if prefixPathWords >= segmentPathWords {
+            print("\n    → Prefix tokens did NOT cause truncation in this sample")
+        }
+    } catch {
+        print("  ERROR: \(error)")
+    }
+}
+
+private func elapsedMs(_ start: ContinuousClock.Instant) -> Int {
+    let d = ContinuousClock.now - start
+    return Int(d.components.seconds) * 1000 + Int(d.components.attoseconds / 1_000_000_000_000_000)
+}
+
 // MARK: - Main
 
 @main
@@ -1076,6 +1204,15 @@ enum BenchmarkRunner {
             do {
                 let wavPath = try resolveWavPath()
                 await inspectSTTSegments(wavPath: wavPath)
+            } catch {
+                print("\nSTT ERROR: \(error)")
+            }
+        }
+
+        if targets.contains(.sttPrefixTest) {
+            do {
+                let wavPath = try resolveWavPath()
+                await testPrefixTokenImpact(wavPath: wavPath)
             } catch {
                 print("\nSTT ERROR: \(error)")
             }

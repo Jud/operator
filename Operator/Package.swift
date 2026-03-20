@@ -7,7 +7,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/hummingbird-project/hummingbird.git", from: "2.0.0"),
         .package(url: "git@github.com:Jud/harness.git", from: "0.1.0"),
-        .package(url: "https://github.com/Jud/kokoro-tts-swift.git", from: "0.1.0"),
+        .package(url: "https://github.com/Jud/kokoro-coreml.git", from: "0.4.0"),
         .package(url: "https://github.com/Jud/vocabulary-corrector-swift.git", from: "0.1.0"),
         .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.9.0"),
     ],
@@ -20,7 +20,7 @@ let package = Package(
             name: "OperatorCore",
             dependencies: [
                 "OperatorShared",
-                .product(name: "KokoroTTS", package: "kokoro-tts-swift"),
+                .product(name: "KokoroCoreML", package: "kokoro-coreml"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Hummingbird", package: "hummingbird"),
                 .product(name: "HarnessCore", package: "Harness"),
@@ -69,8 +69,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "Benchmarks",
-            dependencies: ["OperatorCore", .product(name: "KokoroTTS", package: "kokoro-tts-swift")],
+            dependencies: ["OperatorCore", .product(name: "KokoroCoreML", package: "kokoro-coreml")],
             path: "Tests/Benchmarks"
+        ),
+        .executableTarget(
+            name: "TranscriptionTests",
+            dependencies: ["OperatorCore"],
+            path: "Tests/TranscriptionTests"
         ),
     ]
 )

@@ -1,5 +1,5 @@
 {
-  "originHash" : "63691b5c440d3e32263ccb2c3b7a8967037de618b97b178639429205ee67d197",
+  "originHash" : "d5e2d8a85fc043ba5a55fafda2a7fa8839a8181c3dcca055e167f96277b9ce6e",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -8,6 +8,15 @@
       "state" : {
         "revision" : "2fc4652fb4689eb24af10e55cabaa61d8ba774fd",
         "version" : "1.32.0"
+      }
+    },
+    {
+      "identity" : "cbor",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/edgeengineer/cbor.git",
+      "state" : {
+        "revision" : "a64323cc11eb8b4d7005dfd2feadacfd5f59f547",
+        "version" : "0.0.6"
       }
     },
     {
@@ -29,12 +38,12 @@
       }
     },
     {
-      "identity" : "kokoro-tts-swift",
+      "identity" : "kokoro-coreml",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Jud/kokoro-tts-swift.git",
+      "location" : "https://github.com/Jud/kokoro-coreml.git",
       "state" : {
-        "revision" : "206c1fbe9cd303f6adab9594f45b5958b9281eb1",
-        "version" : "0.3.1"
+        "revision" : "3ec64a0b2aa3a8d40e6da7d9afd6d5065b1416c2",
+        "version" : "0.5.0"
       }
     },
     {

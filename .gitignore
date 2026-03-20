@@ -43,3 +43,4 @@ plugin/
 .claude-say.sh
 test-harness-type.sh
 spikes/kokoro-coreml/
+.claude/worktrees/
