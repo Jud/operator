@@ -45,7 +45,6 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         }
     }
 
-    // swiftlint:disable type_contents_order
     /// Create a KokoroSpeechManager with a loaded engine.
     public init(engine: KokoroEngine) {
         self.engine = engine
@@ -77,7 +76,6 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         currentSynthesisTask?.cancel()
         finishedContinuation.finish()
     }
-    // swiftlint:enable type_contents_order
 
     /// Synthesize and play text using Kokoro TTS.
     ///

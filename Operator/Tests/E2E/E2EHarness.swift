@@ -206,7 +206,7 @@ internal final class E2EHarness {
     }
 
     /// Build the state machine with bimodal decision engine and dictation delivery.
-    private func buildStateMachine(  // swiftlint:disable:this function_parameter_count
+    private func buildStateMachine(
         transcriber: MockSpeechTranscriber,
         aq: AudioQueue,
         router: MessageRouter,

@@ -125,7 +125,7 @@ public final class OperatorHTTPServer: Sendable {
 
         configureSpeakRoute(router: router, registry: registry, queue: queue)
         configureStateRoute(router: router, registry: registry, queue: queue)
-        configureHookRoutes(router: router, registry: registry)
+        configureHookRoutes(router: router, registry: registry, queue: queue)
 
         let app = Application(
             router: router,
@@ -208,9 +208,10 @@ extension OperatorHTTPServer {
     /// the payloads to the session registry for lifecycle management.
     private func configureHookRoutes(
         router: Router<BasicRequestContext>,
-        registry: SessionRegistry
+        registry: SessionRegistry,
+        queue: AudioQueue
     ) {
-        configureSessionStartRoute(router: router, registry: registry)
+        configureSessionStartRoute(router: router, registry: registry, queue: queue)
 
         router.post("/hook/stop") { request, context -> OkResponse in
             let body = try await context.requestDecoder.decode(
@@ -247,7 +248,8 @@ extension OperatorHTTPServer {
     /// to trigger Ghostty terminal ID resolution when needed.
     private func configureSessionStartRoute(
         router: Router<BasicRequestContext>,
-        registry: SessionRegistry
+        registry: SessionRegistry,
+        queue: AudioQueue
     ) {
         router.post("/hook/session-start") { request, context -> HookSessionStartResponse in
             let body = try await context.requestDecoder.decode(
@@ -263,6 +265,24 @@ extension OperatorHTTPServer {
                 terminalType: terminalType
             )
             Self.logger.info("Hook session-start for session \(body.sessionId)")
+
+            if result.isNew {
+                let name = result.displayName
+                Task {
+                    let voice = await registry.voiceFor(session: name)
+                    let pitch = await registry.pitchFor(session: name)
+                    await queue.enqueue(
+                        AudioQueue.QueuedMessage(
+                            sessionName: name,
+                            text: "connected.",
+                            priority: .normal,
+                            voice: voice,
+                            pitchMultiplier: pitch
+                        )
+                    )
+                }
+            }
+
             return HookSessionStartResponse(ok: result.ok, needsTerminalId: result.needsTerminalId)
         }
     }

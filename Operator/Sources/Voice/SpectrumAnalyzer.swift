@@ -77,7 +77,6 @@ internal final class SpectrumAnalyzer: @unchecked Sendable {
         self.bandRanges = ranges
     }
 
-    // swiftlint:disable:next type_contents_order
     deinit {
         vDSP_destroy_fftsetup(fftSetup)
     }

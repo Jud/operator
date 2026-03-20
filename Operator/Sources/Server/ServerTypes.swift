@@ -1,4 +1,3 @@
-// swiftlint:disable:this file_name
 import Foundation
 import Hummingbird
 @_exported import OperatorShared

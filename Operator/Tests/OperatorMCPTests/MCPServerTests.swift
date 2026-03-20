@@ -1,4 +1,3 @@
-// swiftlint:disable:this file_name
 import Foundation
 import Testing
 
@@ -149,12 +148,10 @@ internal struct MCPServerProtocolTests {
             return
         }
 
-        #expect(
-            tool["description"]
-                == .string(
-                    "Speak a message to the user through Operator's audio queue. Use this instead of the say command."
-                )
-        )
+        let expectedDesc =
+            "Send a short voice status update to the user. Call at end of every turn and at key milestones."
+            + " One sentence max — like a walkie-talkie, not a presentation."
+        #expect(tool["description"] == .string(expectedDesc))
     }
 
     @Test("tools/list input schema defines message as required string")

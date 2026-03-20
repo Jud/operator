@@ -127,7 +127,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
                 try audioFile.write(from: buffer)
             }
             log.info("Saved audio trace: \(fileURL.lastPathComponent)")
-            pruneOldTraces(in: directory, keep: 20, log: log)
+            pruneOldTraces(in: directory, keep: 100, log: log)
             return fileURL
         } catch {
             log.error("Failed to write audio trace: \(error)")
@@ -232,34 +232,101 @@ public final class SpeechTranscriber: SpeechTranscribing {
         Self.logger.info("Audio engine started, listening for speech")
     }
 
-    /// Stop capturing audio and return the final transcription.
+    /// RMS threshold below which audio is considered silence.
     ///
-    /// - Returns: The transcribed text, or nil if transcription failed or was empty.
-    public func stopListening() async -> String? {
+    /// Typical speech RMS is 0.02–0.2; system tones and background noise sit
+    /// well below 0.01. This prevents WhisperKit from hallucinating on feedback
+    /// tones or ambient room noise.
+    private static let silenceThreshold: Float = 0.008
+
+    /// Seconds of audio to skip at the start when computing RMS.
+    ///
+    /// The feedback tone (listening cue) plays when recording starts and gets
+    /// picked up by the microphone. Skipping this window prevents the tone from
+    /// inflating the RMS and fooling silence detection.
+    private static let feedbackToneSkipSeconds: Float = 0.4
+
+    /// Captured buffers and format from the most recent stopAndCheckSilence() call.
+    ///
+    /// Held between stopAndCheckSilence() and finishTranscription() so the caller
+    /// can play feedback tones in between.
+    private var pendingBuffers: [AVAudioPCMBuffer] = []
+    private var pendingFormat: AVAudioFormat?
+
+    /// Stop audio capture and check whether the recording contains speech.
+    ///
+    /// Tears down the audio engine and computes RMS energy (skipping the initial
+    /// feedback tone window). If the audio is silence, cancels the engine and
+    /// writes the trace file immediately.
+    ///
+    /// - Returns: `true` if the audio contains speech and should be transcribed,
+    ///   `false` if it was silence (already handled).
+    public func stopAndCheckSilence() async -> Bool {
         guard isListening else {
-            Self.logger.warning("stopListening called but not currently listening")
-            return nil
+            Self.logger.warning("stopAndCheckSilence called but not currently listening")
+            return false
         }
 
         tearDownAudioCapture()
-        Self.logger.info("Audio engine stopped, processing transcription")
+        Self.logger.info("Audio engine stopped, checking for speech")
 
-        let result = await engine.finishAndTranscribe()
-
-        let buffers = capturedBuffers.withLock { bufs -> [AVAudioPCMBuffer] in
+        pendingBuffers = capturedBuffers.withLock { bufs -> [AVAudioPCMBuffer] in
             let snapshot = bufs
             bufs.removeAll()
             return snapshot
         }
-        let format = capturedFormat
+        pendingFormat = capturedFormat
         capturedFormat = nil
 
+        let rms = Self.computeRMS(pendingBuffers, skippingSeconds: Self.feedbackToneSkipSeconds)
+        if rms < Self.silenceThreshold {
+            Self.logger.info("Silence detected (RMS=\(rms, format: .fixed(precision: 4))); skipping transcription")
+            engine.cancel()
+            nonisolated(unsafe) let traceBuffers = pendingBuffers
+            nonisolated(unsafe) let traceFormat = pendingFormat
+            pendingBuffers = []
+            pendingFormat = nil
+            lastAudioFileURL = await Self.writeAudioFile(
+                buffers: traceBuffers,
+                format: traceFormat,
+                directory: Self.audioTraceDir
+            )
+            return false
+        }
+        return true
+    }
+
+    /// Run the transcription engine on the audio captured by the last session.
+    ///
+    /// Must be called after ``stopAndCheckSilence()`` returns `true`.
+    /// Writes the audio trace file after transcription completes.
+    ///
+    /// - Returns: The transcribed text, or nil if transcription failed or was empty.
+    public func finishTranscription() async -> String? {
+        let result = await engine.finishAndTranscribe()
+
+        nonisolated(unsafe) let traceBuffers = pendingBuffers
+        nonisolated(unsafe) let traceFormat = pendingFormat
+        pendingBuffers = []
+        pendingFormat = nil
         lastAudioFileURL = await Self.writeAudioFile(
-            buffers: buffers,
-            format: format,
+            buffers: traceBuffers,
+            format: traceFormat,
             directory: Self.audioTraceDir
         )
         return result
+    }
+
+    /// Stop capturing audio and return the final transcription.
+    ///
+    /// Convenience that combines ``stopAndCheckSilence()`` and ``finishTranscription()``.
+    ///
+    /// - Returns: The transcribed text, or nil if transcription failed or was empty.
+    public func stopListening() async -> String? {
+        let hasSpeech = await stopAndCheckSilence()
+        guard hasSpeech
+        else { return nil }
+        return await finishTranscription()
     }
 
     /// Perform transcription with a timeout.
@@ -310,6 +377,50 @@ public final class SpeechTranscriber: SpeechTranscribing {
             tearDownAudioCapture()
             Self.logger.debug("Stopped running audio engine from previous cycle")
         }
+    }
+
+    /// Compute the RMS (root mean square) energy of captured audio buffers,
+    /// skipping the initial feedback tone window.
+    ///
+    /// Measures overall loudness after the skip window. Returns 0 if no
+    /// samples remain after skipping.
+    nonisolated private static func computeRMS(
+        _ buffers: [AVAudioPCMBuffer],
+        skippingSeconds: Float = 0.4
+    ) -> Float {
+        guard let sampleRate = buffers.first?.format.sampleRate else {
+            return 0
+        }
+        var framesToSkip = Int(Float(sampleRate) * skippingSeconds)
+        var meanSquare: Float = 0
+        var totalFrames: Int = 0
+
+        for buffer in buffers {
+            guard let channelData = buffer.floatChannelData else {
+                continue
+            }
+            let frames = Int(buffer.frameLength)
+
+            if framesToSkip >= frames {
+                framesToSkip -= frames
+                continue
+            }
+
+            let start = framesToSkip
+            framesToSkip = 0
+            let count = frames - start
+            guard count > 0 else { continue }
+
+            var bufferMeanSquare: Float = 0
+            vDSP_measqv(channelData[0] + start, 1, &bufferMeanSquare, vDSP_Length(count))
+            meanSquare += bufferMeanSquare * Float(count)
+            totalFrames += count
+        }
+
+        guard totalFrames > 0 else {
+            return 0
+        }
+        return (meanSquare / Float(totalFrames)).squareRoot()
     }
 
     /// Stop the audio engine, remove the input tap, and clear the listening flag.
