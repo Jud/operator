@@ -1,11 +1,12 @@
 @preconcurrency import AVFoundation
-import KokoroTTS
+import KokoroCoreML
 
 /// Speech manager using Kokoro neural TTS via AVAudioEngine + AVAudioPlayerNode.
 ///
 /// Conforms to `SpeechManaging` so it's a drop-in replacement for `SpeechManager`.
 /// Audio engine is kept running permanently (no start/stop per utterance).
-/// Synthesis runs off the MainActor in a detached task to avoid blocking the UI.
+/// Uses the streaming `speak()` API — audio chunks play as soon as they're
+/// synthesized, cutting perceived latency for long utterances.
 @MainActor
 public final class KokoroSpeechManager: NSObject, SpeechManaging {
     private static let logger = Log.logger(for: "KokoroSpeechManager")
@@ -13,7 +14,6 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     private let engine: KokoroEngine
     private let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
-    private let playbackFormat: AVAudioFormat
 
     /// The full text of the currently playing utterance.
     private var currentText: String = ""
@@ -21,11 +21,11 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     /// The session name for the current utterance.
     private var currentSession: String = ""
 
-    /// Per-phoneme durations from the last synthesis (for interruption tracking).
-    private var currentDurations: [Int] = []
+    /// Total scheduled audio duration (in seconds) for interruption tracking.
+    private var scheduledDuration: TimeInterval = 0
 
-    /// Handle to the in-flight synthesis task for cancellation on new speak() calls.
-    private var currentSynthesisTask: Task<Void, Never>?
+    /// Handle to the in-flight streaming task for cancellation on new speak() calls.
+    private var currentStreamTask: Task<Void, Never>?
 
     /// Stream that yields each time an utterance finishes playing.
     public let finishedSpeaking: AsyncStream<Void>
@@ -35,15 +35,8 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
 
     /// Speech rate multiplier (0.5 = half speed, 2.0 = double speed).
     ///
-    /// Clamped to KokoroEngine.speedRange. Default 1.0.
-    public var speechRate: Float = 1.0 {
-        didSet {
-            speechRate = min(
-                max(speechRate, KokoroEngine.speedRange.lowerBound),
-                KokoroEngine.speedRange.upperBound
-            )
-        }
-    }
+    /// Default 1.0.
+    public var speechRate: Float = 1.0
 
     /// Create a KokoroSpeechManager with a loaded engine.
     public init(engine: KokoroEngine) {
@@ -51,15 +44,14 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         let (stream, continuation) = AsyncStream<Void>.makeStream()
         self.finishedSpeaking = stream
         self.finishedContinuation = continuation
-        self.playbackFormat =
-            AVAudioFormat(
-                standardFormatWithSampleRate: Double(KokoroEngine.sampleRate),
-                channels: 1
-            ) ?? AVAudioFormat()
         super.init()
 
         audioEngine.attach(playerNode)
-        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: playbackFormat)
+        audioEngine.connect(
+            playerNode,
+            to: audioEngine.mainMixerNode,
+            format: KokoroEngine.audioFormat
+        )
         do {
             try audioEngine.start()
             playerNode.play()
@@ -73,25 +65,23 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     public var isSpeaking: Bool { playerNode.isPlaying }
 
     deinit {
-        currentSynthesisTask?.cancel()
+        currentStreamTask?.cancel()
         finishedContinuation.finish()
     }
 
-    /// Synthesize and play text using Kokoro TTS.
+    /// Synthesize and play text using Kokoro TTS streaming API.
     ///
-    /// Cancels any in-flight synthesis before starting a new one. Synthesis
-    /// runs in a detached task off the MainActor; playback scheduling
-    /// dispatches back to MainActor on completion.
+    /// Cancels any in-flight synthesis before starting a new one. Audio chunks
+    /// are scheduled on the player node as they arrive from the stream.
     public func speak(_ text: String, voice: VoiceDescriptor, prefix: String, pitchMultiplier: Float) {
-        cancelSynthesis()
-        // Flush any previously scheduled buffer, then re-arm.
+        cancelStream()
         playerNode.stop()
         playerNode.play()
 
         let fullText = "\(prefix): \(text)"
         currentText = fullText
         currentSession = prefix
-        currentDurations = []
+        scheduledDuration = 0
 
         let voiceName: String
         switch voice {
@@ -102,35 +92,37 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
             voiceName = engine.availableVoices.first ?? "af_heart"
         }
 
-        let engine = self.engine
         let speed = self.speechRate
-        let logger = Self.logger
 
-        currentSynthesisTask = Task.detached { [weak self] in
-            do {
-                let result = try engine.synthesize(
-                    text: fullText,
-                    voice: voiceName,
-                    speed: speed
-                )
-                guard !Task.isCancelled else {
-                    return
+        do {
+            let stream = try engine.speak(fullText, voice: voiceName, speed: speed)
+            Self.logger.info(
+                "Speaking: \"\(prefix): \(text.prefix(60))...\""
+            )
+
+            currentStreamTask = Task { @MainActor [weak self] in
+                for await event in stream {
+                    guard let self, !Task.isCancelled else { break }
+                    switch event {
+                    case .audio(let buffer):
+                        self.scheduleBuffer(buffer)
+
+                    case .chunkFailed(let error):
+                        Self.logger.warning("Chunk failed: \(error)")
+                    }
                 }
-                await MainActor.run { [weak self] in
-                    self?.scheduleAndPlay(result: result, prefix: prefix, text: text)
-                }
-            } catch {
-                guard !Task.isCancelled else {
-                    return
-                }
-                logger.error("Synthesis failed: \(error)")
+                guard let self, !Task.isCancelled
+                else { return }
+                self.scheduleCompletionCallback()
             }
+        } catch {
+            Self.logger.error("Failed to start speech stream: \(error)")
         }
     }
 
     /// Interrupt playback and return what was heard vs. unheard.
     public func interrupt() -> InterruptInfo {
-        cancelSynthesis()
+        cancelStream()
 
         let elapsed: TimeInterval
         if let lastRender = playerNode.lastRenderTime,
@@ -142,27 +134,10 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         }
 
         playerNode.stop()
-        playerNode.play()  // re-arm for next schedule
+        playerNode.play()
 
-        // Map elapsed time to character position via phoneme durations
-        let framesPerSecond = Double(KokoroEngine.sampleRate)
-        let elapsedFrames = Int(elapsed * framesPerSecond)
-
-        var charPosition = 0
-        var frameAccum = 0
-        for dur in currentDurations {
-            let frameCost = dur * KokoroEngine.hopSize
-            if frameAccum + frameCost > elapsedFrames { break }
-            frameAccum += frameCost
-            charPosition += 1
-        }
-
-        // Approximate character split (phoneme index → rough text position)
         let textLen = currentText.count
-        let fraction =
-            currentDurations.isEmpty
-            ? 0.0
-            : Double(charPosition) / Double(currentDurations.count)
+        let fraction = scheduledDuration > 0 ? elapsed / scheduledDuration : 0
         let splitIdx = min(Int(fraction * Double(textLen)), textLen)
 
         let heard = String(currentText.prefix(splitIdx))
@@ -176,42 +151,37 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
 
     /// Stop playback without tracking interruption state.
     public func stop() {
-        cancelSynthesis()
+        cancelStream()
         playerNode.stop()
-        playerNode.play()  // re-arm for next schedule
+        playerNode.play()
     }
 
     // MARK: - Private
 
-    private func cancelSynthesis() {
-        currentSynthesisTask?.cancel()
-        currentSynthesisTask = nil
+    private func cancelStream() {
+        currentStreamTask?.cancel()
+        currentStreamTask = nil
     }
 
-    private func scheduleAndPlay(result: SynthesisResult, prefix: String, text: String) {
-        currentDurations = result.tokenDurations
+    private func scheduleBuffer(_ buffer: AVAudioPCMBuffer) {
+        let duration = Double(buffer.frameLength) / buffer.format.sampleRate
+        scheduledDuration += duration
+        playerNode.scheduleBuffer(buffer)
+    }
 
-        let frameCount = AVAudioFrameCount(result.samples.count)
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: playbackFormat, frameCapacity: frameCount),
-            let channelData = buffer.floatChannelData?[0]
-        else {
-            Self.logger.error("Failed to create audio buffer")
-            return
-        }
-
-        buffer.frameLength = frameCount
-        result.samples.withUnsafeBufferPointer { src in
-            guard let baseAddress = src.baseAddress else {
-                return
-            }
-            channelData.update(from: baseAddress, count: result.samples.count)
-        }
-
-        let synthMs = String(format: "%.0f", result.synthesisTime * 1_000)
-        let audioDur = String(format: "%.1f", result.duration)
-        Self.logger.info("Speaking: \"\(prefix): \(text.prefix(60))...\" (\(synthMs)ms synth, \(audioDur)s audio)")
-
-        playerNode.scheduleBuffer(buffer) { [weak self] in
+    /// Schedule a no-op buffer to detect when all previous buffers finish playing.
+    ///
+    /// AVAudioPlayerNode has no standalone completion API — the only way to get
+    /// notified when playback ends is via `scheduleBuffer(_:completionHandler:)`.
+    /// A zero-frame buffer adds no audio but its completion fires after all
+    /// previously scheduled buffers have played.
+    private func scheduleCompletionCallback() {
+        playerNode.scheduleBuffer(
+            AVAudioPCMBuffer(
+                pcmFormat: KokoroEngine.audioFormat,
+                frameCapacity: 0
+            ) ?? AVAudioPCMBuffer()
+        ) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.handlePlaybackComplete()
             }
@@ -222,8 +192,8 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
         Self.logger.debug("Finished speaking: \"\(self.currentSession)\"")
         currentText = ""
         currentSession = ""
-        currentDurations = []
-        currentSynthesisTask = nil
+        scheduledDuration = 0
+        currentStreamTask = nil
         finishedContinuation.yield()
     }
 }

@@ -23,6 +23,7 @@ Targets:
   tts-roundtrip     Run TTS→STT roundtrip quality check
   stt-replay        Replay a WAV through WhisperKitEngine with real-time streaming
   stt-replay-batch  Replay a WAV through WhisperKitEngine in one shot (no streaming)
+  stt-prefix-test   Test prefix token impact on clipped decode truncation
   stt-soak          Run a long paced STT soak benchmark (use OPERATOR_STT_SOAK_MINUTES)
   memory            Run routing-model memory benchmark
   list              Show this target list

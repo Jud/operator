@@ -89,3 +89,12 @@ bench-routing-latency:
 
 bench-routing-accuracy:
 	./scripts/run-benchmarks.sh routing-accuracy
+
+test-transcription:
+	cd Operator && swift run TranscriptionTests $(ARGS)
+
+capture-fixture:
+	./scripts/capture-fixture.sh $(NAME) $(WAV)
+
+watch-quality:
+	./scripts/watch-quality.sh

@@ -77,7 +77,25 @@ Calculate and display:
 - **Decoder fallbacks**: Any temperature escalation > 0 from Argmax logs
 - **Final decode assembly**: From the `Final combined` log — how many chars came from confirmed text vs the final tail decode
 
-## Step 5: Assess
+## Step 5: Ground Truth Verification
+
+Find the audio trace WAV file from the `Saved audio trace:` log line. Extract the filename (e.g., `2026-03-20T09-17-23-05-00.wav`).
+
+Run a full batch decode of the audio trace to get the ground truth transcription:
+
+```bash
+OPERATOR_STT_WAV="$HOME/Library/Application Support/Operator/audio-traces/<filename>" \
+  ./scripts/run-benchmarks.sh --no-build stt-replay-batch
+```
+
+Compare the ground truth text against the session's Result text. Flag any differences:
+- **Missing content**: words in ground truth but not in the result (content was lost)
+- **Extra content**: words in result but not in ground truth (hallucination)
+- **Different words**: substitutions between the two (may indicate confirmation or decoder issues)
+
+Display both texts side-by-side for easy comparison.
+
+## Step 6: Assess
 
 Rate the session:
 
@@ -90,13 +108,40 @@ Flag any issues:
 
 - **Confirmation stall** (`zeroProgress > 0` in Stop log): The confirmation algorithm found agreement but stopped making progress. The same 2 words kept matching without new words being confirmed. Severity depends on the resulting tail size.
 - **Large unconfirmed tail** (`tail > 5s`): A big chunk of audio had to be decoded in the final pass. Risk of truncation if the final decode fails.
-- **Truncation** (Result text is significantly shorter than expected for the audio duration): Compare word count to audio duration. Normal speech is 2–3 words/sec. Below 1 word/sec on audio > 3s suggests content was lost.
+- **Truncation** (Result text is significantly shorter than ground truth): Content was lost. Check whether it was lost in the tail decode or the confirmation phase.
 - **Filtered words** (`Final decode: N words, M filtered`): Words from the final decode were dropped because their timestamps were before `lastAgreedSeconds`. This can cause silent content loss.
 - **Decoder fallbacks** (temperature > 0): The model struggled with the audio segment and retried at higher temperature.
 - **Await > 100ms**: A background inference was still running when the key was released, adding latency.
 - **CancellationError in logs**: The background task was cancelled mid-inference at key release. Normal if `await` is small, but if the cancelled pass was about to confirm words, those words are lost.
 - **Transcription empty**: The model produced no output at all.
 
-## Step 6: Speak
+## Step 7: Speak
 
-Use the `speak` MCP tool to give a brief verbal summary: the post-release latency, confirmation coverage, tail size, and any issues found.
+Use the `speak` MCP tool to give a brief verbal summary: the post-release latency, confirmation coverage, tail size, ground truth comparison, and any issues found.
+
+## Step 8: Capture Fixture
+
+Every trace should produce a fixture. The default is to always capture.
+
+### For failing sessions (similarity < 85%):
+1. Generate a descriptive name from the issue (e.g., `content-loss-short-utterance`, `stall-at-30s`, `empty-tail-decode`)
+2. Run: `./scripts/capture-fixture.sh <name> <wav-path>`
+3. Tell the user the fixture was captured and they can run `make test-transcription` to verify
+
+### For passing sessions (similarity >= 85%):
+Before capturing, check if the session is meaningfully different from existing fixtures. Consider it unique if it has a characteristic not already covered:
+- **Duration range**: short (<3s), medium (3-15s), long (15-60s), very long (>60s)
+- **Confirmation behavior**: high coverage (>80%), low coverage (<30%), zero-progress stalls, strategy transition to segment-level
+- **Content type**: single sentence, multiple sentences, technical terms, numbers/dates
+- **Edge cases**: rapid PTT, toggle mode, silence after speech
+
+If unique, capture with a descriptive name (e.g., `passing-long-high-coverage`, `passing-short-single-sentence`).
+
+List existing fixtures first:
+```bash
+ls ~/Library/Application\ Support/Operator/test-fixtures/*.wav 2>/dev/null | while read f; do basename "$f" .wav; done
+```
+
+If the session is not meaningfully different from an existing fixture, skip capture and note why.
+
+This builds a growing regression suite that covers both failure modes and successful transcription patterns.
