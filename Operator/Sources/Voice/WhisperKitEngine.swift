@@ -454,9 +454,11 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
                         groundTruth: gtText,
                         audioDuration: audioDuration
                     )
-                    // Play a subtle alert so the user knows a bad transcription was caught
-                    await MainActor.run {
-                        NSSound(named: "Submarine")?.play()
+                    // Play a subtle alert — only in the live app, not test runners
+                    if Bundle.main.bundleIdentifier == "com.operator.app" {
+                        await MainActor.run {
+                            _ = NSSound(named: "Submarine")?.play()
+                        }
                     }
                 }
             } catch {
