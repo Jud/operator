@@ -123,15 +123,28 @@ Use the `speak` MCP tool to give a brief verbal summary: the post-release latenc
 
 Every trace should produce a fixture. The default is to always capture.
 
-### For failing sessions (similarity < 85%):
-1. Generate a descriptive name from the issue (e.g., `content-loss-short-utterance`, `stall-at-30s`, `empty-tail-decode`)
+A session is considered **failing** if ANY of these are true:
+- **Content loss**: similarity < 85% between session result and ground truth
+- **Poor confirmation coverage**: confirmation coverage < 50% on audio > 5s
+- **High latency**: post-release latency > 500ms on audio > 3s
+- **Zero confirmation**: frontier = 0 on audio > 3s (background loop didn't work)
+- **Strategy degradation**: fell back to segment-level matching
+
+These matter because the streaming pipeline exists to minimize post-release
+latency. Even if the text is correct, a session that confirms nothing during
+recording means the entire decode happens after key release — latency that
+compounds when post-processing (LLM correction, context-aware formatting)
+is added on top.
+
+### For failing sessions:
+1. Generate a descriptive name from the issue (e.g., `content-loss-short-utterance`, `no-background-confirmation`, `high-latency-long-recording`, `segment-fallback-stall`)
 2. Run: `./scripts/capture-fixture.sh <name> <wav-path>`
 3. Tell the user the fixture was captured and they can run `make test-transcription` to verify
 
-### For passing sessions (similarity >= 85%):
+### For passing sessions:
 Before capturing, check if the session is meaningfully different from existing fixtures. Consider it unique if it has a characteristic not already covered:
 - **Duration range**: short (<3s), medium (3-15s), long (15-60s), very long (>60s)
-- **Confirmation behavior**: high coverage (>80%), low coverage (<30%), zero-progress stalls, strategy transition to segment-level
+- **Confirmation behavior**: high coverage (>80%), zero-progress stalls
 - **Content type**: single sentence, multiple sentences, technical terms, numbers/dates
 - **Edge cases**: rapid PTT, toggle mode, silence after speech
 
@@ -144,4 +157,4 @@ ls ~/Library/Application\ Support/Operator/test-fixtures/*.wav 2>/dev/null | whi
 
 If the session is not meaningfully different from an existing fixture, skip capture and note why.
 
-This builds a growing regression suite that covers both failure modes and successful transcription patterns.
+This builds a growing regression suite that covers content accuracy, confirmation effectiveness, and latency performance.
