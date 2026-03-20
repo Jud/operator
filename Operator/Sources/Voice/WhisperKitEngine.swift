@@ -3,8 +3,12 @@ import VocabularyCorrector
 import WhisperKit
 import os
 
+#if DEBUG
+    import AppKit
+#endif
+
 /// WhisperKit-based speech-to-text with word-level streaming confirmation.
-public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
+public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @unchecked Sendable {
     private struct SessionState: @unchecked Sendable {
         var audioSamples: [Float] = []
         var converter: AudioFormatConverter?
@@ -13,46 +17,32 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
     private static let logger = Log.logger(for: "WhisperKitEngine")
 
-    /// Minimum new audio (in samples at 16 kHz) before triggering a background pass.
-    private static let retranscribeThreshold = 16_000
-
-    /// Number of consecutive agreed words required before confirming.
-    private static let agreementCountNeeded = 2
-
-    /// Consecutive word-level misses before falling back to segment-level confirmation.
-    private static let maxWordMisses = 3
-
-    /// Known Whisper hallucination strings produced for silence or very short audio.
-    private static let blankPatterns: Set<String> = [
-        "[BLANK_AUDIO]", "(BLANK_AUDIO)", "[silence]", "(silence)",
-        "[no speech]", "(no speech)", "[inaudible]", "(inaudible)"
-    ]
-
     private let pipe: WhisperKit
     private let sessionLock = OSAllocatedUnfairLock<SessionState?>(initialState: nil)
 
-    /// Word-level streaming state, updated by the background loop.
-    private let streamLock = OSAllocatedUnfairLock<StreamState>(
-        initialState: StreamState()
-    )
+    /// Transcription session state machine -- updated by the background loop (serial via scheduler).
+    private var session = TranscriptionSession()
 
-    /// Flag to stop the background loop without cancelling in-flight inference.
-    private let stopLoop = OSAllocatedUnfairLock(initialState: false)
+    /// Filter pipeline applied to all transcription results.
+    private var filters: [TranscriptionFilter] = [HallucinationTimestampFilter()]
 
-    /// Continuation for the interruptible sleep in the background loop.
-    private let sleepContinuation = OSAllocatedUnfairLock<UnsafeContinuation<Void, Never>?>(
-        initialState: nil
-    )
+    /// Scheduler controlling background transcription timing.
+    private var scheduler: TranscriptionScheduler
 
-    /// Handle to the periodic re-transcription task.
-    private var retranscribeTask: Task<Void, Never>?
+    /// Task running the scheduler's start(engine:) loop.
+    private var schedulerTask: Task<Void, Never>?
 
-    /// Previous session's task — new loop awaits it to prevent concurrent pipeline use.
-    private var previousTask: Task<Void, Never>?
+    /// Previous session's scheduler task -- new session awaits it to prevent concurrent pipeline use.
+    private var previousSchedulerTask: Task<Void, Never>?
+
+    /// Tracks whether the last extendTranscript call produced zero new words.
+    /// When true, overlap tokens are dropped to avoid hallucination loops.
+    private var lastExtensionWasZeroProgress: Bool = false
 
     /// Create with a pre-loaded WhisperKit pipeline.
-    public init(pipe: WhisperKit) {
+    public init(pipe: WhisperKit, scheduler: TranscriptionScheduler = BackgroundLoopScheduler()) {
         self.pipe = pipe
+        self.scheduler = scheduler
     }
 
     /// Load a WhisperKit model from disk and create an engine.
@@ -68,24 +58,65 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         return Int(seconds) * 1_000 + Int(attoseconds / 1_000_000_000_000_000)
     }
 
-    /// Regex matching text that is entirely parenthesized or bracketed non-speech annotations.
-    ///
-    /// WhisperKit emits things like "(air whooshes)", "[clicking]", "(popping sound)" when
-    /// it hears non-speech audio. These should be treated as empty transcriptions.
-    nonisolated(unsafe) private static let nonSpeechPattern = /^\s*[\(\[].+[\)\]]\s*$/
+    // MARK: - SchedulableEngine
 
-    private static func cleanText(_ text: String) -> String {
-        var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if blankPatterns.contains(result) {
-            return ""
+    public var sampleCount: Int {
+        sessionLock.withLock { $0?.audioSamples.count ?? 0 }
+    }
+
+    public func transcribeWorkingWindow(maxSampleCount: Int?) async {
+        let passStart = ContinuousClock.now
+
+        let samples = sessionLock.withLock { state -> [Float] in
+            let s = state?.audioSamples ?? []
+            return maxSampleCount.map { Array(s.prefix($0)) } ?? s
         }
-        if result.wholeMatch(of: nonSpeechPattern) != nil {
-            return ""
+
+        let frontier = session.frontier
+
+        let result = await transcribeResult(
+            samples: samples,
+            clipStart: frontier,
+            prefixTokens: lastExtensionWasZeroProgress ? [] : session.overlapTokens
+        )
+
+        let passMs = Self.ms(ContinuousClock.now - passStart)
+        let audioFmt = String(format: "%.1f", Float(samples.count) / Float(WhisperKit.sampleRate))
+
+        guard let result else {
+            Self.logger.notice("Background: no result in \(passMs)ms (audio=\(audioFmt)s)")
+            return
         }
-        while result.contains("  ") {
-            result = result.replacingOccurrences(of: "  ", with: " ")
+
+        let filtered = runFilterPipeline(result, samples: samples, frontier: frontier)
+
+        guard !filtered.allWords.isEmpty else {
+            Self.logger.notice("Background: empty after filtering in \(passMs)ms (audio=\(audioFmt)s)")
+            return
         }
-        return result
+
+        let outcome = session.extendTranscript(with: filtered)
+        lastExtensionWasZeroProgress = (outcome == .extended(newWords: 0))
+
+        switch outcome {
+        case .extended(let newWords):
+            let f = session.frontier
+            let zp = lastExtensionWasZeroProgress
+            Self.logger.notice(
+                "Confirmed \(newWords) words to \(f, privacy: .public)s in \(passMs)ms (zeroProgress=\(zp))"
+            )
+
+        case .matchFailed:
+            let misses = session.consecutiveMatchFailures
+            let strategy = session.strategy
+            if strategy == .segmentLevel {
+                Self.logger.notice("Word agreement stalled (\(misses) misses) -- segment fallback")
+            } else {
+                Self.logger.notice(
+                    "Background: match failed, miss \(misses) in \(passMs)ms"
+                )
+            }
+        }
     }
 
     // MARK: - TranscriptionEngine
@@ -96,37 +127,37 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
 
         let vocab = contextualStrings
         sessionLock.withLock { state in
-            var session = SessionState(vocabulary: vocab)
-            session.audioSamples.reserveCapacity(480_000)
-            state = session
+            var s = SessionState(vocabulary: vocab)
+            s.audioSamples.reserveCapacity(480_000)
+            state = s
         }
-        streamLock.withLock { $0 = StreamState() }
+        session = TranscriptionSession()
+        lastExtensionWasZeroProgress = false
 
-        startRetranscriptionLoop()
+        let taskToDrain = previousSchedulerTask
+        previousSchedulerTask = nil
+        let sched = scheduler
+        schedulerTask = Task { [weak self] in
+            await taskToDrain?.value
+            guard let self else { return }
+            await sched.start(engine: self)
+        }
         Self.logger.notice("Session started")
     }
 
     /// Append an audio buffer from the microphone tap.
     public func append(_ buffer: AVAudioPCMBuffer) {
         nonisolated(unsafe) let buf = buffer
-        let converter: AudioFormatConverter? = sessionLock.withLock { state in
-            guard state != nil
-            else { return nil }
-            if let existing = state?.converter {
-                return existing
-            }
-            guard let conv = try? AudioFormatConverter(inputFormat: buf.format)
-            else { return nil }
-            state?.converter = conv
-            return conv
-        }
-        guard let converter
-        else { return }
         sessionLock.withLock { state in
-            guard var session = state
+            guard var s = state
             else { return }
-            _ = converter.appendConverted(buf, to: &session.audioSamples)
-            state = session
+            if s.converter == nil {
+                s.converter = try? AudioFormatConverter(inputFormat: buf.format)
+            }
+            if let converter = s.converter {
+                _ = converter.appendConverted(buf, to: &s.audioSamples)
+            }
+            state = s
         }
     }
 
@@ -134,21 +165,17 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
     public func finishAndTranscribe() async -> String? {
         let stopTime = ContinuousClock.now
 
-        stopLoop.withLock { $0 = true }
-        wakeSleep()
-        let pendingTask = retranscribeTask
-        retranscribeTask = nil
-
-        // Cancel so any in-flight pipe.transcribe() bails at the next
-        // Task.checkCancellation() point. We still await to ensure the pipeline is free.
+        await scheduler.stop()
+        let pendingTask = schedulerTask
+        schedulerTask = nil
         pendingTask?.cancel()
         await pendingTask?.value
         let awaitDuration = ContinuousClock.now - stopTime
 
         let snapshot = sessionLock.withLock { state -> SessionState? in
-            let session = state
+            let s = state
             state = nil
-            return session
+            return s
         }
         let samples = snapshot?.audioSamples ?? []
         let vocabulary = snapshot?.vocabulary ?? []
@@ -159,35 +186,47 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             return nil
         }
 
-        let stream = streamLock.withLock { $0 }
+        let frontier = session.frontier
         let awaitMs = Self.ms(awaitDuration)
         let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
-        let confirmedWordCount = stream.confirmedText.split(separator: " ").count
-        let agreedWordTexts = stream.lastAgreedWords.map(\.word).joined()
-        let prefixTokens = stream.lastAgreedWords.flatMap(\.tokens)
-        let unconfirmedTail = audioDur - stream.lastAgreedSeconds
-        let zp = stream.consecutiveZeroProgress
-        let seg = stream.useSegmentFallback
-        let agreed = stream.lastAgreedSeconds
+        let confirmedWordCount = session.transcript.split(separator: " ").count
+        let strategy = session.strategy
         Self.logger.notice(
-            "Stop: \(audioDur, privacy: .public)s audio, agreed=\(agreed, privacy: .public)s, await=\(awaitMs)ms"
+            "Stop: \(audioDur, privacy: .public)s audio, frontier=\(frontier, privacy: .public)s, await=\(awaitMs)ms"
         )
         Self.logger.notice(
-            "Stop: confirmed=\(confirmedWordCount) words, zp=\(zp), seg=\(seg)"
+            "Stop: confirmed=\(confirmedWordCount) words, strategy=\(String(describing: strategy), privacy: .public)"
         )
 
         let finalStart = ContinuousClock.now
-        var fullText = await decodeFinalText(stream: stream, samples: samples)
+
+        // Tail transcription with VAD chunking
+        let tailResult = await transcribeResult(
+            samples: samples,
+            clipStart: frontier,
+            prefixTokens: lastExtensionWasZeroProgress ? [] : session.overlapTokens,
+            chunked: true
+        )
+
+        let filteredTail = tailResult.map {
+            runFilterPipeline($0, samples: samples, frontier: frontier)
+        }
+
+        var fullText = assembleResult(
+            transcript: session.transcript,
+            tailTranscription: filteredTail,
+            frontier: frontier
+        )
 
         // Safety net: if result is too short for the audio, the clipped decode
         // likely failed. Fall back to full decode from 0.0s.
         let wordCount = Float(fullText.split(separator: " ").count)
         if audioDur > 3 && wordCount / audioDur < 0.5 && !fullText.isEmpty {
             Self.logger.notice(
-                "Result too short (\(Int(wordCount)) words for \(audioDur, privacy: .public)s) — full decode"
+                "Result too short (\(Int(wordCount)) words for \(audioDur, privacy: .public)s) -- full decode"
             )
             if let rescue = await transcribeResult(samples: samples) {
-                let rescueText = Self.cleanText(rescue.text)
+                let rescueText = TranscriptionSession.cleanText(rescue.text)
                 if rescueText.count > fullText.count {
                     fullText = rescueText
                 }
@@ -196,9 +235,9 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         let finalMs = Self.ms(ContinuousClock.now - finalStart)
 
         if fullText.isEmpty && audioDur > 1 {
-            Self.logger.notice("Empty result on \(audioDur, privacy: .public)s audio — full decode rescue")
+            Self.logger.notice("Empty result on \(audioDur, privacy: .public)s audio -- full decode rescue")
             if let rescue = await transcribeResult(samples: samples) {
-                fullText = Self.cleanText(rescue.text)
+                fullText = TranscriptionSession.cleanText(rescue.text)
             }
         }
 
@@ -214,273 +253,100 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         Self.logger.notice(
             "Result: \(totalMs)ms (await=\(awaitMs)ms final=\(finalMs)ms) \"\(preview, privacy: .public)\""
         )
+
+        #if DEBUG
+            // Fire-and-forget ground truth comparison. Runs a clean batch
+            // decode in the background and logs the similarity. Zero latency
+            // impact — the result is already returned to the user.
+            let debugSamples = samples
+            let debugResult = corrected
+            let debugPipe = self.pipe
+            Task.detached {
+                await Self.compareGroundTruth(
+                    streamingResult: debugResult,
+                    samples: debugSamples,
+                    audioDuration: audioDur,
+                    pipe: debugPipe
+                )
+            }
+        #endif
+
         return corrected
     }
 
     /// Cancel any in-progress session and release resources.
     public func cancel() {
-        stopLoop.withLock { $0 = true }
-        wakeSleep()
-        if let old = retranscribeTask {
-            previousTask = old
+        // Stop the scheduler so its loop exits. The schedulerTask
+        // is saved as previousSchedulerTask so prepare() can await
+        // it before starting a new session.
+        Task { await scheduler.stop() }
+        if let old = schedulerTask {
+            previousSchedulerTask = old
         }
-        retranscribeTask = nil
+        schedulerTask = nil
         sessionLock.withLock { $0 = nil }
-        streamLock.withLock { $0 = StreamState() }
+        session = TranscriptionSession()
+        lastExtensionWasZeroProgress = false
     }
 
-    // MARK: - Background Loop
+    // MARK: - Filter Pipeline
 
-    private func startRetranscriptionLoop() {
-        stopLoop.withLock { $0 = false }
-        let taskToDrain = previousTask
-        previousTask = nil
-        retranscribeTask = Task { [weak self] in
-            await taskToDrain?.value
-            await self?.interruptibleSleep(nanoseconds: 1_000_000_000)
-
-            var passCount = 0
-            while let self, !self.stopLoop.withLock({ $0 }) {
-                let samples = self.sessionLock.withLock { state -> [Float] in
-                    state?.audioSamples ?? []
-                }
-
-                let stream = self.streamLock.withLock { $0 }
-                let clipSec =
-                    stream.useSegmentFallback
-                    ? stream.segmentConfirmedEndSeconds
-                    : stream.lastAgreedSeconds
-                let processedSamples = Int(clipSec * Float(WhisperKit.sampleRate))
-                let newSamples = samples.count - processedSamples
-
-                if newSamples >= Self.retranscribeThreshold {
-                    await self.runBackgroundPass(samples: samples)
-                    passCount += 1
-                }
-
-                guard !self.stopLoop.withLock({ $0 })
-                else { return }
-                let intervalNs: UInt64 = passCount <= 1 ? 500_000_000 : 1_000_000_000
-                await self.interruptibleSleep(nanoseconds: intervalNs)
-            }
-        }
-    }
-
-    private func interruptibleSleep(nanoseconds: UInt64) async {
-        await withUnsafeContinuation { continuation in
-            sleepContinuation.withLock { $0 = continuation }
-            if stopLoop.withLock({ $0 }) {
-                sleepContinuation.withLock { cont in
-                    cont?.resume()
-                    cont = nil
-                }
-                return
-            }
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: nanoseconds)
-                self?.wakeSleep()
-            }
-        }
-    }
-
-    private func wakeSleep() {
-        sleepContinuation.withLock { cont in
-            cont?.resume()
-            cont = nil
-        }
-    }
-
-    // MARK: - Tiered Confirmation
-
-    private func runBackgroundPass(samples: [Float]) async {
-        let passStart = ContinuousClock.now
-        let stream = streamLock.withLock { $0 }
-
-        let clipStart =
-            stream.useSegmentFallback
-            ? stream.segmentConfirmedEndSeconds
-            : stream.lastAgreedSeconds
-
-        let result = await transcribeResult(
+    private func runFilterPipeline(
+        _ transcription: TranscriptionResult,
+        samples: [Float],
+        frontier: Float
+    ) -> TranscriptionResult {
+        let context = FilterContext(
             samples: samples,
-            clipStart: clipStart,
-            prefixTokens: stream.useSegmentFallback
-                ? []
-                : stream.lastAgreedWords.flatMap(\.tokens)
+            sampleRate: WhisperKit.sampleRate,
+            frontier: frontier
         )
-
-        let passMs = Self.ms(ContinuousClock.now - passStart)
-        let audioFmt = String(format: "%.1f", Float(samples.count) / Float(WhisperKit.sampleRate))
-
-        guard let result
-        else {
-            Self.logger.notice("Background: no result in \(passMs)ms (audio=\(audioFmt)s)")
-            return
+        var filtered = transcription
+        for filter in filters {
+            filtered = filter.filter(filtered, context: context)
         }
-
-        streamLock.withLock { state in
-            if state.useSegmentFallback {
-                confirmSegments(state: &state, result: result, passMs: passMs, audioSec: audioFmt)
-            } else {
-                confirmWords(state: &state, result: result, passMs: passMs, audioSec: audioFmt)
-            }
-        }
+        return filtered
     }
 
-    private func confirmWords(
-        state: inout StreamState,
-        result: TranscriptionResult,
-        passMs: Int,
-        audioSec: String
-    ) {
-        guard result.segments.first?.words != nil
-        else {
-            Self.logger.notice("Background: no words in \(passMs)ms (audio=\(audioSec)s)")
-            return
+    // MARK: - Result Assembly
+
+    /// Coordinator-owned result assembly.
+    /// Stitches transcript + filtered tail words.
+    private func assembleResult(
+        transcript: String,
+        tailTranscription: TranscriptionResult?,
+        frontier: Float
+    ) -> String {
+        guard let tail = tailTranscription else {
+            return TranscriptionSession.cleanText(transcript)
         }
 
-        let hypothesisWords = result.allWords.filter { $0.start >= state.lastAgreedSeconds }
-        let commonPrefix = TranscriptionUtilities.findLongestCommonPrefix(
-            state.prevWords,
-            hypothesisWords
-        )
-
-        if !state.prevWords.isEmpty {
-            let prevSnippet = String(state.prevWords.prefix(6).map(\.word).joined().prefix(40))
-            let hypoSnippet = String(hypothesisWords.prefix(6).map(\.word).joined().prefix(40))
-            let pc = state.prevWords.count
-            let hc = hypothesisWords.count
-            let cc = commonPrefix.count
-            Self.logger.notice(
-                "Word compare: prev=\(pc)[\"\(prevSnippet, privacy: .public)\"] common=\(cc)"
-            )
-            Self.logger.notice(
-                "Word compare: hypo=\(hc)[\"\(hypoSnippet, privacy: .public)\"]"
-            )
-        }
-
-        if commonPrefix.count >= Self.agreementCountNeeded {
-            let newAgreed = Array(commonPrefix.suffix(Self.agreementCountNeeded))
-            let toConfirm = commonPrefix.prefix(commonPrefix.count - Self.agreementCountNeeded)
-
-            let newText = toConfirm.map(\.word).joined()
-            state.confirmedText += newText
-            state.lastAgreedWords = newAgreed
-            if let first = newAgreed.first {
-                state.lastAgreedSeconds = first.start
-            }
-            state.consecutiveMisses = 0
-
-            if toConfirm.isEmpty {
-                state.consecutiveZeroProgress += 1
-            } else {
-                state.consecutiveZeroProgress = 0
-            }
-
-            let agreedAt = state.lastAgreedSeconds
-            let zp = state.consecutiveZeroProgress
-            let confMsg = "Confirmed \(toConfirm.count) words to \(agreedAt)s in \(passMs)ms (zeroProgress=\(zp))"
-            Self.logger.notice("\(confMsg, privacy: .public)")
-            if !newText.isEmpty {
-                Self.logger.notice("  new: \"\(newText.prefix(60), privacy: .public)\"")
-            }
-        } else {
-            state.consecutiveMisses += 1
-            let misses = state.consecutiveMisses
-
-            if misses >= Self.maxWordMisses {
-                state.useSegmentFallback = true
-                let wordText = state.confirmedText + state.lastAgreedWords.map(\.word).joined()
-                state.segmentConfirmedText = wordText.trimmingCharacters(in: .whitespaces)
-                state.segmentConfirmedEndSeconds = state.lastAgreedSeconds
-
-                Self.logger.notice("Word agreement stalled (\(misses) misses) — segment fallback")
-            } else {
-                let wc = hypothesisWords.count
-                let ac = commonPrefix.count
-                Self.logger.notice(
-                    "Background: \(wc) words, \(ac) agreed, miss \(misses)/\(Self.maxWordMisses) in \(passMs)ms"
-                )
-            }
-        }
-
-        let clip = state.lastAgreedSeconds
-        state.prevWords = hypothesisWords.filter { $0.start >= clip }
-    }
-
-    private func confirmSegments(
-        state: inout StreamState,
-        result: TranscriptionResult,
-        passMs: Int,
-        audioSec: String
-    ) {
-        let segments = result.segments
-        guard segments.count >= 2
-        else {
-            Self.logger.notice("Segment fallback: \(segments.count) seg in \(passMs)ms (audio=\(audioSec)s)")
-            return
-        }
-
-        let toConfirm = Array(segments.prefix(segments.count - 1))
-        let newText = toConfirm.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespaces)
-        let newEnd = toConfirm.last?.end ?? state.segmentConfirmedEndSeconds
-
-        guard newEnd > state.segmentConfirmedEndSeconds
-        else { return }
-
-        if state.segmentConfirmedText.isEmpty {
-            state.segmentConfirmedText = newText
-        } else {
-            state.segmentConfirmedText += " " + newText
-        }
-        state.segmentConfirmedEndSeconds = newEnd
-
-        Self.logger.notice("Segment confirmed \(toConfirm.count) seg to \(newEnd, privacy: .public)s in \(passMs)ms")
-    }
-
-    // MARK: - Transcription
-
-    private func decodeFinalText(stream: StreamState, samples: [Float]) async -> String {
-        if stream.useSegmentFallback {
-            let tail = await transcribeResult(samples: samples, clipStart: stream.segmentConfirmedEndSeconds)
-            let tailText = tail?.text.trimmingCharacters(in: .whitespaces) ?? ""
-            if !stream.segmentConfirmedText.isEmpty && !tailText.isEmpty {
-                return Self.cleanText(stream.segmentConfirmedText + " " + tailText)
-            }
-            return Self.cleanText(stream.segmentConfirmedText)
-        }
-
-        let finalResult = await transcribeResult(
-            samples: samples,
-            clipStart: stream.lastAgreedSeconds,
-            prefixTokens: stream.lastAgreedWords.flatMap(\.tokens)
-        )
+        let allWords = tail.allWords
         let tailText: String
-        if let result = finalResult, result.segments.first?.words != nil {
-            let allWords = result.allWords
-            let filtered = allWords.filter { $0.start >= stream.lastAgreedSeconds }
-            tailText = filtered.map(\.word).joined()
-            if allWords.count != filtered.count {
-                let droppedCount = allWords.count - filtered.count
-                let droppedText = allWords.filter { $0.start < stream.lastAgreedSeconds }.map(\.word).joined()
-                Self.logger.notice(
-                    "Final decode: \(allWords.count) words, \(droppedCount) filtered"
-                )
+
+        if !allWords.isEmpty {
+            let filtered = allWords.filter { $0.start >= frontier }
+            if !filtered.isEmpty {
+                tailText = filtered.map(\.word).joined()
+                if allWords.count != filtered.count {
+                    Self.logger.notice(
+                        "Final decode: \(allWords.count) words, \(allWords.count - filtered.count) filtered by frontier"
+                    )
+                }
+            } else {
+                tailText = tail.text
+                Self.logger.notice("Final decode: \(allWords.count) words all before frontier, using segment text")
             }
-            let tailSnippet = String(tailText.prefix(80))
-            Self.logger.notice(
-                "Final tail: \(filtered.count) words from \(stream.lastAgreedSeconds, privacy: .public)s"
-            )
-            Self.logger.notice("  \"\(tailSnippet, privacy: .public)\"")
         } else {
-            tailText = finalResult?.text ?? stream.lastAgreedWords.map(\.word).joined()
+            tailText = tail.text
             Self.logger.notice(
                 "Final tail (no words): \"\(tailText.prefix(80), privacy: .public)\""
             )
         }
-        let combined = Self.cleanText(stream.confirmedText + tailText)
+
+        let combined = TranscriptionSession.cleanText(transcript + tailText)
         let combinedSnippet = String(combined.prefix(80))
-        let cc = stream.confirmedText.count
+        let cc = transcript.count
         let tc = tailText.count
         Self.logger.notice(
             "Final combined: confirmed=\(cc) chars + tail=\(tc) chars = \"\(combinedSnippet, privacy: .public)\""
@@ -488,10 +354,13 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
         return combined
     }
 
+    // MARK: - Transcription
+
     private func transcribeResult(
         samples: [Float],
         clipStart: Float = 0,
-        prefixTokens: [Int] = []
+        prefixTokens: [Int] = [],
+        chunked: Bool = false
     ) async -> TranscriptionResult? {
         do {
             let audioDuration = Float(samples.count) / Float(WhisperKit.sampleRate)
@@ -499,7 +368,7 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             options.language = "en"
             options.skipSpecialTokens = true
             options.wordTimestamps = true
-            options.chunkingStrategy = ChunkingStrategy.none
+            options.chunkingStrategy = chunked ? .vad : ChunkingStrategy.none
             if audioDuration < 3 {
                 options.windowClipTime = 0
             }
@@ -517,18 +386,162 @@ public final class WhisperKitEngine: TranscriptionEngine, @unchecked Sendable {
             return nil
         }
     }
-}
 
-// MARK: - Stream State
+    // MARK: - Debug Ground Truth
 
-private struct StreamState {
-    var confirmedText: String = ""
-    var lastAgreedWords: [WordTiming] = []
-    var lastAgreedSeconds: Float = 0
-    var prevWords: [WordTiming] = []
-    var consecutiveMisses: Int = 0
-    var consecutiveZeroProgress: Int = 0
-    var useSegmentFallback: Bool = false
-    var segmentConfirmedText: String = ""
-    var segmentConfirmedEndSeconds: Float = 0
+    #if DEBUG
+        private static let qualityLogger = Log.logger(for: "TranscriptionQuality")
+
+        /// Run a clean batch decode and compare against the streaming result.
+        /// Called in a detached task — no latency impact on the user.
+        private static func compareGroundTruth(
+            streamingResult: String,
+            samples: [Float],
+            audioDuration: Float,
+            pipe: WhisperKit
+        ) async {
+            do {
+                var options = DecodingOptions()
+                options.language = "en"
+                options.skipSpecialTokens = true
+                options.wordTimestamps = false
+                options.chunkingStrategy = .vad
+
+                let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+                guard let groundTruth = results.first else {
+                    qualityLogger.notice("Ground truth: decode returned nil")
+                    return
+                }
+
+                let gtText = TranscriptionSession.cleanText(groundTruth.text)
+                guard !gtText.isEmpty else {
+                    qualityLogger.notice("Ground truth: empty after cleaning")
+                    return
+                }
+
+                let similarity = levenshteinSimilarity(streamingResult, gtText)
+                let pct = Int(similarity * 100)
+
+                if similarity >= 0.85 {
+                    qualityLogger.info(
+                        "✅ Quality: \(pct)% match (\(audioDuration, privacy: .public)s audio)"
+                    )
+                } else {
+                    qualityLogger.warning(
+                        "⚠️ Quality: \(pct)% match (\(audioDuration, privacy: .public)s audio)"
+                    )
+                    qualityLogger.warning(
+                        "  Streaming: \"\(streamingResult.prefix(100), privacy: .public)\""
+                    )
+                    qualityLogger.warning(
+                        "  Ground truth: \"\(gtText.prefix(100), privacy: .public)\""
+                    )
+
+                    // Auto-capture fixture and alert
+                    autoCapture(
+                        similarity: pct,
+                        groundTruth: gtText,
+                        audioDuration: audioDuration
+                    )
+                    // Play a subtle alert so the user knows a bad transcription was caught
+                    await MainActor.run {
+                        NSSound(named: "Submarine")?.play()
+                    }
+                }
+            } catch {
+                qualityLogger.notice("Ground truth decode failed: \(error)")
+            }
+        }
+
+        /// Auto-capture a test fixture when quality drops below threshold.
+        /// Finds the most recent audio trace and copies it + ground truth
+        /// to the test-fixtures directory.
+        private static func autoCapture(
+            similarity: Int,
+            groundTruth: String,
+            audioDuration: Float
+        ) {
+            let fm = FileManager.default
+            let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let traceDir = appSupport.appendingPathComponent("Operator/audio-traces")
+            let fixtureDir = appSupport.appendingPathComponent("Operator/test-fixtures")
+
+            // Find the most recent audio trace
+            guard
+                let traces = try? fm.contentsOfDirectory(
+                    at: traceDir,
+                    includingPropertiesForKeys: [.contentModificationDateKey],
+                    options: .skipsHiddenFiles
+                )
+            else {
+                qualityLogger.warning("Auto-capture: no audio traces directory")
+                return
+            }
+
+            let wavFiles = traces.filter { $0.pathExtension == "wav" }
+                .sorted { lhs, rhs in
+                    let d1 =
+                        (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                        ?? .distantPast
+                    let d2 =
+                        (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                        ?? .distantPast
+                    return d1 > d2
+                }
+
+            guard let latestTrace = wavFiles.first else {
+                qualityLogger.warning("Auto-capture: no WAV files in traces")
+                return
+            }
+
+            let traceName = latestTrace.deletingPathExtension().lastPathComponent
+            let fixtureName = "auto-\(similarity)pct-\(traceName)"
+            let fixtureWav = fixtureDir.appendingPathComponent("\(fixtureName).wav")
+            let fixtureExpected = fixtureDir.appendingPathComponent("\(fixtureName).expected.txt")
+
+            // Skip if already captured
+            guard !fm.fileExists(atPath: fixtureWav.path) else {
+                qualityLogger.info("Auto-capture: fixture already exists: \(fixtureName)")
+                return
+            }
+
+            do {
+                try fm.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+                try fm.copyItem(at: latestTrace, to: fixtureWav)
+                try groundTruth.write(to: fixtureExpected, atomically: true, encoding: .utf8)
+                qualityLogger.warning(
+                    "📁 Auto-captured fixture: \(fixtureName, privacy: .public)"
+                )
+                qualityLogger.warning(
+                    "  Run: make test-transcription"
+                )
+            } catch {
+                qualityLogger.warning("Auto-capture failed: \(error)")
+            }
+        }
+
+        /// Levenshtein similarity ratio (0.0 = completely different, 1.0 = identical).
+        private static func levenshteinSimilarity(_ a: String, _ b: String) -> Double {
+            let a = Array(a.lowercased())
+            let b = Array(b.lowercased())
+            let m = a.count
+            let n = b.count
+            if m == 0 && n == 0 { return 1.0 }
+            if m == 0 || n == 0 { return 0.0 }
+
+            var prev = Array(0...n)
+            var curr = [Int](repeating: 0, count: n + 1)
+
+            for i in 1...m {
+                curr[0] = i
+                for j in 1...n {
+                    let cost = a[i - 1] == b[j - 1] ? 0 : 1
+                    curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost)
+                }
+                swap(&prev, &curr)
+            }
+
+            return 1.0 - Double(prev[n]) / Double(max(m, n))
+        }
+    #endif
 }

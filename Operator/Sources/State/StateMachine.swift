@@ -104,7 +104,7 @@ public final class StateMachine {
     private let registry: SessionRegistry
     private let voiceManager: VoiceManager
     private let waveformPanel: WaveformPanel?
-    private let speechManager: any SpeechManaging
+    private var speechManager: any SpeechManaging
     private let commandHandler: OperatorCommandHandler
     private let interruptionHandler: InterruptionHandler
     private let deliveryCoordinator: DeliveryCoordinator
@@ -166,6 +166,11 @@ public final class StateMachine {
         )
 
         Self.logger.info("StateMachine initialized in IDLE state")
+    }
+
+    /// Replace the speech manager (e.g. after Kokoro models finish downloading).
+    public func replaceSpeechManager(_ newManager: any SpeechManaging) {
+        speechManager = newManager
     }
 
     // MARK: - Trigger Callbacks
@@ -242,15 +247,17 @@ public final class StateMachine {
 
         // Very short recordings can't contain meaningful speech and
         // would just pick up feedback tones. Dismiss silently.
-        if let start = listeningStartTime {
-            let elapsed = ContinuousClock.now - start
-            if elapsed < minimumRecordingDuration {
-                Self.logger.info("Trigger STOP: recording too short (\(elapsed)); dismissing")
-                cancelInFlightWork()
-                feedback.play(.dismissed)
-                enterIdle()
-                return
-            }
+        let elapsed: Duration? = listeningStartTime.map { ContinuousClock.now - $0 }
+        let listenMs: Int64? = elapsed.map { d in
+            d.components.seconds * 1_000 + d.components.attoseconds / 1_000_000_000_000_000
+        }
+        if let elapsed, elapsed < minimumRecordingDuration {
+            Self.logger.info("Trigger STOP: recording too short (\(elapsed)); dismissing")
+            Self.logger.info("📊 listen=\(listenMs ?? -1)ms outcome=too_short")
+            cancelInFlightWork()
+            feedback.play(.dismissed)
+            enterIdle()
+            return
         }
 
         Self.logger.info("Trigger STOP: entering TRANSCRIBING")
@@ -272,10 +279,12 @@ public final class StateMachine {
             }
 
             if hasSpeech {
+                Self.logger.info("📊 listen=\(listenMs ?? -1)ms outcome=speech")
                 self.feedback.play(.processing)
                 let text = await self.transcriber.finishTranscription()
                 await self.handleTranscriptionResult(text)
             } else {
+                Self.logger.info("📊 listen=\(listenMs ?? -1)ms outcome=silence")
                 self.feedback.play(.dismissed)
                 self.enterIdle()
             }

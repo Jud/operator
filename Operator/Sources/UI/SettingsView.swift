@@ -37,6 +37,7 @@ public struct SettingsView: View {
     @State private var isDownloadingModel = false
     @State private var downloadError: String?
     @State private var modelStatus: [String: Bool] = [:]
+    @ObservedObject private var kokoroModel = KokoroDownloadModel.shared
 
     /// The view body rendering the settings form.
     public var body: some View {
@@ -61,6 +62,7 @@ extension SettingsView {
         Form {
             audioDeviceSection
             speechRecognitionSection
+            kokoroSection
             voiceSection
             triggerKeySection
             triggerBehaviorSection
@@ -68,7 +70,7 @@ extension SettingsView {
             aboutSection
         }
         .formStyle(.grouped)
-        .frame(width: 450, height: 560)
+        .frame(width: 450, height: 620)
         .onAppear {
             refreshDevices()
             refreshModelStatus()
@@ -96,9 +98,6 @@ extension SettingsView {
             Button("Preview Voice") {
                 EngineSettingsModel.shared.onPreviewVoice?()
             }
-            Text("Operator uses Apple speech synthesis for all spoken output.")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
         }
     }
 
@@ -161,6 +160,46 @@ extension SettingsView {
             Text(downloadError)
                 .foregroundStyle(.red)
                 .font(.caption)
+        }
+    }
+
+    private var kokoroSection: some View {
+        Section("Text-to-Speech (Kokoro CoreML)") {
+            if kokoroModel.isDownloaded {
+                Label("Models downloaded", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+
+                Button("Preview Voice") {
+                    EngineSettingsModel.shared.onPreviewVoice?()
+                }
+            } else if kokoroModel.isDownloading {
+                HStack {
+                    Text("Downloading...")
+                    ProgressView(value: kokoroModel.progress)
+                        .frame(width: 120)
+                    Text("\(Int(kokoroModel.progress * 100))%")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Button("Download Kokoro Models") {
+                    kokoroModel.downloadIfNeeded()
+                }
+            }
+
+            if let error = kokoroModel.error {
+                Text(error)
+                    .foregroundStyle(.red)
+                    .font(.caption)
+            }
+
+            Text(
+                "Kokoro CoreML provides natural-sounding neural TTS. "
+                    + "Downloads automatically on first launch (~640 MB). "
+                    + "Switches over seamlessly when ready."
+            )
+            .font(.caption)
+            .foregroundStyle(.tertiary)
         }
     }
 

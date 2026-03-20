@@ -70,7 +70,7 @@ internal final class AudioFormatConverter: @unchecked Sendable {
         var consumed = false
         converter.convert(to: outBuf, error: &error) { _, outStatus in
             if consumed {
-                outStatus.pointee = .noDataNow
+                outStatus.pointee = .endOfStream
                 return nil
             }
             consumed = true

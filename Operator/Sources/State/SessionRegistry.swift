@@ -86,7 +86,7 @@ public actor SessionRegistry {
             return true
         }
 
-        let voice = voiceManager.nextAgentVoice()
+        let voice = voiceManager.voiceForAgent(named: uniqueName)
 
         let state = SessionState(
             name: uniqueName,
@@ -217,7 +217,7 @@ public actor SessionRegistry {
             )
         }
 
-        let voice = voiceManager.nextAgentVoice()
+        let voice = voiceManager.voiceForAgent(named: displayName)
         let state = SessionState(
             name: displayName,
             identifier: id,
