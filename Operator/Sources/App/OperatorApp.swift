@@ -1,6 +1,6 @@
 import AVFoundation
 import AppKit
-import KokoroTTS
+import KokoroCoreML
 import OperatorCore
 import Speech
 import SwiftUI
@@ -73,7 +73,7 @@ public struct MenuBarContentView: View {
         } else {
             Section("Sessions (\(model.sessions.count))") {
                 ForEach(model.sessions) { session in
-                    Text("\(session.name) - \(session.cwd)")
+                    Text("\(session.name) (\(session.voice))")
                 }
             }
         }
@@ -103,7 +103,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var httpServer: OperatorHTTPServer?
     private var trigger: FNKeyTrigger?
     private var voiceManager: VoiceManager?
-    private var speechManager: SpeechManager?
+    private var speechManager: (any SpeechManaging)?
     private var audioQueue: AudioQueue?
     private var registry: SessionRegistry?
     private var discoveryService: SessionDiscoveryService?
@@ -126,7 +126,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let (ttsManager, vm) = bootstrapTTS()
         voiceManager = vm
         let fb = AudioFeedback()
-        speechManager = ttsManager as? SpeechManager
+        speechManager = ttsManager
 
         if OnboardingViewModel.shouldShowOnboarding() {
             await showOnboardingAndWait()
@@ -176,21 +176,38 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func bootstrapTTS() -> (any SpeechManaging, VoiceManager) {
-        let modelDir = ModelManager.defaultDirectory(for: "com.operator")
-        if ModelManager.modelsAvailable(at: modelDir) {
+        if KokoroEngine.isDownloaded {
             do {
-                let engine = try KokoroEngine(modelDirectory: modelDir)
-                engine.warmUp()
+                let engine = try KokoroEngine(
+                    modelDirectory: KokoroEngine.defaultModelDirectory
+                )
                 let mgr = KokoroSpeechManager(engine: engine)
-                Self.logger.info("Using Kokoro TTS (\(engine.availableVoices.count) voices)")
+                Self.logger.info("Using Kokoro CoreML (\(engine.availableVoices.count) voices)")
                 return (mgr, VoiceManager(kokoroVoices: engine.availableVoices))
             } catch {
-                Self.logger.warning("Kokoro TTS init failed: \(error). Falling back to Apple TTS.")
+                Self.logger.warning("Kokoro CoreML init failed: \(error). Falling back to Apple TTS.")
             }
         } else {
-            Self.logger.info("Kokoro models not downloaded. Using Apple TTS.")
+            Self.logger.info("Kokoro models not downloaded. Starting background download.")
+            startKokoroDownload()
         }
         return (SpeechManager(), VoiceManager())
+    }
+
+    /// Download Kokoro models in the background and hot-swap when ready.
+    private func startKokoroDownload() {
+        KokoroDownloadModel.shared.downloadIfNeeded { [weak self] engine in
+            guard let self else { return }
+            let mgr = KokoroSpeechManager(engine: engine)
+            let vm = VoiceManager(kokoroVoices: engine.availableVoices)
+            self.speechManager = mgr
+            self.voiceManager = vm
+            self.stateMachine?.replaceSpeechManager(mgr)
+            Task {
+                await self.audioQueue?.replaceSpeechManager(mgr)
+            }
+            Self.logger.notice("Hot-swapped to Kokoro CoreML TTS")
+        }
     }
 
     private func bootstrapPrerequisites() {
@@ -376,11 +393,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let service = SessionDiscoveryService(
             terminalBridge: terminalBridge,
             registry: reg
-        ) { _ in
+        ) { sessionName in
             Task {
                 await aq.enqueue(
                     AudioQueue.QueuedMessage(
-                        sessionName: "Operator",
+                        sessionName: sessionName,
                         text: "disconnected.",
                         priority: .urgent,
                         voice: vm.operatorVoice

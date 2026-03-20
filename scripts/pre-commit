@@ -4,7 +4,7 @@ set -euo pipefail
 # Pre-commit hook: lint Swift files with --strict (warnings = errors), matching CI.
 # Install: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(git rev-parse --show-toplevel)"
 
 # Only lint if Swift files are staged
 SWIFT_STAGED=$(git diff --cached --name-only --diff-filter=ACM -- '*.swift' || true)

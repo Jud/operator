@@ -72,7 +72,7 @@ public actor AudioQueue {
 
     private var queue: [QueuedMessage] = []
     private var state: AudioState = .idle
-    private let speechManager: any SpeechManaging
+    private var speechManager: any SpeechManaging
     private let feedback: any AudioFeedbackProviding
 
     /// Tracks the last spoken message text per agent session name, for replay support.
@@ -113,9 +113,18 @@ public actor AudioQueue {
     /// Cancels any existing listener task before spawning a new one. The task awaits each
     /// stream element and calls `handleSpeechFinished()`. Ends automatically when the stream
     /// terminates (i.e., the speech manager deallocates) or the task is cancelled.
+    /// Replace the speech manager (e.g. after Kokoro models finish downloading).
+    ///
+    /// Restarts the finished-speaking listener to observe the new manager's stream.
+    public func replaceSpeechManager(_ newManager: any SpeechManaging) async {
+        speechManager = newManager
+        await startListening()
+    }
+
     public func startListening() async {
         listenerTask?.cancel()
-        let stream = await MainActor.run { speechManager.finishedSpeaking }
+        let mgr = speechManager
+        let stream = await MainActor.run { mgr.finishedSpeaking }
         listenerTask = Task { [weak self] in
             for await _ in stream {
                 guard !Task.isCancelled else { break }
@@ -150,13 +159,14 @@ public actor AudioQueue {
         state = .userSpeaking
         Self.logger.info("User started speaking; queue paused (pending: \(self.queue.count))")
 
-        let isSpeaking = await MainActor.run { speechManager.isSpeaking }
-        guard isSpeaking else {
-            return nil
+        let mgr = speechManager
+        let info: InterruptInfo? = await MainActor.run {
+            guard mgr.isSpeaking else { return nil }
+            return mgr.interrupt()
         }
-
-        let info = await MainActor.run { speechManager.interrupt() }
-        Self.logger.info("Interrupted speech for session \(info.session) at char boundary")
+        if let info {
+            Self.logger.info("Interrupted speech for session \(info.session) at char boundary")
+        }
         return info
     }
 
@@ -165,9 +175,6 @@ public actor AudioQueue {
         state = .idle
         Self.logger.info("User stopped speaking; resuming queue (pending: \(self.queue.count))")
 
-        if !queue.isEmpty {
-            await feedback.play(.pending)
-        }
         await playNextIfIdle()
     }
 
@@ -226,8 +233,9 @@ public actor AudioQueue {
         lastSpokenPerAgent[msg.sessionName] = msg.text
         lastSpokenAgent = msg.sessionName
 
+        let mgr = speechManager
         await MainActor.run {
-            speechManager.speak(
+            mgr.speak(
                 msg.text,
                 voice: msg.voice,
                 prefix: msg.sessionName,

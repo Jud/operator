@@ -9,10 +9,19 @@ import os
 public final class VoiceManager: Sendable {
     private static let logger = Log.logger(for: "VoiceManager")
 
-    /// Kokoro voice presets for agent differentiation.
+    /// Curated Kokoro voice presets: American and British, male and female only.
+    ///
+    /// Excludes whispery, novelty, and non-English voices.
+    /// af_nicole removed — tends to whisper.
     private static let kokoroVoices = [
-        "af_heart", "am_adam", "af_bella", "bm_george",
-        "af_nicole", "am_michael", "af_sarah", "am_onyx"
+        // American female
+        "af_heart", "af_bella", "af_sarah", "af_nova",
+        // American male
+        "am_adam", "am_michael", "am_eric", "am_liam",
+        // British female
+        "bf_emma", "bf_lily", "bf_isabella",
+        // British male
+        "bm_george", "bm_daniel", "bm_lewis"
     ]
 
     /// The voice used for Operator system messages.
@@ -23,9 +32,6 @@ public final class VoiceManager: Sendable {
 
     /// Whether Kokoro voices are active.
     public let useKokoro: Bool
-
-    /// Index for cycling through agent voices.
-    private let agentVoiceIndex = AgentVoiceCounter()
 
     /// Creates a new voice manager.
     ///
@@ -42,29 +48,20 @@ public final class VoiceManager: Sendable {
         }
     }
 
-    /// Returns a distinct VoiceDescriptor for the next agent.
+    /// Returns a deterministic VoiceDescriptor for an agent based on its project name.
     ///
-    /// When using Kokoro, cycles through distinct voice presets so each agent
-    /// gets a truly different voice. With Apple TTS, returns the default voice.
-    public func nextAgentVoice() -> VoiceDescriptor {
+    /// The same project always gets the same voice across sessions.
+    /// Operator's own voice (index 0) is excluded from agent assignment.
+    public func voiceForAgent(named name: String) -> VoiceDescriptor {
         guard useKokoro else {
             return operatorVoice
         }
         let voices = Self.kokoroVoices
-        let idx = agentVoiceIndex.next() % voices.count
-        return .kokoro(name: voices[idx])
-    }
-}
-
-/// Thread-safe counter for cycling through agent voices.
-private final class AgentVoiceCounter: Sendable {
-    private let counter = OSAllocatedUnfairLock(initialState: 0)
-
-    func next() -> Int {
-        counter.withLock { value in
-            let current = value
-            value += 1
-            return current
-        }
+        // Skip index 0 (operator voice) for agents
+        let agentVoices = Array(voices.dropFirst())
+        guard !agentVoices.isEmpty else { return operatorVoice }
+        let hash = abs(name.hashValue)
+        let idx = hash % agentVoices.count
+        return .kokoro(name: agentVoices[idx])
     }
 }

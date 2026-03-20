@@ -67,7 +67,7 @@ public final class FNKeyTrigger: TriggerSource {
     public init(
         secondaryKeyCode: CGKeyCode? = nil,
         secondaryModifiers: CGEventFlags = [],
-        toggleThreshold: TimeInterval = 0.3
+        toggleThreshold: TimeInterval = 0.2
     ) {
         self.secondaryKeyCode = secondaryKeyCode
         self.secondaryModifiers = secondaryModifiers
@@ -263,16 +263,18 @@ extension FNKeyTrigger {
         fnDown = false
 
         let duration = pressDuration(since: fnKeyDownTime)
+        let durationMs = fnKeyDownTime.map { Int(Date().timeIntervalSince($0) * 1_000) } ?? -1
+        let thresholdMs = Int(toggleThreshold * 1_000)
         fnKeyDownTime = nil
 
         if isToggleListening {
             Self.logger.debug("FN key released (toggle stop press — ignored)")
         } else if isToggleModeEnabled && duration < toggleThreshold {
-            Self.logger.debug("FN key released (quick tap — toggle mode)")
+            Self.logger.info("FN tap: \(durationMs)ms → toggle (threshold=\(thresholdMs)ms)")
             isToggleListening = true
             startDoubleTapTimer()
         } else {
-            Self.logger.debug("FN key released (push-to-talk)")
+            Self.logger.info("FN tap: \(durationMs)ms → push-to-talk (threshold=\(thresholdMs)ms)")
             dispatch(onStop)
         }
     }
@@ -346,6 +348,8 @@ extension FNKeyTrigger {
             secondaryDown = false
 
             let duration = pressDuration(since: secondaryKeyDownTime)
+            let durationMs = secondaryKeyDownTime.map { Int(Date().timeIntervalSince($0) * 1_000) } ?? -1
+            let thresholdMs = Int(toggleThreshold * 1_000)
             secondaryKeyDownTime = nil
 
             if isSecondaryToggleListening {
@@ -353,10 +357,14 @@ extension FNKeyTrigger {
                     "Secondary hotkey released (toggle stop press — ignored): keyCode=\(keyCode)"
                 )
             } else if isToggleModeEnabled && duration < toggleThreshold {
-                Self.logger.debug("Secondary hotkey released (quick tap — toggle mode): keyCode=\(keyCode)")
+                Self.logger.info(
+                    "Secondary tap: \(durationMs)ms → toggle (threshold=\(thresholdMs)ms, keyCode=\(keyCode))"
+                )
                 isSecondaryToggleListening = true
             } else {
-                Self.logger.debug("Secondary hotkey released (push-to-talk): keyCode=\(keyCode)")
+                Self.logger.info(
+                    "Secondary tap: \(durationMs)ms → push-to-talk (threshold=\(thresholdMs)ms, keyCode=\(keyCode))"
+                )
                 dispatch(onStop)
             }
         }

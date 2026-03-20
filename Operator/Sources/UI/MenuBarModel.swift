@@ -8,6 +8,8 @@ public struct MenuBarSession: Identifiable, Equatable {
     public let name: String
     /// Working directory of the session.
     public let cwd: String
+    /// Voice preset name assigned to this session.
+    public let voice: String
 }
 
 /// View model for the menu bar extra, tracking Operator state and connected sessions.
@@ -102,7 +104,9 @@ public final class MenuBarModel {
         }
 
         let allSessions = await registry.allSessions()
-        let updated = allSessions.map { MenuBarSession(id: $0.name, name: $0.name, cwd: $0.cwd) }
+        let updated = allSessions.map {
+            MenuBarSession(id: $0.name, name: $0.name, cwd: $0.cwd, voice: $0.voice.displayName)
+        }
 
         // Only mutate if data changed — avoids triggering a SwiftUI re-render
         // that could race with a concurrent state transition update.
