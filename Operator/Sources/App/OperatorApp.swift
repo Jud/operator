@@ -109,7 +109,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var discoveryService: SessionDiscoveryService?
     private var onboardingWindow: OnboardingWindow?
     private var onboardingWindowDelegate: OnboardingWindowDelegate?
-    private var routingFeedbackPanel: RoutingFeedbackPanel?
     private var traceObserver: NSObjectProtocol?
 
     /// Called when the application finishes launching to bootstrap all components.
@@ -147,7 +146,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let traceStore = RoutingTraceStore()
         let router = MessageRouter(registry: reg, traceStore: traceStore)
 
-        bootstrapFeedbackPanel(traceStore: traceStore)
         bootstrapHTTPServer(reg: reg, aq: aq, tts: ttsManager, vm: vm)
         let sttEngine = AppleSpeechEngine()
         let transcriber = bootstrapStateMachine(
@@ -329,21 +327,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 Self.logger.warning("WhisperKit warmup failed: \(error). Staying on Apple Speech.")
             }
-        }
-    }
-
-    private func bootstrapFeedbackPanel(traceStore: RoutingTraceStore) {
-        let panel = RoutingFeedbackPanel(traceStore: traceStore)
-        routingFeedbackPanel = panel
-        traceObserver = NotificationCenter.default.addObserver(
-            forName: .routingTraceAppended,
-            object: nil,
-            queue: .main
-        ) { [weak panel] notification in
-            guard let trace = notification.userInfo?["trace"] as? RoutingTrace,
-                let names = notification.userInfo?["sessionNames"] as? [String]
-            else { return }
-            panel?.show(trace: trace, sessionNames: names)
         }
     }
 
