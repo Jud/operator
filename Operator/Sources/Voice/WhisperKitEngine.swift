@@ -63,6 +63,15 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         WhisperKitEngine(pipe: pipe)
     }
 
+    /// Create a fresh engine sharing the same WhisperKit pipeline
+    /// but with a custom scheduler.
+    ///
+    /// Used for manifest replay tests that control exactly when
+    /// background transcriptions fire.
+    public func freshEngine(scheduler: TranscriptionScheduler) -> WhisperKitEngine {
+        WhisperKitEngine(pipe: pipe, scheduler: scheduler)
+    }
+
     private static func ms(_ duration: Duration) -> Int {
         let (seconds, attoseconds) = duration.components
         return Int(seconds) * 1_000 + Int(attoseconds / 1_000_000_000_000_000)
