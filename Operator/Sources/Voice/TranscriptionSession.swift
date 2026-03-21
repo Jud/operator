@@ -219,6 +219,49 @@ public struct TranscriptionSession: Sendable {
         return .extended(newWords: 0)
     }
 
+    // MARK: - Result Assembly
+
+    /// Assemble final text from the confirmed transcript and a tail decode,
+    /// filtering tail words to only those at or after the given frontier.
+    ///
+    /// This supports the parallel decode strategy: a pessimistic tail decode
+    /// starts from an earlier frontier, and if the background pass advances
+    /// the frontier, the tail words before the new frontier are discarded.
+    ///
+    /// Pure function — same inputs always produce the same output.
+    ///
+    /// - Parameters:
+    ///   - transcript: The confirmed text from the session.
+    ///   - tailWords: Word timings from the tail decode result.
+    ///   - tailSegmentText: Fallback segment-level text if word filtering
+    ///     eliminates everything.
+    ///   - frontier: The frontier to filter against (may be more advanced
+    ///     than the frontier used to start the decode).
+    /// - Returns: The assembled text, cleaned of hallucinations.
+    public static func assembleWithFrontier(
+        transcript: String,
+        tailWords: [WordTiming],
+        tailSegmentText: String,
+        frontier: Float
+    ) -> String {
+        let tailText: String
+
+        if !tailWords.isEmpty {
+            let filtered = tailWords.filter { $0.start >= frontier }
+            if !filtered.isEmpty {
+                tailText = filtered.map(\.word).joined()
+            } else {
+                // All words before frontier — fall back to segment text
+                tailText = tailSegmentText
+            }
+        } else {
+            // No word timestamps — use segment text
+            tailText = tailSegmentText
+        }
+
+        return cleanText(transcript + tailText)
+    }
+
     // MARK: - Utilities
 
     /// Known Whisper hallucination strings produced for silence or very short audio.

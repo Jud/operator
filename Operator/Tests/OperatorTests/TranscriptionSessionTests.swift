@@ -366,4 +366,67 @@ internal struct TranscriptionSessionTests {
         _ = session.extendTranscript(with: seg2)
         #expect(session.strategy == .segmentLevel)
     }
+
+    // MARK: - Parallel Decode Assembly
+
+    @Test("assembleWithFrontier keeps all words when frontier unchanged")
+    func testAssembleWithFrontierUnchanged() {
+        let words = [
+            WordTiming(word: " Hello", tokens: [], start: 4.0, end: 4.5, probability: 1),
+            WordTiming(word: " world", tokens: [], start: 4.5, end: 5.0, probability: 1)
+        ]
+        let result = TranscriptionSession.assembleWithFrontier(
+            transcript: "I said",
+            tailWords: words,
+            tailSegmentText: "",
+            frontier: 4.0
+        )
+        #expect(result == "I said Hello world")
+    }
+
+    @Test("assembleWithFrontier filters words before advanced frontier")
+    func testAssembleWithFrontierAdvanced() {
+        // Pessimistic decode started at frontier=4.0
+        // Background pass advanced frontier to 6.0
+        // Words at 4.0-5.0 should be filtered, words at 6.0+ kept
+        let words = [
+            WordTiming(word: " old", tokens: [], start: 4.0, end: 4.5, probability: 1),
+            WordTiming(word: " stuff", tokens: [], start: 4.5, end: 5.0, probability: 1),
+            WordTiming(word: " new", tokens: [], start: 6.0, end: 6.5, probability: 1),
+            WordTiming(word: " words", tokens: [], start: 6.5, end: 7.0, probability: 1)
+        ]
+        let result = TranscriptionSession.assembleWithFrontier(
+            transcript: "Confirmed text",
+            tailWords: words,
+            tailSegmentText: "",
+            frontier: 6.0
+        )
+        #expect(result == "Confirmed text new words")
+    }
+
+    @Test("assembleWithFrontier falls back to segment text when all words filtered")
+    func testAssembleWithFrontierAllFiltered() {
+        let words = [
+            WordTiming(word: " old", tokens: [], start: 2.0, end: 2.5, probability: 1),
+            WordTiming(word: " stuff", tokens: [], start: 2.5, end: 3.0, probability: 1)
+        ]
+        let result = TranscriptionSession.assembleWithFrontier(
+            transcript: "Confirmed",
+            tailWords: words,
+            tailSegmentText: " fallback text",
+            frontier: 5.0
+        )
+        #expect(result == "Confirmed fallback text")
+    }
+
+    @Test("assembleWithFrontier uses segment text when no word timestamps")
+    func testAssembleWithFrontierNoWords() {
+        let result = TranscriptionSession.assembleWithFrontier(
+            transcript: "Confirmed",
+            tailWords: [],
+            tailSegmentText: " the rest",
+            frontier: 3.0
+        )
+        #expect(result == "Confirmed the rest")
+    }
 }

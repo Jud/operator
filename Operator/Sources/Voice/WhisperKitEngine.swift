@@ -190,9 +190,45 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
     }
 
     /// Finish recording and return the transcribed text.
+    ///
+    /// Uses a parallel decode strategy: kicks off a pessimistic tail decode
+    /// immediately while letting the in-flight background pass finish. The
+    /// pessimistic decode starts from the current frontier. If the background
+    /// pass advances the frontier, the pessimistic result is filtered to
+    /// only include words past the new frontier.
     public func finishAndTranscribe() async -> String? {
         let stopTime = ContinuousClock.now
 
+        // Snapshot state before stopping — the background pass may still
+        // advance the frontier while the pessimistic decode runs.
+        let snapshotFrontier = session.frontier
+        let snapshotOverlapTokens = lastExtensionWasZeroProgress ? [Int]() : session.overlapTokens
+
+        let (samples, vocabulary) = sessionLock.withLock { state in
+            (state?.audioSamples ?? [Float](), state?.vocabulary ?? [String]())
+        }
+
+        guard !samples.isEmpty
+        else {
+            Self.logger.notice("No audio samples captured")
+            await scheduler.stop()
+            schedulerTask?.cancel()
+            schedulerTask = nil
+            sessionLock.withLock { $0 = nil }
+            return nil
+        }
+
+        let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
+
+        // Start pessimistic tail decode immediately — don't wait for background
+        let pessimisticTask = startPessimisticDecode(
+            samples: samples,
+            frontier: snapshotFrontier,
+            overlapTokens: snapshotOverlapTokens,
+            audioDur: audioDur
+        )
+
+        // Signal scheduler to stop, await background pass completion
         await scheduler.stop()
         let pendingTask = schedulerTask
         schedulerTask = nil
@@ -200,26 +236,29 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         await pendingTask?.value
         let awaitDuration = ContinuousClock.now - stopTime
 
-        let snapshot = sessionLock.withLock { state -> SessionState? in
-            let captured = state
-            state = nil
-            return captured
-        }
-        let samples = snapshot?.audioSamples ?? []
-        let vocabulary = snapshot?.vocabulary ?? []
-
-        guard !samples.isEmpty
-        else {
-            Self.logger.notice("No audio samples captured")
-            return nil
-        }
+        sessionLock.withLock { $0 = nil }
 
         let awaitMs = Self.ms(awaitDuration)
-        let audioDur = Float(samples.count) / Float(WhisperKit.sampleRate)
-        logSessionSummary(audioDur: audioDur, awaitMs: awaitMs)
+        let ftr = session.frontier
+        let wc = session.transcript.split(separator: " ").count
+        let strat = String(describing: session.strategy)
+        let stopMsg = "Stop: \(audioDur)s audio, frontier=\(ftr)s, await=\(awaitMs)ms"
+        Self.logger.notice("\(stopMsg, privacy: .public)")
+        Self.logger.notice("Stop: confirmed=\(wc) words, strategy=\(strat, privacy: .public)")
 
+        // Assemble result from pessimistic decode + final session state
         let finalStart = ContinuousClock.now
-        var fullText = await decodeTail(samples: samples, audioDur: audioDur)
+        var fullText = await assemblePessimisticResult(
+            pessimisticTask: pessimisticTask
+        )
+
+        // Safety net rescues
+        fullText = await applySafetyNet(
+            fullText,
+            samples: samples,
+            audioDur: audioDur
+        )
+
         let finalMs = Self.ms(ContinuousClock.now - finalStart)
 
         guard !fullText.isEmpty
@@ -257,38 +296,52 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         return corrected
     }
 
-    private func logSessionSummary(audioDur: Float, awaitMs: Int) {
-        let frontier = session.frontier
-        let confirmedWordCount = session.transcript.split(separator: " ").count
-        let strategy = session.strategy
-        Self.logger.notice(
-            "Stop: \(audioDur, privacy: .public)s audio, frontier=\(frontier, privacy: .public)s, await=\(awaitMs)ms"
-        )
-        Self.logger.notice(
-            "Stop: confirmed=\(confirmedWordCount) words, strategy=\(String(describing: strategy), privacy: .public)"
-        )
+    // MARK: - Parallel Decode Helpers
+
+    private func startPessimisticDecode(
+        samples: [Float],
+        frontier: Float,
+        overlapTokens: [Int],
+        audioDur: Float
+    ) -> Task<TranscriptionResult?, Never> {
+        Task { [pipe, filters] in
+            let result = await self.transcribeResult(
+                samples: samples,
+                clipStart: frontier,
+                prefixTokens: overlapTokens,
+                chunked: true
+            )
+            guard let result
+            else { return nil }
+
+            return self.runFilterPipeline(result, samples: samples, frontier: frontier)
+        }
     }
 
-    private func decodeTail(samples: [Float], audioDur: Float) async -> String {
-        let frontier = session.frontier
+    private func assemblePessimisticResult(
+        pessimisticTask: Task<TranscriptionResult?, Never>
+    ) async -> String {
+        let pessResult = await pessimisticTask.value
+        let finalFrontier = session.frontier
+        let finalTranscript = session.transcript
 
-        let tailResult = await transcribeResult(
-            samples: samples,
-            clipStart: frontier,
-            prefixTokens: lastExtensionWasZeroProgress ? [] : session.overlapTokens,
-            chunked: true
-        )
-
-        let filteredTail = tailResult.map {
-            runFilterPipeline($0, samples: samples, frontier: frontier)
+        if let result = pessResult {
+            return TranscriptionSession.assembleWithFrontier(
+                transcript: finalTranscript,
+                tailWords: result.allWords,
+                tailSegmentText: result.text,
+                frontier: finalFrontier
+            )
         }
+        return TranscriptionSession.cleanText(finalTranscript)
+    }
 
-        var fullText = assembleResult(
-            transcript: session.transcript,
-            tailTranscription: filteredTail,
-            frontier: frontier
-        )
-
+    private func applySafetyNet(
+        _ text: String,
+        samples: [Float],
+        audioDur: Float
+    ) async -> String {
+        var fullText = text
         let wordCount = Float(fullText.split(separator: " ").count)
         if audioDur > 3 && wordCount / audioDur < 0.5 && !fullText.isEmpty {
             Self.logger.notice(
@@ -301,14 +354,14 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
                 }
             }
         }
-
         if fullText.isEmpty && audioDur > 1 {
-            Self.logger.notice("Empty result on \(audioDur, privacy: .public)s audio -- full decode rescue")
+            Self.logger.notice(
+                "Empty result on \(audioDur, privacy: .public)s audio -- full decode rescue"
+            )
             if let rescue = await transcribeResult(samples: samples) {
                 fullText = TranscriptionSession.cleanText(rescue.text)
             }
         }
-
         return fullText
     }
 
@@ -346,51 +399,6 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
     }
 
     // MARK: - Result Assembly
-
-    /// Coordinator-owned result assembly.
-    ///
-    /// Stitches transcript + filtered tail words.
-    private func assembleResult(
-        transcript: String,
-        tailTranscription: TranscriptionResult?,
-        frontier: Float
-    ) -> String {
-        guard let tail = tailTranscription else {
-            return TranscriptionSession.cleanText(transcript)
-        }
-
-        let allWords = tail.allWords
-        let tailText: String
-
-        if !allWords.isEmpty {
-            let filtered = allWords.filter { $0.start >= frontier }
-            if !filtered.isEmpty {
-                tailText = filtered.map(\.word).joined()
-                if allWords.count != filtered.count {
-                    Self.logger.notice(
-                        "Final decode: \(allWords.count) words, \(allWords.count - filtered.count) filtered by frontier"
-                    )
-                }
-            } else {
-                tailText = tail.text
-                Self.logger.notice("Final decode: \(allWords.count) words all before frontier, using segment text")
-            }
-        } else {
-            tailText = tail.text
-            Self.logger.notice(
-                "Final tail (no words): \"\(tailText.prefix(80), privacy: .public)\""
-            )
-        }
-
-        let combined = TranscriptionSession.cleanText(transcript + tailText)
-        let combinedSnippet = String(combined.prefix(80))
-        let cc = transcript.count
-        let tc = tailText.count
-        Self.logger.notice(
-            "Final combined: confirmed=\(cc) chars + tail=\(tc) chars = \"\(combinedSnippet, privacy: .public)\""
-        )
-        return combined
-    }
 
     // MARK: - Transcription
 
