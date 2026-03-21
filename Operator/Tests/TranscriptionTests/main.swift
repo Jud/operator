@@ -452,12 +452,22 @@ internal func runTranscriptionTests() async -> Int32 {
     }
 
     if shouldRunStreaming {
-        results += await runTestSuite(
-            label: "Streaming Pipeline Tests",
-            engine: engine,
-            fixtures: fixtures,
-            testRunner: runStreamingTest
-        )
+        // Each streaming test gets a fresh engine to prevent state leaking
+        // between fixtures (scheduler tasks, previousSchedulerTask, session state).
+        // The WhisperKit pipeline (model) is shared — only the engine wrapper is new.
+        print("--- Streaming Pipeline Tests ---\n")
+        for fixture in fixtures {
+            let freshEngine = engine.freshEngine()
+            let result = await runStreamingTest(engine: freshEngine, fixture: fixture)
+            results.append(result)
+            let icon = result.passed ? "+" : "x"
+            print("  \(icon) \(fixture.name): \(result.detail)")
+            if !result.passed {
+                print("    Expected: \"\(result.expectedText.prefix(80))...\"")
+                print("    Got:      \"\(result.resultText.prefix(80))...\"")
+            }
+        }
+        print("")
     }
 
     printSummary(results)
