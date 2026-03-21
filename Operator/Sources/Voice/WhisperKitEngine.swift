@@ -54,6 +54,15 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         return WhisperKitEngine(pipe: pipe)
     }
 
+    /// Create a fresh engine sharing the same WhisperKit pipeline.
+    ///
+    /// The new engine has a clean session, scheduler, and filter pipeline.
+    /// Useful for tests that need isolation between fixtures without
+    /// reloading the model.
+    public func freshEngine() -> WhisperKitEngine {
+        WhisperKitEngine(pipe: pipe)
+    }
+
     private static func ms(_ duration: Duration) -> Int {
         let (seconds, attoseconds) = duration.components
         return Int(seconds) * 1_000 + Int(attoseconds / 1_000_000_000_000_000)
