@@ -398,6 +398,23 @@ private func printSummary(_ results: [TestResult]) {
 }
 
 @MainActor
+private func collectManifestResults(engine: WhisperKitEngine) async -> [TestResult] {
+    let manifestFailures = await runManifestTests(baseEngine: engine)
+    return manifestFailures.map { failure in
+        TestResult(
+            fixture: failure,
+            mode: "manifest",
+            passed: false,
+            similarity: 0,
+            resultText: "",
+            expectedText: "",
+            durationMs: 0,
+            detail: failure
+        )
+    }
+}
+
+@MainActor
 internal func runTranscriptionTests() async -> Int32 {
     let args = CommandLine.arguments.dropFirst()
     let filter = args.first
@@ -452,9 +469,6 @@ internal func runTranscriptionTests() async -> Int32 {
     }
 
     if shouldRunStreaming {
-        // Each streaming test gets a fresh engine to prevent state leaking
-        // between fixtures (scheduler tasks, previousSchedulerTask, session state).
-        // The WhisperKit pipeline (model) is shared — only the engine wrapper is new.
         print("--- Streaming Pipeline Tests ---\n")
         for fixture in fixtures {
             let freshEngine = engine.freshEngine()
@@ -469,6 +483,9 @@ internal func runTranscriptionTests() async -> Int32 {
         }
         print("")
     }
+
+    // Manifest replay tests
+    results += await collectManifestResults(engine: engine)
 
     printSummary(results)
     let allPassed = results.filter(\.passed).count == results.count
