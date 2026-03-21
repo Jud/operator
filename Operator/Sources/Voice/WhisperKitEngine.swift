@@ -314,13 +314,12 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
 
     /// Cancel any in-progress session and release resources.
     public func cancel() {
-        // Stop the scheduler so its loop exits. The schedulerTask
-        // is saved as previousSchedulerTask so prepare() can await
-        // it before starting a new session.
-        Task { await scheduler.stop() }
-        if let old = schedulerTask {
-            previousSchedulerTask = old
-        }
+        // Capture the current scheduler before replacing it.
+        // The fire-and-forget stop must use a local copy to avoid
+        // a data race with prepare() replacing self.scheduler.
+        let oldScheduler = scheduler
+        Task { await oldScheduler.stop() }
+        previousSchedulerTask = schedulerTask
         schedulerTask = nil
         sessionLock.withLock { $0 = nil }
         session = TranscriptionSession()
