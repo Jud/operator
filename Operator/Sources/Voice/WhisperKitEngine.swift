@@ -282,11 +282,13 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
                 let debugSamples = samples
                 let debugResult = corrected
                 let debugPipe = self.pipe
+                let debugLatencyMs = totalMs
                 Task.detached {
                     await Self.compareGroundTruth(
                         streamingResult: debugResult,
                         samples: debugSamples,
                         audioDuration: audioDur,
+                        latencyMs: debugLatencyMs,
                         pipe: debugPipe
                     )
                 }
@@ -445,6 +447,7 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
             streamingResult: String,
             samples: [Float],
             audioDuration: Float,
+            latencyMs: Int,
             pipe: WhisperKit
         ) async {
             do {
@@ -469,14 +472,15 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
                 let similarity = levenshteinSimilarity(streamingResult, gtText)
                 let pct = Int(similarity * 100)
 
-                if similarity >= 0.85 {
-                    qualityLogger.info(
-                        "✅ Quality: \(pct)% match (\(audioDuration, privacy: .public)s audio)"
-                    )
+                let highLatency = latencyMs > 1_500
+
+                if similarity >= 0.85 && !highLatency {
+                    let ok = "✅ \(pct)% match, \(latencyMs)ms (\(audioDuration)s)"
+                    qualityLogger.info("\(ok, privacy: .public)")
                 } else {
-                    qualityLogger.warning(
-                        "⚠️ Quality: \(pct)% match (\(audioDuration, privacy: .public)s audio)"
-                    )
+                    let tag = highLatency ? "slow" : "quality"
+                    let msg = "⚠️ \(tag): \(pct)% match, \(latencyMs)ms (\(audioDuration)s)"
+                    qualityLogger.warning("\(msg, privacy: .public)")
                     qualityLogger.warning(
                         "  Streaming: \"\(streamingResult.prefix(100), privacy: .public)\""
                     )
