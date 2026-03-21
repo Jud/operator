@@ -76,10 +76,14 @@ public final class DictationDelivery: DictationDelivering {
     public func deliver(_ text: String) async -> DictationResult {
         Self.logger.info("Delivering dictation (\(text.count) chars)")
 
+        // Always store as lastDictation so double-tap replay works
+        // even if paste fails (e.g., noTextField). The transcription
+        // was successful — delivery failure is a separate concern.
+        lastDictation = text
+
         let result = await performPasteboardCycle(text: text)
         if case .success = result {
-            lastDictation = text
-            Self.logger.info("Dictation delivered successfully, stored as lastDictation")
+            Self.logger.info("Dictation delivered successfully")
         }
         return result
     }
