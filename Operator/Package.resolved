@@ -1,5 +1,5 @@
 {
-  "originHash" : "d5e2d8a85fc043ba5a55fafda2a7fa8839a8181c3dcca055e167f96277b9ce6e",
+  "originHash" : "6203b3e330f90c5b4b38b79652e818ebde2db4a96430b0d665d2ba9096227179",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Jud/kokoro-coreml.git",
       "state" : {
-        "revision" : "3ec64a0b2aa3a8d40e6da7d9afd6d5065b1416c2",
-        "version" : "0.5.0"
+        "revision" : "ec0f5def620cd604887fd9ec78ee5549df6cb25a",
+        "version" : "0.6.0"
       }
     },
     {
