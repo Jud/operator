@@ -67,7 +67,7 @@ public final class FNKeyTrigger: TriggerSource {
     public init(
         secondaryKeyCode: CGKeyCode? = nil,
         secondaryModifiers: CGEventFlags = [],
-        toggleThreshold: TimeInterval = 0.2
+        toggleThreshold: TimeInterval = 0.25
     ) {
         self.secondaryKeyCode = secondaryKeyCode
         self.secondaryModifiers = secondaryModifiers
