@@ -155,6 +155,12 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         session = TranscriptionSession()
         lastExtensionWasZeroProgress = false
 
+        // Create a fresh scheduler for this session. The previous
+        // session's scheduler may have a pending fire-and-forget stop()
+        // from cancel() — reusing it would race (stop sets stopped=true
+        // after start sets it to false, killing the new loop).
+        scheduler = BackgroundLoopScheduler()
+
         let taskToDrain = previousSchedulerTask
         previousSchedulerTask = nil
         let sched = scheduler

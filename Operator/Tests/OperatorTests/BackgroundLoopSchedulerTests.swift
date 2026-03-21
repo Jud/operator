@@ -160,6 +160,14 @@ internal struct BackgroundLoopSchedulerTests {
         await running.value
     }
 
+    // NOTE: The scheduler race condition (fire-and-forget stop + immediate
+    // start on the same scheduler) was identified as the root cause of the
+    // no-background-confirmation bug. The fix: prepare() creates a new
+    // BackgroundLoopScheduler per session instead of reusing the old one.
+    // A unit test for this race is not feasible because BackgroundLoopScheduler's
+    // start() blocks on await task.value, creating cleanup deadlocks in tests.
+    // The fix is verified by the no-background-confirmation integration fixture.
+
     // NOTE: The coordinator's cancel() must call scheduler.stop() before
     // draining the scheduler task. Without stop(), the task hangs forever.
     // This was a production bug (2026-03-20). A unit test for this requires
