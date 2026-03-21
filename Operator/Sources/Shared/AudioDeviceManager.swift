@@ -94,15 +94,26 @@ public enum AudioDeviceManager {
             mElement: kAudioObjectPropertyElementMain
         )
 
-        var result: Unmanaged<CFString>?
-        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        // Use a raw pointer to avoid UnsafeMutableRawPointer-to-Optional warnings.
+        // CoreAudio writes a CFString reference into the buffer.
+        var size = UInt32(MemoryLayout<CFTypeRef>.size)
+        var ref: CFTypeRef?
 
-        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &result) == noErr,
-            let cfString = result
+        let status = withUnsafeMutablePointer(to: &ref) { ptr in
+            AudioObjectGetPropertyData(
+                deviceID,
+                &address,
+                0,
+                nil,
+                &size,
+                ptr
+            )
+        }
+        guard status == noErr, let value = ref as? String
         else {
             return nil
         }
-        return cfString.takeUnretainedValue() as String
+        return value
     }
 
     private static func hasStreams(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Bool {
