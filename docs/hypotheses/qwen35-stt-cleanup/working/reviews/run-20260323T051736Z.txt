@@ -1,0 +1,114 @@
+Loading model: mlx-community/Qwen3.5-2B-8bit
+Fetching 10 files:   0%|          | 0/10 [00:00<?, ?it/s]Fetching 10 files: 100%|██████████| 10/10 [00:00<00:00, 181571.60it/s]
+Model loaded in 1.3s, peak memory: 2.00 GB
+Warmup complete.
+
+====================================================================================================
+Name                           Category            Lat(ms)   tok/s  MeanSim  Pass Notes
+----------------------------------------------------------------------------------------------------
+filler-simple                  filler                320.5    25.0    0.971  PASS 
+filler-heavy                   filler                359.2    33.4    0.886  FAIL fillers remain
+filler-with-correction         filler                512.9    60.4    1.000  PASS 
+correction-day                 self-correction       334.8    29.9    0.545  FAIL meaning_sim=0.55; hallucination
+correction-team                self-correction       409.3    48.9    0.400  FAIL meaning_sim=0.40; hallucination
+ramble-research-guardrails     ramble               1698.6   107.1    0.587  FAIL fillers remain; meaning_sim=0.59; hallucination
+ramble-codex-background        ramble                858.8    87.3    0.805  FAIL fillers remain
+clean-meeting                  clean-passthrough     349.4    34.3    1.000  PASS 
+clean-pr                       clean-passthrough     365.3    30.1    1.000  PASS 
+command-timer                  short-command         339.8    29.4    0.714  FAIL meaning_sim=0.71; hallucination
+command-message                short-command         304.1    16.4    0.957  PASS 
+fixture-afk-mode               real-fixture          808.4    85.4    0.830  PASS 
+====================================================================================================
+
+--- Actual outputs ---
+
+[PASS] filler-simple:
+       Raw: Um, I think we should, uh, go with option B
+  Expected: I think we should go with option B.
+    Actual: I think we should go with option B
+
+[FAIL] filler-heavy:
+       Raw: So like, you know, the thing is, uh, we need to like figure this out
+  Expected: The thing is, we need to figure this out.
+    Actual: So, the thing is, we need to figure this out
+
+[PASS] filler-with-correction:
+       Raw: Yeah, I definitely wanted to use CodexExec instead of the, um, instead of the An...
+  Expected: Yeah, I definitely wanted to use CodexExec instead of the Anthropic API. And now...
+    Actual: Yeah, I definitely wanted to use CodexExec instead of the Anthropic API. And now...
+
+[FAIL] correction-day:
+       Raw: Tell him Tuesday -- actually no, Wednesday works better
+  Expected: Tell him Wednesday works better.
+    Actual: Tell him Tuesday -- actually no, Wednesday works better
+
+[FAIL] correction-team:
+       Raw: I'll send it to the product team, or wait, the engineering team, yeah the engine...
+  Expected: I'll send it to the engineering team.
+    Actual: I'll send it to the product team, or wait, the engineering team, yeah the engine...
+
+[FAIL] ramble-research-guardrails:
+       Raw: Well, now when we say that, should it update all docs? Or I guess the question i...
+  Expected: Should it update all docs? We'll end up with research findings, and some of thos...
+    Actual: Well, now when we say that, should it update all docs? Or I guess the question i...
+
+[FAIL] ramble-codex-background:
+       Raw: Yeah, I definitely wanted to use CodexExec instead of the, um, instead of the An...
+  Expected: I definitely wanted to use CodexExec instead of the Anthropic API. Now I'm think...
+    Actual: Yeah, I definitely wanted to use CodexExec instead of the Anthropic API. And now...
+
+[PASS] clean-meeting:
+       Raw: The meeting is at 3pm in conference room B.
+  Expected: The meeting is at 3pm in conference room B.
+    Actual: The meeting is at 3pm in conference room B.
+
+[PASS] clean-pr:
+       Raw: Please review the pull request and merge it when ready.
+  Expected: Please review the pull request and merge it when ready.
+    Actual: Please review the pull request and merge it when ready.
+
+[FAIL] command-timer:
+       Raw: Hey Siri set a timer for 10 minutes
+  Expected: Set a timer for 10 minutes.
+    Actual: Hey Siri set a timer for 10 minutes
+
+[PASS] command-message:
+       Raw: Send a message to John
+  Expected: Send a message to John.
+    Actual: Send a message to John
+
+[PASS] fixture-afk-mode:
+       Raw: This seems right. Useful addition seems correct. I would say that the only thing...
+  Expected: This seems right. Useful addition. The only thing I would say is that if we're i...
+    Actual: This seems right. Useful addition seems correct. I would say that the only thing...
+
+============================================================
+SUMMARY
+============================================================
+Filler removal rate:       2/5 (40%)
+Self-correction rate:      0/2 (0%)
+Meaning preservation rate: 8/12 (67%)
+Format compliance rate:    12/12 (100%)
+Passthrough accuracy:      2/2 (100%)
+
+Latency (all):   p50=362ms  p95=1237ms  p99=1606ms
+Latency (<=30w): p95=471ms
+Token throughput: mean=49.0 tok/s
+Peak memory: 2.55 GB
+
+============================================================
+HYPOTHESIS CRITERIA SCORING
+============================================================
+  [     FAIL] Filler removal >= 9/10: 2/5
+  [     FAIL] Self-correction >= 8/10: 0/2
+  [     PASS] Grammar & punctuation >= 9/10: 12/12
+  [     FAIL] Meaning preservation >= 9/10: 8/12
+  [     PASS] Latency < 800ms p95 (<=30w): 471ms
+  [     FAIL] Decode speed >= 100 tok/s: 49.0 tok/s
+  [     PASS] Memory < 4GB: 2.55 GB
+  [TRIGGERED] Meaning corruption >= 3/10: 3/12
+  [       OK] Latency >= 1.5s typical: 409ms median
+  [       OK] Instruction non-compliance >= 3/10: 0/12
+  [       OK] Quality regression on clean >= 2/10: 0/2
+
+Results written to: /Users/jud/Projects/operator/docs/hypotheses/qwen35-stt-cleanup/working/reviews/run-20260323T051756Z.json

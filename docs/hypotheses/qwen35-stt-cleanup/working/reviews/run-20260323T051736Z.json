@@ -1,0 +1,304 @@
+{
+  "timestamp": "20260323T051736Z",
+  "model_id": "mlx-community/Qwen3.5-2B-8bit",
+  "model_load_time_s": 54.6,
+  "peak_memory_gb": 2.55,
+  "system_prompt": "You are a speech-to-text cleanup tool. Your job is to transform raw voice transcriptions into clean, polished written text.\n\nRules:\n1. Remove filler words: um, uh, like, you know, so, actually, basically\n2. Resolve self-corrections: keep only the final intended version\n3. Fix grammar, capitalization, and punctuation\n4. Preserve the speaker's meaning exactly -- never add content\n5. Output ONLY the cleaned text, no explanations, no markdown, no quotes\n6. If the input is already clean, return it unchanged",
+  "num_test_cases": 12,
+  "aggregate": {
+    "filler_removal_rate": 0.4,
+    "self_correction_rate": 0.0,
+    "meaning_preservation_rate": 0.667,
+    "format_compliance_rate": 1.0,
+    "passthrough_accuracy": 1.0
+  },
+  "latency": {
+    "all_p50_ms": 372.4,
+    "all_p95_ms": 1229.9,
+    "all_p99_ms": 1604.4,
+    "short_p95_ms": 475.7,
+    "typical_median_ms": 413.5
+  },
+  "throughput": {
+    "mean_tok_s": 48.9
+  },
+  "hypothesis_criteria": {
+    "success": {
+      "filler_removal": {
+        "required": ">=9/10",
+        "actual": "2/5",
+        "pass": false
+      },
+      "self_correction": {
+        "required": ">=8/10",
+        "actual": "0/2",
+        "pass": false
+      },
+      "grammar_punctuation": {
+        "required": ">=9/10",
+        "actual": "12/12",
+        "pass": true
+      },
+      "meaning_preservation": {
+        "required": ">=9/10",
+        "actual": "8/12",
+        "pass": false
+      },
+      "latency_short": {
+        "required": "<800ms p95",
+        "actual": "476ms",
+        "pass": true
+      },
+      "decode_speed": {
+        "required": ">=100 tok/s",
+        "actual": "48.9",
+        "pass": false
+      },
+      "memory": {
+        "required": "<4GB",
+        "actual": "2.55GB",
+        "pass": true
+      }
+    },
+    "failure": {
+      "meaning_corruption": {
+        "threshold": ">=3/10",
+        "actual": "3/12",
+        "triggered": true
+      },
+      "unacceptable_latency": {
+        "threshold": ">=1.5s typical",
+        "actual": "414ms",
+        "triggered": false
+      },
+      "instruction_noncompliance": {
+        "threshold": ">=3/10",
+        "actual": "0/12",
+        "triggered": false
+      },
+      "quality_regression_clean": {
+        "threshold": ">=2/10",
+        "actual": "0/2",
+        "triggered": false
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "filler-simple",
+      "category": "filler",
+      "input_tokens": 147,
+      "output_tokens": 8,
+      "latency_ms": 319.5,
+      "tok_s": 25.0,
+      "meaning_sim": 0.971,
+      "filler_clean": true,
+      "no_hallucination": true,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": true,
+      "notes": "",
+      "raw_input": "Um, I think we should, uh, go with option B",
+      "expected": "I think we should go with option B.",
+      "actual_output": "I think we should go with option B"
+    },
+    {
+      "name": "filler-heavy",
+      "category": "filler",
+      "input_tokens": 153,
+      "output_tokens": 12,
+      "latency_ms": 346.8,
+      "tok_s": 34.6,
+      "meaning_sim": 0.886,
+      "filler_clean": false,
+      "no_hallucination": true,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": false,
+      "notes": "fillers remain",
+      "raw_input": "So like, you know, the thing is, uh, we need to like figure this out",
+      "expected": "The thing is, we need to figure this out.",
+      "actual_output": "So, the thing is, we need to figure this out"
+    },
+    {
+      "name": "filler-with-correction",
+      "category": "filler",
+      "input_tokens": 173,
+      "output_tokens": 31,
+      "latency_ms": 517.2,
+      "tok_s": 59.9,
+      "meaning_sim": 1.0,
+      "filler_clean": true,
+      "no_hallucination": true,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": true,
+      "notes": "",
+      "raw_input": "Yeah, I definitely wanted to use CodexExec instead of the, um, instead of the Anthropic API. Um, and now I'm kind of thinking, should we be doing this?",
+      "expected": "Yeah, I definitely wanted to use CodexExec instead of the Anthropic API. And now I'm kind of thinking, should we be doing this?",
+      "actual_output": "Yeah, I definitely wanted to use CodexExec instead of the Anthropic API. And now I'm kind of thinking, should we be doing this?"
+    },
+    {
+      "name": "correction-day",
+      "category": "self-correction",
+      "input_tokens": 144,
+      "output_tokens": 10,
+      "latency_ms": 339.5,
+      "tok_s": 29.5,
+      "meaning_sim": 0.545,
+      "filler_clean": false,
+      "no_hallucination": false,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": false,
+      "notes": "meaning_sim=0.55; hallucination",
+      "raw_input": "Tell him Tuesday -- actually no, Wednesday works better",
+      "expected": "Tell him Wednesday works better.",
+      "actual_output": "Tell him Tuesday -- actually no, Wednesday works better"
+    },
+    {
+      "name": "correction-team",
+      "category": "self-correction",
+      "input_tokens": 154,
+      "output_tokens": 20,
+      "latency_ms": 413.5,
+      "tok_s": 48.4,
+      "meaning_sim": 0.4,
+      "filler_clean": true,
+      "no_hallucination": false,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": false,
+      "notes": "meaning_sim=0.40; hallucination",
+      "raw_input": "I'll send it to the product team, or wait, the engineering team, yeah the engineering team",
+      "expected": "I'll send it to the engineering team.",
+      "actual_output": "I'll send it to the product team, or wait, the engineering team, yeah the engineering team"
+    },
+    {
+      "name": "ramble-research-guardrails",
+      "category": "ramble",
+      "input_tokens": 317,
+      "output_tokens": 182,
+      "latency_ms": 1698.0,
+      "tok_s": 107.2,
+      "meaning_sim": 0.587,
+      "filler_clean": false,
+      "no_hallucination": false,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": false,
+      "notes": "fillers remain; meaning_sim=0.59; hallucination",
+      "raw_input": "Well, now when we say that, should it update all docs? Or I guess the question is, like, you know, we will end up with, you know, like, we'll have these like research findings and stuff. And then maybe some of those will be proven incorrect. And the question is then what should happen to that? I think we need guardrails around agents just like updating those after the fact. You know, I think like they do, like those findings mean something. They may not be exactly correct or there may be nuance hidden in them, but I think for For someone else to come by and stamp it as like wrong, seems like the wrong approach. But maybe we stamp it as like, you know, I don't know. It may be possible to say like, that it didn't work as planned or something, I don't know. Does that make sense?",
+      "expected": "Should it update all docs? We'll end up with research findings, and some of those may be proven incorrect. What should happen then? I think we need guardrails around agents updating those after the fact. Those findings mean something. They may not be exactly correct or there may be nuance hidden in them, but for someone else to come by and stamp it as wrong seems like the wrong approach. Maybe we stamp it as something like \"didn't work as planned.\" Does that make sense?",
+      "actual_output": "Well, now when we say that, should it update all docs? Or I guess the question is, like, you know, we will end up with, you know, like, we'll have these like research findings and stuff. And then maybe some of those will be proven incorrect. And the question is then what should happen to that? I think we need guardrails around agents just like updating those after the fact. You know, I think like they do, like those findings mean something. They may not be exactly correct or there may be nuance hidden in them, but I think for someone else to come by and stamp it as like wrong, seems like the wrong approach. But maybe we stamp it as like, you know, I don't know. It may be possible to say like, that it didn't work as planned or something, I don't know. Does that make sense?"
+    },
+    {
+      "name": "ramble-codex-background",
+      "category": "ramble",
+      "input_tokens": 223,
+      "output_tokens": 75,
+      "latency_ms": 847.0,
+      "tok_s": 88.6,
+      "meaning_sim": 0.805,
+      "filler_clean": false,
+      "no_hallucination": true,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": false,
+      "notes": "fillers remain",
+      "raw_input": "Yeah, I definitely wanted to use CodexExec instead of the, um, instead of the Anthropic API. Um, and now I'm kind of thinking, \"Should we be doing this?\" Like, I'm obviously doing a bunch of transcriptions. How many transcriptions do I need to train this neural net? And then could we just be doing this, um, you know, in a background process whenever I create a transcription?",
+      "expected": "I definitely wanted to use CodexExec instead of the Anthropic API. Now I'm thinking, should we be doing this? I'm doing a bunch of transcriptions. How many do I need to train this neural net? Could we just do this in a background process whenever I create a transcription?",
+      "actual_output": "Yeah, I definitely wanted to use CodexExec instead of the Anthropic API. And now I'm kind of thinking, \"Should we be doing this?\" Like, I'm obviously doing a bunch of transcriptions. How many transcriptions do I need to train this neural net? And then could we just be doing this in a background process whenever I create a transcription?"
+    },
+    {
+      "name": "clean-meeting",
+      "category": "clean-passthrough",
+      "input_tokens": 146,
+      "output_tokens": 12,
+      "latency_ms": 348.7,
+      "tok_s": 34.4,
+      "meaning_sim": 1.0,
+      "filler_clean": true,
+      "no_hallucination": true,
+      "format_clean": true,
+      "passthrough_ok": true,
+      "passed": true,
+      "notes": "",
+      "raw_input": "The meeting is at 3pm in conference room B.",
+      "expected": "The meeting is at 3pm in conference room B.",
+      "actual_output": "The meeting is at 3pm in conference room B."
+    },
+    {
+      "name": "clean-pr",
+      "category": "clean-passthrough",
+      "input_tokens": 145,
+      "output_tokens": 11,
+      "latency_ms": 396.1,
+      "tok_s": 27.8,
+      "meaning_sim": 1.0,
+      "filler_clean": true,
+      "no_hallucination": true,
+      "format_clean": true,
+      "passthrough_ok": true,
+      "passed": true,
+      "notes": "",
+      "raw_input": "Please review the pull request and merge it when ready.",
+      "expected": "Please review the pull request and merge it when ready.",
+      "actual_output": "Please review the pull request and merge it when ready."
+    },
+    {
+      "name": "command-timer",
+      "category": "short-command",
+      "input_tokens": 144,
+      "output_tokens": 10,
+      "latency_ms": 334.3,
+      "tok_s": 29.9,
+      "meaning_sim": 0.714,
+      "filler_clean": true,
+      "no_hallucination": false,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": false,
+      "notes": "meaning_sim=0.71; hallucination",
+      "raw_input": "Hey Siri set a timer for 10 minutes",
+      "expected": "Set a timer for 10 minutes.",
+      "actual_output": "Hey Siri set a timer for 10 minutes"
+    },
+    {
+      "name": "command-message",
+      "category": "short-command",
+      "input_tokens": 139,
+      "output_tokens": 5,
+      "latency_ms": 299.6,
+      "tok_s": 16.7,
+      "meaning_sim": 0.957,
+      "filler_clean": true,
+      "no_hallucination": true,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": true,
+      "notes": "",
+      "raw_input": "Send a message to John",
+      "expected": "Send a message to John.",
+      "actual_output": "Send a message to John"
+    },
+    {
+      "name": "fixture-afk-mode",
+      "category": "real-fixture",
+      "input_tokens": 209,
+      "output_tokens": 69,
+      "latency_ms": 807.8,
+      "tok_s": 85.4,
+      "meaning_sim": 0.83,
+      "filler_clean": true,
+      "no_hallucination": true,
+      "format_clean": true,
+      "passthrough_ok": null,
+      "passed": true,
+      "notes": "",
+      "raw_input": "This seems right. Useful addition seems correct. I would say that the only thing that I would say is that we should be sure that if there's, if we're in AFK mode, we shouldn't be asking the user. We should use the context that the main thread has to answer the questions to the best of our ability and make make good judgments and defaults.",
+      "expected": "This seems right. Useful addition. The only thing I would say is that if we're in AFK mode, we shouldn't be asking the user. We should use the context that the main thread has to answer the questions to the best of our ability and make good judgments and defaults.",
+      "actual_output": "This seems right. Useful addition seems correct. I would say that the only thing I would say is that we should be sure that if we're in AFK mode, we shouldn't be asking the user. We should use the context that the main thread has to answer the questions to the best of our ability and make good judgments and defaults."
+    }
+  ]
+}
