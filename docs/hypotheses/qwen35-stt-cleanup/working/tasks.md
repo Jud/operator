@@ -1,10 +1,10 @@
 # Hypothesis Test Tasks: Qwen3.5-2B STT Cleanup
 
-**Status:** Planning
+**Status:** Building
 **Worktree:** .claude/worktrees/hypothesis-qwen35-stt-cleanup
 **Branch:** hypothesis/qwen35-stt-cleanup
 **Total Tasks:** 3
-**Completed:** 0
+**Completed:** 2
 
 ## Task Graph
 
@@ -17,7 +17,7 @@ All tasks are sequential. T2 depends on T1 for the venv and test case definition
 ## Tasks
 
 ### T1. Python venv + test case definitions
-**Status:** built
+**Status:** done
 **Depends on:** —
 **Files:** `docs/hypotheses/qwen35-stt-cleanup/working/setup.sh`, `docs/hypotheses/qwen35-stt-cleanup/working/test_cases.py`
 **Review:** —
@@ -71,7 +71,7 @@ Create two files:
 ---
 
 ### T2. Benchmark script (cleanup_bench.py)
-**Status:** built
+**Status:** done
 **Depends on:** T1
 **Files:** `docs/hypotheses/qwen35-stt-cleanup/working/cleanup_bench.py`
 **Review:** —
