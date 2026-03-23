@@ -71,7 +71,7 @@ Create two files:
 ---
 
 ### T2. Benchmark script (cleanup_bench.py)
-**Status:** pending
+**Status:** built
 **Depends on:** T1
 **Files:** `docs/hypotheses/qwen35-stt-cleanup/working/cleanup_bench.py`
 **Review:** —
