@@ -30,6 +30,9 @@ mcp-server/dist/
 .env
 .env.local
 
+# Python virtual environments
+.venv/
+
 # rp1
 .rp1/
 
