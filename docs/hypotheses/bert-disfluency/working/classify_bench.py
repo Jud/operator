@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Benchmark script for BERT disfluency token classification hypothesis test.
+"""Benchmark script for ModernBERT disfluency token classification hypothesis test.
 
-Loads 4i-ai/BERT_disfluency_cls (BERT-base fine-tuned for disfluency detection),
-runs token classification on the same 12 test cases from the Qwen3.5 tests,
+Loads two ModernBERT token classifiers:
+  - arielcerdap/modernbert-base-multiclass-disfluency-v2 (149M, base)
+  - arielcerdap/modernbert-disfluency-expC-large-realonly (400M, large)
+
+Both use 5-class labels: O (fluent), FP (filled pause), RP (repetition),
+RV (revision), PW (partial word).
+
+Runs token classification on the same 12 test cases from the Qwen3.5 tests,
 inspects per-token labels, strips disfluent tokens, and evaluates quality/latency.
 
 Usage:
     cd docs/hypotheses/bert-disfluency/working
-    python classify_bench.py
+    .venv/bin/python classify_bench.py
 """
 import json, os, re, sys, time, traceback
 from datetime import datetime, timezone
@@ -17,7 +23,14 @@ import torch
 from transformers import AutoModelForTokenClassification, AutoTokenizer
 
 # -- Config --
-MODEL_ID = "4i-ai/BERT_disfluency_cls"
+MODELS = [
+    ("base", "arielcerdap/modernbert-base-multiclass-disfluency-v2"),
+    ("large", "arielcerdap/modernbert-disfluency-expC-large-realonly"),
+]
+
+# 5-class label scheme: O is fluent, everything else is disfluent
+DISFLUENT_LABELS = {"FP", "RP", "RV", "PW"}
+FLUENT_LABELS = {"O"}
 
 
 # -- Levenshtein similarity (no external dependency) --
@@ -71,40 +84,43 @@ def check_passthrough(output: str, expected: str) -> bool:
     return output.rstrip(".!?,;:") == expected.rstrip(".!?,;:")
 
 
-def load_model():
-    """Load the BERT disfluency classifier from HuggingFace."""
-    print(f"Loading model: {MODEL_ID}")
+def load_model(model_id):
+    """Load a ModernBERT disfluency classifier from HuggingFace."""
+    print(f"Loading model: {model_id}")
     t0 = time.perf_counter()
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    model = AutoModelForTokenClassification.from_pretrained(MODEL_ID)
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    model = AutoModelForTokenClassification.from_pretrained(model_id)
     model.eval()
     load_time = time.perf_counter() - t0
 
     # Inspect label mapping
     id2label = model.config.id2label
-    print(f"Model loaded in {load_time:.2f}s")
-    print(f"Label mapping: {id2label}")
-    print(f"Num labels: {model.config.num_labels}")
+    print(f"  Loaded in {load_time:.2f}s")
+    print(f"  Label mapping: {id2label}")
+    print(f"  Num labels: {model.config.num_labels}")
 
     # Try to use MPS (Apple Silicon GPU) if available, fall back to CPU
     if torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("Using MPS (Apple Silicon GPU)")
+        print("  Using MPS (Apple Silicon GPU)")
     else:
         device = torch.device("cpu")
-        print("Using CPU")
+        print("  Using CPU")
     model = model.to(device)
 
     return model, tokenizer, device, id2label, load_time
 
 
 def classify_tokens(model, tokenizer, device, id2label, text):
-    """Run token classification and return per-token labels.
+    """Run token classification and return per-word labels using offset mapping.
+
+    Uses offset_mapping to map subword predictions back to original words.
+    Takes the label of the FIRST subtoken for each word.
 
     Returns:
-        tokens: list of str (WordPiece tokens, excluding [CLS]/[SEP])
-        labels: list of str (predicted label for each token)
-        word_ids: list of int|None (word index for each token)
+        words: list of str (original words from the input text)
+        labels: list of str (predicted label for each word, first-subtoken)
+        offsets: list of (int, int) (character offsets per word in original text)
     """
     inputs = tokenizer(text, return_tensors="pt", truncation=True,
                        return_offsets_mapping=True)
@@ -116,89 +132,70 @@ def classify_tokens(model, tokenizer, device, id2label, text):
     logits = outputs.logits[0]  # (seq_len, num_labels)
     predictions = torch.argmax(logits, dim=-1).cpu().tolist()
 
-    # Decode tokens and align with predictions
-    input_ids = inputs["input_ids"][0].cpu().tolist()
-    tokens = tokenizer.convert_ids_to_tokens(input_ids)
+    # Use word_ids() to group subtokens into words and take first-subtoken label
+    encoding = tokenizer(text, return_offsets_mapping=True)
+    word_ids_list = encoding.word_ids()  # None for special tokens, int for words
 
-    # Build result, skipping [CLS] and [SEP]
-    result_tokens = []
-    result_labels = []
-    result_offsets = []
-    for i, (tok, pred, offset) in enumerate(zip(tokens, predictions, offset_mapping)):
-        if tok in ("[CLS]", "[SEP]", "<s>", "</s>"):
-            continue
-        label = id2label.get(pred, f"UNKNOWN_{pred}")
-        result_tokens.append(tok)
-        result_labels.append(label)
-        result_offsets.append((offset[0].item(), offset[1].item()))
-
-    return result_tokens, result_labels, result_offsets
-
-
-def reassemble_text(tokens, labels, original_text):
-    """Strip disfluent tokens and reassemble into clean text.
-
-    Uses a simple approach: keep tokens labeled as fluent, reconstruct by
-    checking if the token is a WordPiece continuation (starts with ##) or
-    a new word.
-    """
-    # Identify which label means "disfluent" -- the model may use various
-    # naming conventions. We check for common patterns.
-    disfluent_labels = set()
-    fluent_labels = set()
-    all_labels = set(labels)
-
-    for label in all_labels:
-        lower = label.lower()
-        if any(x in lower for x in ["disf", "remove", "delete", "1", "bad", "noisy"]):
-            disfluent_labels.add(label)
-        elif any(x in lower for x in ["fluent", "keep", "0", "clean", "good"]):
-            fluent_labels.add(label)
-
-    # If we couldn't determine automatically, check if it's a simple 0/1 scheme
-    if not disfluent_labels and not fluent_labels:
-        # Try numeric: some models use LABEL_0 = fluent, LABEL_1 = disfluent
-        # or vice versa. We'll need to inspect the model config.
-        # For now, assume LABEL_1 = disfluent (common convention)
-        for label in all_labels:
-            if label in ("LABEL_1", "1", "D", "d"):
-                disfluent_labels.add(label)
-            else:
-                fluent_labels.add(label)
-
-    # If still ambiguous, report and treat all as fluent (conservative)
-    if not disfluent_labels:
-        print(f"  WARNING: Could not determine disfluent labels from: {all_labels}")
-        print(f"  Treating all tokens as fluent (no removal)")
-        return original_text, disfluent_labels, fluent_labels
-
-    kept_pieces = []
-    for tok, label in zip(tokens, labels):
-        if label in disfluent_labels:
-            continue
-        if tok.startswith("##"):
-            # WordPiece continuation -- append without space
-            kept_pieces.append(tok[2:])
+    # Group by word_id: collect (label, start_offset, end_offset) per word
+    word_data = {}  # word_id -> (first_subtoken_label, min_start, max_end)
+    for idx, word_id in enumerate(word_ids_list):
+        if word_id is None:
+            continue  # skip special tokens ([CLS], [SEP])
+        start, end = offset_mapping[idx].tolist()
+        if start == end:
+            continue  # skip empty spans
+        label = id2label.get(predictions[idx], f"UNKNOWN_{predictions[idx]}")
+        if word_id not in word_data:
+            # First subtoken for this word -- use its label
+            word_data[word_id] = (label, start, end)
         else:
-            if kept_pieces:
-                kept_pieces.append(" ")
-            kept_pieces.append(tok)
+            # Subsequent subtokens -- extend the span but keep first label
+            _, prev_start, prev_end = word_data[word_id]
+            word_data[word_id] = (word_data[word_id][0], prev_start, max(prev_end, end))
 
-    result = "".join(kept_pieces).strip()
+    # Sort by word_id to preserve order, extract word text from original
+    words = []
+    labels = []
+    offsets = []
+    for wid in sorted(word_data.keys()):
+        label, start, end = word_data[wid]
+        word_text = text[start:end]
+        words.append(word_text)
+        labels.append(label)
+        offsets.append((start, end))
 
-    # Basic cleanup: fix double spaces, orphaned punctuation
+    return words, labels, offsets
+
+
+def reassemble_text(tokens, labels, offsets, original_text):
+    """Strip disfluent tokens using character offsets from original text."""
+    kept_spans = []
+    for label, (start, end) in zip(labels, offsets):
+        if label in DISFLUENT_LABELS:
+            continue
+        if start == end:  # skip empty spans (special tokens)
+            continue
+        kept_spans.append((start, end))
+
+    # Merge adjacent/overlapping spans and extract from original
+    if not kept_spans:
+        return ""
+    pieces = []
+    for start, end in kept_spans:
+        pieces.append(original_text[start:end])
+    result = " ".join(pieces)
+
+    # Cleanup: collapse whitespace, fix orphaned punctuation
     result = re.sub(r"\s+", " ", result)
     result = re.sub(r"\s+([,.\-!?;:])", r"\1", result)
-    result = re.sub(r"([,.\-!?;:])\s*([,.\-!?;:])", r"\1", result)
-
-    return result, disfluent_labels, fluent_labels
+    return result.strip()
 
 
-def compute_false_positive_rate(tokens, labels, disfluent_labels):
+def compute_false_positive_rate(tokens, labels):
     """Compute false positive rate: content words incorrectly tagged as disfluent.
 
     We define "content words" as tokens that are NOT known fillers and NOT
-    WordPiece continuations of fillers. This is approximate since we don't
+    subword continuations of fillers. This is approximate since we don't
     have ground-truth token labels.
     """
     filler_stems = {"um", "uh", "like", "you", "know", "so", "actually",
@@ -207,24 +204,25 @@ def compute_false_positive_rate(tokens, labels, disfluent_labels):
     false_positives = 0
 
     for tok, label in zip(tokens, labels):
-        clean_tok = tok.lstrip("#").lower()
+        clean_tok = tok.lower().strip()
         if clean_tok in filler_stems:
             continue  # skip fillers (not content)
         total_content += 1
-        if label in disfluent_labels:
+        if label in DISFLUENT_LABELS:
             false_positives += 1
 
     fp_rate = false_positives / total_content if total_content > 0 else 0.0
     return fp_rate, false_positives, total_content
 
 
-def main() -> None:
-    model, tokenizer, device, id2label, load_time = load_model()
+def run_model(model_name, model_id):
+    """Run all test cases on a single model and return results."""
+    model, tokenizer, device, id2label, load_time = load_model(model_id)
 
     # Warmup
-    print("Running warmup inference...")
+    print(f"  Running warmup inference...")
     _ = classify_tokens(model, tokenizer, device, id2label, "Hello world, this is a test.")
-    print("Warmup complete.\n")
+    print(f"  Warmup complete.\n")
 
     results = []
     all_fp_total = 0
@@ -238,12 +236,12 @@ def main() -> None:
 
         # Run classification
         t_start = time.perf_counter()
-        tokens, labels, offsets = classify_tokens(model, tokenizer, device, id2label, raw)
+        words, labels, offsets = classify_tokens(model, tokenizer, device, id2label, raw)
         latency_s = time.perf_counter() - t_start
         latency_ms = latency_s * 1000
 
         # Reassemble
-        cleaned, disfluent_labels, fluent_labels = reassemble_text(tokens, labels, raw)
+        cleaned = reassemble_text(words, labels, offsets, raw)
 
         # Quality metrics
         meaning_sim = levenshtein_similarity(cleaned.lower(), expected.lower())
@@ -251,22 +249,20 @@ def main() -> None:
         pt_ok = check_passthrough(cleaned, expected) if category == "clean-passthrough" else None
 
         # Token-level stats
-        total_tokens = len(tokens)
-        disfluent_count = sum(1 for l in labels if l in disfluent_labels)
+        total_tokens = len(words)
+        disfluent_count = sum(1 for l in labels if l in DISFLUENT_LABELS)
         fluent_count = total_tokens - disfluent_count
         disf_rate = disfluent_count / total_tokens if total_tokens > 0 else 0
 
         # False positive analysis
-        fp_rate, fp_count, content_count = compute_false_positive_rate(
-            tokens, labels, disfluent_labels)
+        fp_rate, fp_count, content_count = compute_false_positive_rate(words, labels)
         all_fp_total += fp_count
         all_content_total += content_count
 
-        # Build per-token label grid for inspection
+        # Build per-word label grid for inspection (shows actual 5-class labels)
         token_grid = []
-        for tok, label in zip(tokens, labels):
-            tag = "D" if label in disfluent_labels else "F"
-            token_grid.append(f"{tok}[{tag}]")
+        for word, label in zip(words, labels):
+            token_grid.append(f"{word}[{label}]")
 
         # Determine pass/fail
         checks = [meaning_sim >= 0.75]
@@ -306,26 +302,50 @@ def main() -> None:
             "expected": expected,
             "actual_output": cleaned,
             "token_grid": " ".join(token_grid),
-            "disfluent_labels_used": sorted(disfluent_labels),
-            "fluent_labels_used": sorted(fluent_labels),
         })
 
-    # -- Print results --
-    print("=" * 120)
-    hdr = (f"{'Name':<30} {'Category':<18} {'Lat(ms)':>8} {'Tokens':>7} "
+    # Memory estimate (model params)
+    param_count = sum(p.numel() for p in model.parameters())
+    param_mb = param_count * 4 / 1e6  # float32, 4 bytes each
+
+    return {
+        "model_name": model_name,
+        "model_id": model_id,
+        "device": str(device),
+        "param_count": param_count,
+        "param_mb": round(param_mb, 1),
+        "load_time_s": round(load_time, 2),
+        "label_mapping": {str(k): v for k, v in id2label.items()},
+        "results": results,
+        "all_fp_total": all_fp_total,
+        "all_content_total": all_content_total,
+    }
+
+
+def print_model_results(model_run):
+    """Print results table and per-token grids for a single model."""
+    model_name = model_run["model_name"]
+    model_id = model_run["model_id"]
+    results = model_run["results"]
+
+    print(f"\n{'=' * 120}")
+    print(f"MODEL: {model_name} ({model_id})")
+    print(f"{'=' * 120}")
+
+    hdr = (f"{'Name':<30} {'Category':<18} {'Lat(ms)':>8} {'Words':>6} "
            f"{'Disf':>5} {'MeanSim':>8} {'FPRate':>7} {'Pass':>5} Notes")
     print(hdr)
     print("-" * 120)
     for r in results:
         print(f"{r['name']:<30} {r['category']:<18} {r['latency_ms']:>8.2f} "
-              f"{r['total_tokens']:>7} {r['disfluent_count']:>5} "
+              f"{r['total_tokens']:>6} {r['disfluent_count']:>5} "
               f"{r['meaning_sim']:>8.3f} {r['fp_rate']:>7.1%} "
               f"{'PASS' if r['passed'] else 'FAIL':>5} {r['notes']}")
-    print("=" * 120)
+    print("-" * 120)
 
-    # -- Per-token label grids --
-    print("\n--- Per-Token Label Grids ---")
-    print("(F=fluent, D=disfluent)\n")
+    # Per-word label grids
+    print(f"\n--- Per-Word Label Grids [{model_name}] ---")
+    print("(O=fluent, FP=filled pause, RP=repetition, RV=revision, PW=partial word)\n")
     for r in results:
         tag = "PASS" if r["passed"] else "FAIL"
         print(f"[{tag}] {r['name']} ({r['category']}):")
@@ -340,13 +360,20 @@ def main() -> None:
             line += piece + " "
         if line.strip():
             lines.append(line)
-        for l in lines:
-            print(l.rstrip())
+        for ln in lines:
+            print(ln.rstrip())
         print(f"  -> Cleaned: {r['actual_output'][:100]}{'...' if len(r['actual_output']) > 100 else ''}")
         print(f"  -> Expected: {r['expected'][:100]}{'...' if len(r['expected']) > 100 else ''}")
         print()
 
-    # -- Aggregate stats --
+
+def compute_aggregate_stats(model_run):
+    """Compute aggregate stats for a model run."""
+    results = model_run["results"]
+    all_fp_total = model_run["all_fp_total"]
+    all_content_total = model_run["all_content_total"]
+    param_mb = model_run["param_mb"]
+
     filler_cases = [r for r in results if r["category"] in ("filler", "ramble")]
     fc = sum(1 for r in filler_cases if r["filler_clean"])
     fr = fc / len(filler_cases) if filler_cases else 0
@@ -376,23 +403,54 @@ def main() -> None:
     p99 = _pct(all_lat, 99)
     max_lat = max(all_lat) if all_lat else 0
 
-    # Memory estimate (model params)
-    param_count = sum(p.numel() for p in model.parameters())
-    param_mb = param_count * 4 / 1e6  # float32, 4 bytes each
-    print(f"\n{'='*60}\nSUMMARY\n{'='*60}")
-    print(f"Model: {MODEL_ID}")
-    print(f"Device: {device}")
-    print(f"Parameters: {param_count:,} ({param_mb:.0f} MB at fp32)")
-    print(f"Load time: {load_time:.2f}s")
-    print(f"Label mapping: {id2label}")
-    print(f"\nFiller removal rate:       {fc}/{len(filler_cases)} ({fr:.0%})")
-    print(f"Self-correction rate:      {co}/{len(corr_cases)} ({cr:.0%})")
-    print(f"Meaning preservation:      {mo}/{len(results)} ({mr:.0%})")
-    print(f"Passthrough accuracy:      {po}/{len(pt_cases)} ({pr_:.0%})")
-    print(f"Global FP rate:            {all_fp_total}/{all_content_total} ({global_fp:.1%})")
-    print(f"\nLatency: p50={p50:.1f}ms  p95={p95:.1f}ms  p99={p99:.1f}ms  max={max_lat:.1f}ms")
+    return {
+        "filler_cases": len(filler_cases), "filler_clean": fc, "filler_rate": fr,
+        "corr_cases": len(corr_cases), "corr_clean": co, "corr_rate": cr,
+        "pt_cases": len(pt_cases), "pt_clean": po, "pt_rate": pr_,
+        "meaning_ok": mo, "meaning_rate": mr, "total_cases": len(results),
+        "global_fp": global_fp, "global_fp_count": all_fp_total,
+        "global_content_count": all_content_total,
+        "p50": p50, "p95": p95, "p99": p99, "max_lat": max_lat,
+        "param_mb": param_mb,
+    }
 
-    # -- Hypothesis criteria scoring --
+
+def print_summary(model_name, model_run, stats):
+    """Print summary for a single model."""
+    print(f"\n{'='*60}")
+    print(f"SUMMARY: {model_name}")
+    print(f"{'='*60}")
+    print(f"Model: {model_run['model_id']}")
+    print(f"Device: {model_run['device']}")
+    print(f"Parameters: {model_run['param_count']:,} ({model_run['param_mb']:.0f} MB at fp32)")
+    print(f"Load time: {model_run['load_time_s']:.2f}s")
+    print(f"Label mapping: {model_run['label_mapping']}")
+    fc, fl = stats["filler_clean"], stats["filler_cases"]
+    co, cl = stats["corr_clean"], stats["corr_cases"]
+    mo, ml = stats["meaning_ok"], stats["total_cases"]
+    po, pl = stats["pt_clean"], stats["pt_cases"]
+    print(f"\nFiller removal rate:       {fc}/{fl} ({stats['filler_rate']:.0%})")
+    print(f"Self-correction rate:      {co}/{cl} ({stats['corr_rate']:.0%})")
+    print(f"Meaning preservation:      {mo}/{ml} ({stats['meaning_rate']:.0%})")
+    print(f"Passthrough accuracy:      {po}/{pl} ({stats['pt_rate']:.0%})")
+    print(f"Global FP rate:            {stats['global_fp_count']}/{stats['global_content_count']} ({stats['global_fp']:.1%})")
+    print(f"\nLatency: p50={stats['p50']:.1f}ms  p95={stats['p95']:.1f}ms  p99={stats['p99']:.1f}ms  max={stats['max_lat']:.1f}ms")
+
+
+def print_criteria_scoring(model_name, stats):
+    """Print hypothesis criteria pass/fail for a model."""
+    fc = stats["filler_clean"]
+    co = stats["corr_clean"]
+    mo = stats["meaning_ok"]
+    po = stats["pt_clean"]
+    fl = stats["filler_cases"]
+    cl = stats["corr_cases"]
+    ml = stats["total_cases"]
+    pl = stats["pt_cases"]
+    global_fp = stats["global_fp"]
+    p95 = stats["p95"]
+    param_mb = stats["param_mb"]
+
     s1 = fc >= 4                            # filler detection >= 4/5
     s2 = co >= 1                            # self-correction >= 1/2
     s3 = global_fp < 0.05                   # content preservation FP < 5%
@@ -406,14 +464,16 @@ def main() -> None:
     f3 = co == 0                            # complete self-correction failure
     f4 = p95 >= 200                         # unacceptable latency
 
-    print(f"\n{'='*60}\nHYPOTHESIS CRITERIA SCORING\n{'='*60}")
+    print(f"\n{'='*60}")
+    print(f"HYPOTHESIS CRITERIA SCORING: {model_name}")
+    print(f"{'='*60}")
     print(f"\n  --- Success Criteria ---")
     for desc, val, flag in [
-        ("Filler detection >= 4/5", f"{fc}/{len(filler_cases)}", s1),
-        ("Self-correction detection >= 1/2", f"{co}/{len(corr_cases)}", s2),
+        ("Filler detection >= 4/5", f"{fc}/{fl}", s1),
+        ("Self-correction detection >= 1/2", f"{co}/{cl}", s2),
         ("Content preservation FP < 5%", f"{global_fp:.1%}", s3),
-        ("Clean passthrough 2/2", f"{po}/{len(pt_cases)}", s4),
-        ("Reassembly quality >= 8/12", f"{mo}/{len(results)}", s5),
+        ("Clean passthrough 2/2", f"{po}/{pl}", s4),
+        ("Reassembly quality >= 8/12", f"{mo}/{ml}", s5),
         ("Latency < 50ms p95", f"{p95:.1f}ms", s6),
         ("Memory < 1GB", f"{param_mb:.0f}MB", s7),
     ]:
@@ -423,88 +483,173 @@ def main() -> None:
     print(f"\n  --- Failure Criteria ---")
     for desc, val, flag in [
         ("Massive FP >= 10% content tokens", f"{global_fp:.1%}", f1),
-        ("Filler blindness <= 2/5", f"{fc}/{len(filler_cases)}", f2),
-        ("Complete self-correction failure 0/2", f"{co}/{len(corr_cases)}", f3),
+        ("Filler blindness <= 2/5", f"{fc}/{fl}", f2),
+        ("Complete self-correction failure 0/2", f"{co}/{cl}", f3),
         ("Unacceptable latency >= 200ms p95", f"{p95:.1f}ms", f4),
     ]:
         st = "TRIGGERED" if flag else "OK"
         print(f"  [{st:>9}] {desc}: {val}")
 
-    # -- Comparison with Qwen results --
-    print(f"\n{'='*60}\nCOMPARISON WITH PRIOR HYPOTHESES\n{'='*60}")
-    print(f"{'Metric':<35} {'Qwen 2B':<15} {'Qwen 4B':<15} {'BERT cls':<15}")
-    print("-" * 80)
+    return {
+        "success": {
+            "filler_detection": {"required": ">=4/5", "actual": f"{fc}/{fl}", "pass": s1},
+            "self_correction": {"required": ">=1/2", "actual": f"{co}/{cl}", "pass": s2},
+            "content_preservation": {"required": "FP<5%", "actual": f"{global_fp:.1%}", "pass": s3},
+            "clean_passthrough": {"required": "2/2", "actual": f"{po}/{pl}", "pass": s4},
+            "reassembly_quality": {"required": ">=8/12", "actual": f"{mo}/{ml}", "pass": s5},
+            "latency": {"required": "<50ms p95", "actual": f"{p95:.1f}ms", "pass": s6},
+            "memory": {"required": "<1GB", "actual": f"{param_mb:.0f}MB", "pass": s7},
+        },
+        "failure": {
+            "massive_fp": {"threshold": ">=10%", "actual": f"{global_fp:.1%}", "triggered": f1},
+            "filler_blindness": {"threshold": "<=2/5", "actual": f"{fc}/{fl}", "triggered": f2},
+            "self_correction_failure": {"threshold": "0/2", "actual": f"{co}/{cl}", "triggered": f3},
+            "unacceptable_latency": {"threshold": ">=200ms p95", "actual": f"{p95:.1f}ms", "triggered": f4},
+        },
+    }
+
+
+def main() -> None:
+    all_model_runs = {}
+    all_stats = {}
+
+    for model_name, model_id in MODELS:
+        print(f"\n{'#' * 80}")
+        print(f"# Loading and running: {model_name} ({model_id})")
+        print(f"{'#' * 80}\n")
+
+        model_run = run_model(model_name, model_id)
+        all_model_runs[model_name] = model_run
+
+        # Print per-model results and grids
+        print_model_results(model_run)
+
+        # Compute and print aggregate stats
+        stats = compute_aggregate_stats(model_run)
+        all_stats[model_name] = stats
+        print_summary(model_name, model_run, stats)
+
+        # Hypothesis criteria scoring
+        criteria = print_criteria_scoring(model_name, stats)
+        all_model_runs[model_name]["criteria"] = criteria
+
+    # -- Side-by-side comparison table --
+    print(f"\n{'=' * 100}")
+    print(f"SIDE-BY-SIDE COMPARISON: base vs large vs Qwen 2B vs Qwen 4B")
+    print(f"{'=' * 100}")
+
+    base_s = all_stats.get("base", {})
+    large_s = all_stats.get("large", {})
+
+    def _fmt_ratio(ok, total):
+        return f"{ok}/{total} ({ok/total:.0%})" if total else "N/A"
+
+    print(f"\n{'Metric':<35} {'ModernBERT base':<18} {'ModernBERT large':<18} {'Qwen 2B':<15} {'Qwen 4B':<15}")
+    print("-" * 101)
     comparisons = [
-        ("Filler removal", "2/5 (40%)", "3/5 (60%)", f"{fc}/{len(filler_cases)} ({fr:.0%})"),
-        ("Self-correction", "0/2 (0%)", "0/2 (0%)", f"{co}/{len(corr_cases)} ({cr:.0%})"),
-        ("Meaning preservation", "8/12 (67%)", "9/12 (75%)", f"{mo}/{len(results)} ({mr:.0%})"),
-        ("Passthrough", "2/2 (100%)", "2/2 (100%)", f"{po}/{len(pt_cases)} ({pr_:.0%})"),
-        ("Latency p95", "472ms", "~900ms", f"{p95:.0f}ms"),
-        ("Memory", "2.55 GB", "~5 GB", f"{param_mb:.0f}MB"),
+        ("Filler removal",
+         _fmt_ratio(base_s.get("filler_clean", 0), base_s.get("filler_cases", 0)),
+         _fmt_ratio(large_s.get("filler_clean", 0), large_s.get("filler_cases", 0)),
+         "2/5 (40%)", "3/5 (60%)"),
+        ("Self-correction",
+         _fmt_ratio(base_s.get("corr_clean", 0), base_s.get("corr_cases", 0)),
+         _fmt_ratio(large_s.get("corr_clean", 0), large_s.get("corr_cases", 0)),
+         "0/2 (0%)", "0/2 (0%)"),
+        ("Meaning preservation",
+         _fmt_ratio(base_s.get("meaning_ok", 0), base_s.get("total_cases", 0)),
+         _fmt_ratio(large_s.get("meaning_ok", 0), large_s.get("total_cases", 0)),
+         "8/12 (67%)", "9/12 (75%)"),
+        ("Passthrough",
+         _fmt_ratio(base_s.get("pt_clean", 0), base_s.get("pt_cases", 0)),
+         _fmt_ratio(large_s.get("pt_clean", 0), large_s.get("pt_cases", 0)),
+         "2/2 (100%)", "2/2 (100%)"),
+        ("Latency p95",
+         f"{base_s.get('p95', 0):.0f}ms",
+         f"{large_s.get('p95', 0):.0f}ms",
+         "472ms", "~900ms"),
+        ("Memory",
+         f"{base_s.get('param_mb', 0):.0f}MB",
+         f"{large_s.get('param_mb', 0):.0f}MB",
+         "2,550 MB", "~5,000 MB"),
+        ("Global FP rate",
+         f"{base_s.get('global_fp', 0):.1%}",
+         f"{large_s.get('global_fp', 0):.1%}",
+         "N/A", "N/A"),
     ]
-    for metric, q2, q4, bert in comparisons:
-        print(f"  {metric:<35} {q2:<15} {q4:<15} {bert:<15}")
+    for row in comparisons:
+        metric, *vals = row
+        print(f"  {metric:<35} {vals[0]:<18} {vals[1]:<18} {vals[2]:<15} {vals[3]:<15}")
+
+    # -- Per-case comparison between base and large --
+    print(f"\n{'=' * 120}")
+    print(f"PER-CASE COMPARISON: base vs large")
+    print(f"{'=' * 120}")
+    hdr = (f"{'Name':<30} {'Category':<18} "
+           f"{'base lat':>9} {'base sim':>9} {'base':>5} "
+           f"{'large lat':>10} {'large sim':>10} {'large':>6}")
+    print(hdr)
+    print("-" * 120)
+    base_results = all_model_runs.get("base", {}).get("results", [])
+    large_results = all_model_runs.get("large", {}).get("results", [])
+    for br, lr in zip(base_results, large_results):
+        print(f"{br['name']:<30} {br['category']:<18} "
+              f"{br['latency_ms']:>8.2f}ms {br['meaning_sim']:>8.3f} "
+              f"{'PASS' if br['passed'] else 'FAIL':>5} "
+              f"{lr['latency_ms']:>9.2f}ms {lr['meaning_sim']:>9.3f} "
+              f"{'PASS' if lr['passed'] else 'FAIL':>6}")
 
     # -- Write JSON results --
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     reviews_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reviews")
     os.makedirs(reviews_dir, exist_ok=True)
     json_path = os.path.join(reviews_dir, f"run-{ts}.json")
+
     summary = {
         "timestamp": ts,
-        "model_id": MODEL_ID,
-        "device": str(device),
-        "param_count": param_count,
-        "param_mb": round(param_mb, 1),
-        "load_time_s": round(load_time, 2),
-        "label_mapping": {str(k): v for k, v in id2label.items()},
-        "num_test_cases": len(results),
+        "models": {},
         "prior_tests": [
             "qwen35-stt-cleanup (2B, disproven)",
-            "qwen35-4b-cleanup (4B, disproven)"
+            "qwen35-4b-cleanup (4B, disproven)",
         ],
-        "aggregate": {
-            "filler_removal_rate": round(fr, 3),
-            "self_correction_rate": round(cr, 3),
-            "meaning_preservation_rate": round(mr, 3),
-            "passthrough_accuracy": round(pr_, 3),
-            "global_fp_rate": round(global_fp, 4),
-            "global_fp_count": all_fp_total,
-            "global_content_count": all_content_total,
-        },
-        "latency": {
-            "p50_ms": round(p50, 2),
-            "p95_ms": round(p95, 2),
-            "p99_ms": round(p99, 2),
-            "max_ms": round(max_lat, 2),
-        },
-        "hypothesis_criteria": {
-            "success": {
-                "filler_detection": {"required": ">=4/5", "actual": f"{fc}/{len(filler_cases)}", "pass": s1},
-                "self_correction": {"required": ">=1/2", "actual": f"{co}/{len(corr_cases)}", "pass": s2},
-                "content_preservation": {"required": "FP<5%", "actual": f"{global_fp:.1%}", "pass": s3},
-                "clean_passthrough": {"required": "2/2", "actual": f"{po}/{len(pt_cases)}", "pass": s4},
-                "reassembly_quality": {"required": ">=8/12", "actual": f"{mo}/{len(results)}", "pass": s5},
-                "latency": {"required": "<50ms p95", "actual": f"{p95:.1f}ms", "pass": s6},
-                "memory": {"required": "<1GB", "actual": f"{param_mb:.0f}MB", "pass": s7},
-            },
-            "failure": {
-                "massive_fp": {"threshold": ">=10%", "actual": f"{global_fp:.1%}", "triggered": f1},
-                "filler_blindness": {"threshold": "<=2/5", "actual": f"{fc}/{len(filler_cases)}", "triggered": f2},
-                "self_correction_failure": {"threshold": "0/2", "actual": f"{co}/{len(corr_cases)}", "triggered": f3},
-                "unacceptable_latency": {"threshold": ">=200ms p95", "actual": f"{p95:.1f}ms", "triggered": f4},
-            },
-        },
-        "cases": [{k: r[k] for k in (
-            "name", "category", "latency_ms", "total_tokens",
-            "disfluent_count", "fluent_count", "disf_rate",
-            "meaning_sim", "filler_clean", "passthrough_ok",
-            "fp_rate", "fp_count", "content_count",
-            "passed", "notes",
-            "raw_input", "expected", "actual_output", "token_grid",
-            "disfluent_labels_used", "fluent_labels_used",
-        )} for r in results],
+        "num_test_cases": len(TEST_CASES),
     }
+
+    for model_name in all_model_runs:
+        mr = all_model_runs[model_name]
+        st = all_stats[model_name]
+        summary["models"][model_name] = {
+            "model_id": mr["model_id"],
+            "device": mr["device"],
+            "param_count": mr["param_count"],
+            "param_mb": mr["param_mb"],
+            "load_time_s": mr["load_time_s"],
+            "label_mapping": mr["label_mapping"],
+            "aggregate": {
+                "filler_removal_rate": round(st["filler_rate"], 3),
+                "self_correction_rate": round(st["corr_rate"], 3),
+                "meaning_preservation_rate": round(st["meaning_rate"], 3),
+                "passthrough_accuracy": round(st["pt_rate"], 3),
+                "global_fp_rate": round(st["global_fp"], 4),
+                "global_fp_count": st["global_fp_count"],
+                "global_content_count": st["global_content_count"],
+            },
+            "latency": {
+                "p50_ms": round(st["p50"], 2),
+                "p95_ms": round(st["p95"], 2),
+                "p99_ms": round(st["p99"], 2),
+                "max_ms": round(st["max_lat"], 2),
+            },
+            "hypothesis_criteria": mr.get("criteria", {}),
+            "cases": [{k: r[k] for k in (
+                "name", "category", "latency_ms", "total_tokens",
+                "disfluent_count", "fluent_count", "disf_rate",
+                "meaning_sim", "filler_clean", "passthrough_ok",
+                "fp_rate", "fp_count", "content_count",
+                "passed", "notes",
+                "raw_input", "expected", "actual_output", "token_grid",
+            )} for r in mr["results"]],
+        }
+
     with open(json_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\nResults written to: {json_path}")
