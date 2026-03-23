@@ -8,7 +8,7 @@ Usage:
     cd docs/hypotheses/qwen35-stt-cleanup/working
     .venv/bin/python cleanup_bench.py
 """
-import json, os, time
+import json, os, re, time
 from datetime import datetime, timezone
 import mlx.core as mx
 from mlx_lm import generate, load
@@ -51,22 +51,27 @@ def levenshtein_similarity(a: str, b: str) -> float:
 _LIKE_LEGIT = {"seems like", "looks like", "would like", "feel like", "felt like",
                "sounds like", "something like", "more like", "just like",
                "acts like", "worked like"}
+_PUNCT_RE = re.compile(r"[,.\-!?;:\"'()]+")
+def _normalize_for_filler_check(text: str) -> str:
+    """Strip punctuation so filler words adjacent to commas/periods are detected."""
+    return _PUNCT_RE.sub(" ", text.lower())
+
 def check_filler_clean(output: str) -> bool:
-    lower = output.lower()
+    normalized = _normalize_for_filler_check(output)
     for f in FILLER_WORDS:
         if f == "like":
             # Only flag "like" when it is a discourse filler, not a preposition/verb
-            padded = f" {lower} "
+            padded = f" {normalized} "
             if " like " not in padded:
                 continue
             # Remove all legitimate uses, then check if "like" remains
-            cleaned = lower
+            cleaned = normalized
             for legit in _LIKE_LEGIT:
                 cleaned = cleaned.replace(legit, "")
             if " like " not in f" {cleaned} ":
                 continue
             return False
-        elif f" {f} " in f" {lower} ":
+        elif f" {f} " in f" {normalized} ":
             return False
     return True
 
