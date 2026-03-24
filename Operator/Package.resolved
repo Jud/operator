@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "git@github.com:Jud/harness.git",
       "state" : {
-        "revision" : "c3e0bb4d07517597ba52cfeef8aa61fcdcfdb27e",
-        "version" : "0.1.2"
+        "revision" : "8e6e5c3fe0fc7937787471403a1354e9db1fa5cd",
+        "version" : "0.1.3"
       }
     },
     {
