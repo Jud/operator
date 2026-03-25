@@ -94,7 +94,7 @@ class BatchPrefillWrapper(nn.Module):
         for i, layer in enumerate(self.layers):
             if self.layer_types[i] == "linear_attention":
                 hidden, nc, nr = self._deltanet_forward(
-                    layer, hidden, (cos, sin), conv_states[i], rec_states[i]
+                    layer, hidden, (cos, sin), conv_states[i], rec_states[i], seq_len
                 )
                 new_conv[i] = nc
                 new_rec[i] = nr
@@ -120,7 +120,7 @@ class BatchPrefillWrapper(nn.Module):
 
         return (logits,) + tuple(updated)
 
-    def _deltanet_forward(self, layer, hidden_states, position_embeddings, init_conv, init_rec):
+    def _deltanet_forward(self, layer, hidden_states, position_embeddings, init_conv, init_rec, actual_seq_len):
         """DeltaNet layer forward with initial state support for batch prefill."""
         dn = layer.linear_attn  # Qwen3_5GatedDeltaNet module
         batch_size, seq_len, _ = hidden_states.shape
@@ -137,7 +137,9 @@ class BatchPrefillWrapper(nn.Module):
         conv_weight = dn.conv1d.weight  # [D, 1, conv_k]
         conv_out = F.conv1d(padded, conv_weight, bias=dn.conv1d.bias, padding=0, groups=mixed_qkv.shape[1])
         mixed_qkv = F.silu(conv_out[:, :, -seq_len:])  # last N outputs
-        new_conv = padded[:, :, -self.conv_kernel:]  # new conv state
+        # Conv state: output the full padded tensor [1, D, conv_k + N]
+        # Swift extracts the correct conv_k window at position conv_k + actual_seq_len
+        new_conv = padded
 
         mixed_qkv = mixed_qkv.transpose(1, 2)  # [B, N, D]
 
@@ -164,6 +166,16 @@ class BatchPrefillWrapper(nn.Module):
             repeat_factor = self.n_v_heads // n_k_heads
             query = query.repeat_interleave(repeat_factor, dim=2)
             key = key.repeat_interleave(repeat_factor, dim=2)
+
+        # Zero out padding positions so they don't affect recurrent state
+        # (padding positions have non-zero g from embedding[0], which would decay the state)
+        positions = torch.arange(self.fixed_n, device=hidden_states.device)
+        pad_mask = (positions < actual_seq_len[0]).float().view(1, self.fixed_n, 1)  # [1, N, 1]
+        query = query * pad_mask.unsqueeze(-1)   # [1, N, H, D] * [1, N, 1, 1]
+        key = key * pad_mask.unsqueeze(-1)
+        value = value * pad_mask.unsqueeze(-1)
+        beta = beta * pad_mask                   # [1, N, H] * [1, N, 1]
+        g = g * pad_mask                         # zero g → zero cumsum → decay=1 for padding
 
         # Chunked DeltaNet recurrence with initial state
         core_attn_out, new_rec = torch_chunk_gated_delta_rule_functional(
