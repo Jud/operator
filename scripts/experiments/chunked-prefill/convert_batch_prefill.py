@@ -35,7 +35,7 @@ from transformers.models.qwen3_5.modeling_qwen3_5 import (
 class BatchPrefillWrapper(nn.Module):
     """Process N tokens with initial states from cached system prompt."""
 
-    def __init__(self, hf_model, config, fixed_n=64, max_kv=256):
+    def __init__(self, hf_model, config, fixed_n=64, max_kv=256, use_neumann=True):
         super().__init__()
         self.embed = hf_model.model.embed_tokens
         self.layers = hf_model.model.layers
@@ -49,6 +49,7 @@ class BatchPrefillWrapper(nn.Module):
         self.attn_indices = [i for i in range(self.num_layers) if tc.layer_types[i] == "full_attention"]
         self.fixed_n = fixed_n
         self.max_kv = max_kv
+        self.use_neumann = use_neumann
 
         # DeltaNet config
         self.n_v_heads = tc.linear_num_value_heads
@@ -171,6 +172,7 @@ class BatchPrefillWrapper(nn.Module):
             initial_state=init_rec,
             output_final_state=True,
             use_qk_l2norm_in_kernel=True,
+            use_neumann=self.use_neumann,
         )
 
         # Gated RMSNorm
@@ -291,7 +293,10 @@ def main():
         all_cos, all_sin = model.model.rotary_emb(dummy, torch.arange(args.max_kv).unsqueeze(0))
     rope_dim = all_cos.shape[-1]
 
-    wrapper = BatchPrefillWrapper(model, config, fixed_n=args.fixed_n, max_kv=args.max_kv)
+    # Use Neumann for FP32 (fast), row-by-row for FP16 (numerically stable)
+    use_neumann = args.fp32
+    wrapper = BatchPrefillWrapper(model, config, fixed_n=args.fixed_n, max_kv=args.max_kv, use_neumann=use_neumann)
+    print(f"Resolution: {'Neumann series' if use_neumann else 'row-by-row (FP16 safe)'}")
     wrapper.eval()
 
     delta_indices = wrapper.delta_indices
