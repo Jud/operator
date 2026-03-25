@@ -247,6 +247,14 @@ def reshape(context, node):
     context.add(res, node.name)
 
 
+# --- Fix: view also gets list of Vars (same issue as reshape) ---
+
+@register_torch_op(torch_alias=["view_copy", "_unsafe_view"], override=True)
+def view(context, node):
+    """Fix view when shape is a list of individual MIL Vars (same fix as reshape)."""
+    reshape(context, node)
+
+
 # --- Fix: slice op gets list of Vars with inhomogeneous shapes ---
 
 @register_torch_op(override=True)
