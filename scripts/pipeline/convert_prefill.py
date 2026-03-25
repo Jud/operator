@@ -73,6 +73,12 @@ class BatchPrefillWrapper(nn.Module):
         cos = rope_cos * (rope_cos.sum() * 0.0 + 1.0)
         sin = rope_sin * (rope_sin.sum() * 0.0 + 1.0)
 
+        # Build padding mask: 1 for real positions, 0 for padding
+        # Used by DeltaNet to zero out padding contributions to recurrence
+        real_len = seq_len[0]  # scalar
+        positions = torch.arange(self.fixed_n, device=input_ids.device)
+        pad_mask = (positions < real_len).float()  # [fixed_n] — 1 for real, 0 for pad
+
         # Unpack states
         si = 0
         conv_states = {}
@@ -93,7 +99,7 @@ class BatchPrefillWrapper(nn.Module):
         for i, layer in enumerate(self.layers):
             if self.layer_types[i] == "linear_attention":
                 hidden, nc, nr = self._deltanet_forward(
-                    layer, hidden, (cos, sin), conv_states[i], rec_states[i]
+                    layer, hidden, (cos, sin), conv_states[i], rec_states[i], pad_mask
                 )
                 new_conv[i] = nc
                 new_rec[i] = nr
@@ -119,8 +125,13 @@ class BatchPrefillWrapper(nn.Module):
 
         return (logits,) + tuple(updated)
 
-    def _deltanet_forward(self, layer, hidden_states, position_embeddings, init_conv, init_rec):
-        """DeltaNet layer forward with initial state support for batch prefill."""
+    def _deltanet_forward(self, layer, hidden_states, position_embeddings, init_conv, init_rec, pad_mask):
+        """DeltaNet layer forward with initial state support for batch prefill.
+
+        pad_mask: [fixed_n] float tensor — 1.0 for real positions, 0.0 for padding.
+        Padding positions are zeroed out for key, value, beta, g so they
+        contribute nothing to the recurrence state.
+        """
         dn = layer.linear_attn  # Qwen3_5GatedDeltaNet module
         batch_size, seq_len, _ = hidden_states.shape
 
@@ -156,6 +167,16 @@ class BatchPrefillWrapper(nn.Module):
         beta = dn.in_proj_b(hidden_states).sigmoid()
         a = dn.in_proj_a(hidden_states)
         g = -dn.A_log.float().exp() * F.softplus(a.float() + dn.dt_bias)
+
+        # Zero out padding positions so they don't pollute the recurrence state.
+        # pad_mask: [N] with 1.0 for real, 0.0 for padding.
+        # key/value are [B, N, heads, dim], beta/g are [B, N, heads]
+        pm_kv = pad_mask.view(1, seq_len, 1, 1)      # [1, N, 1, 1]
+        pm_bg = pad_mask.view(1, seq_len, 1)          # [1, N, 1]
+        key = key * pm_kv
+        value = value * pm_kv
+        beta = beta * pm_bg
+        g = g * pm_bg
 
         # GQA repeat if needed
         if self.n_v_heads // (dn.key_dim // self.k_head_dim) > 1:
@@ -426,10 +447,20 @@ def main():
         ct_inputs.append(ct.TensorType(name=f"key_cache_{j}", shape=init_states[n_delta_s + j * 2].shape))
         ct_inputs.append(ct.TensorType(name=f"value_cache_{j}", shape=init_states[n_delta_s + j * 2 + 1].shape))
 
+    # Build output names to match decode model convention
+    ct_outputs = [ct.TensorType(name="logits")]
+    for j in range(len(delta_indices)):
+        ct_outputs.append(ct.TensorType(name=f"conv_state_{j}_out"))
+        ct_outputs.append(ct.TensorType(name=f"rec_state_{j}_out"))
+    for j in range(len(attn_indices)):
+        ct_outputs.append(ct.TensorType(name=f"key_cache_{j}_out"))
+        ct_outputs.append(ct.TensorType(name=f"value_cache_{j}_out"))
+
     t0 = time.time()
     mlmodel = ct.convert(
         traced,
         inputs=ct_inputs,
+        outputs=ct_outputs,
         convert_to="mlprogram",
         minimum_deployment_target=ct.target.iOS18,
         compute_precision=precision,
