@@ -62,7 +62,8 @@ let package = Package(
         .executableTarget(
             name: "CleanupCLI",
             dependencies: ["QwenTokenizer"],
-            path: "Sources/CleanupCLI"
+            path: "Sources/CleanupCLI",
+            exclude: ["tokenizer_helper.py"]
         ),
         .executableTarget(
             name: "E2ETests",

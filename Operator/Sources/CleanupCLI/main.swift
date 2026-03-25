@@ -339,11 +339,40 @@ class CleanupEngine {
 
 // MARK: - Main
 
+// Resolve tokenizer_helper.py relative to the executable (works from any working directory)
+let execDir = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().path
+let bundledScript: String = {
+    // Check next to executable first (bundled resource)
+    let beside = "\(execDir)/CleanupCLI_tokenizer_helper.py.resources/tokenizer_helper.py"
+    if FileManager.default.fileExists(atPath: beside) { return beside }
+    // Check in SPM resource bundle
+    let bundle = "\(execDir)/CleanupCLI_CleanupCLI.bundle/tokenizer_helper.py"
+    if FileManager.default.fileExists(atPath: bundle) { return bundle }
+    // Fallback: relative to working directory
+    let fallback = "scripts/pipeline/tokenizer_helper.py"
+    if FileManager.default.fileExists(atPath: fallback) { return fallback }
+    // Last resort
+    fatalError("tokenizer_helper.py not found. Run from project root or place next to binary.")
+}()
+
+let modelDir: String
+let prefillDir: String
+if let idx = CommandLine.arguments.firstIndex(of: "--model-dir"), idx + 1 < CommandLine.arguments.count {
+    modelDir = CommandLine.arguments[idx + 1]
+} else {
+    modelDir = "models/monolith_kv_fp16"
+}
+if let idx = CommandLine.arguments.firstIndex(of: "--prefill-dir"), idx + 1 < CommandLine.arguments.count {
+    prefillDir = CommandLine.arguments[idx + 1]
+} else {
+    prefillDir = "models/batch_prefill_fp16"
+}
+
 let engine = try CleanupEngine(
-    decodeDir: "models/monolith_kv_fp16",
-    prefillDir: "models/batch_prefill_fp16",
+    decodeDir: modelDir,
+    prefillDir: prefillDir,
     python: "/tmp/coreml-venv/bin/python",
-    script: "scripts/coreml-convert/tokenizer_helper.py"
+    script: bundledScript
 )
 fputs("Ready. Enter transcriptions (Ctrl-D to quit):\n", stderr)
 while let line = Swift.readLine() {
