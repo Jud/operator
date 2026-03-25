@@ -153,21 +153,48 @@ def pad(context, node):
         n_pad = len(pad_vals)
         rank = len(x.shape)
 
-        # Build CoreML pad array: [before_dim0, after_dim0, before_dim1, after_dim1, ...]
-        coreml_pad = [0] * (2 * rank)
-        for i in range(0, n_pad, 2):
-            dim_from_end = i // 2
-            dim = rank - 1 - dim_from_end
-            coreml_pad[2 * dim] = pad_vals[i]      # before
-            coreml_pad[2 * dim + 1] = pad_vals[i + 1]  # after
+        # Check for negative pads — torch F.pad handles these as slices
+        has_negative = any(p < 0 for p in pad_vals)
+        if has_negative:
+            # Convert negative pads to slice_by_index + positive pad
+            begin = [0] * rank
+            end = list(x.shape)
+            pos_pads = [0] * (2 * rank)
+            for i in range(0, n_pad, 2):
+                dim_from_end = i // 2
+                dim = rank - 1 - dim_from_end
+                left, right = pad_vals[i], pad_vals[i + 1]
+                if left < 0:
+                    begin[dim] = -left  # slice off from left
+                    left = 0
+                if right < 0:
+                    end[dim] = end[dim] + right  # slice off from right
+                    right = 0
+                pos_pads[2 * dim] = left
+                pos_pads[2 * dim + 1] = right
 
-        res = mb.pad(
-            x=x,
-            pad=np.array(coreml_pad, dtype=np.int32),
-            mode=mode,
-            constant_val=value,
-            name=node.name,
-        )
+            x = mb.slice_by_index(x=x, begin=begin, end=end, name=node.name + "_negpad_slice")
+            if any(p > 0 for p in pos_pads):
+                res = mb.pad(x=x, pad=np.array(pos_pads, dtype=np.int32), mode=mode,
+                            constant_val=value, name=node.name)
+            else:
+                res = x
+        else:
+            # Build CoreML pad array: [before_dim0, after_dim0, before_dim1, after_dim1, ...]
+            coreml_pad = [0] * (2 * rank)
+            for i in range(0, n_pad, 2):
+                dim_from_end = i // 2
+                dim = rank - 1 - dim_from_end
+                coreml_pad[2 * dim] = pad_vals[i]      # before
+                coreml_pad[2 * dim + 1] = pad_vals[i + 1]  # after
+
+            res = mb.pad(
+                x=x,
+                pad=np.array(coreml_pad, dtype=np.int32),
+                mode=mode,
+                constant_val=value,
+                name=node.name,
+            )
     else:
         res = mb.pad(x=x, pad=pad_arg, mode=mode, constant_val=value, name=node.name)
 

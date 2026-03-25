@@ -95,93 +95,76 @@ The lm_head (55% of total time) is **bandwidth-bound** — parallelizing it via 
 
 ## Current State of the Art
 
-**NOT yet production-ready.** The conversion pipeline, Swift inference, and prompt engineering are done. The critical missing piece is KV cache in CoreML — without it, generation produces garbage after a few tokens.
+**End-to-end prefill + decode pipeline working. Correct output, prefill + decode in Swift.**
 
-**Projected performance once KV cache works:**
-- ~49 tok/s with KV cache (58 tok/s current minus 3.1ms overhead)
-- 15 tokens in ~306ms generation + ~15ms prefill = **~321ms from key release to clean text**
+| Config | tok/s | ms/tok | 15 tokens | Correct |
+|---|---|---|---|---|
+| 2-chunk, no KV cache, FP16 | 58 | 17.2 | N/A | Degenerates after 4 tokens |
+| **2-chunk, with KV cache, FP16** | **68** | **14.6** | **219ms** | **10/10 token match** |
+| 2-chunk, with KV cache, FP32 | 56 | 17.7 | 266ms | 10/10 token match |
+| **Prefill (MIL while_loop, FP32)** | — | **~42** | — | **Exact match** (0.0003 logit diff) |
+| **Decode after prefill** | **40** | **25.1** | **376ms** | **Exact match** with PT |
 
-## CRITICAL: KV Cache Is Not In CoreML Yet
+### Prefill + Decode Pipeline
 
-**The 58 tok/s Swift benchmark runs WITHOUT KV cache.** It produces degenerate output (repeating tokens) after ~4 generation steps. The 10/10 token-match correctness proof was done in **pure PyTorch only**.
+MIL while_loop prefill (151 tokens) → feed states → monolith KV decode (15 tokens):
+- Prefill: 6.4s (151 tokens, FP32, includes first-run compilation)
+- Decode: 376ms (15 tokens, 40 tok/s)
+- Generated text matches PyTorch greedy output exactly
+- Script: `scripts/coreml-bench/prefill_decode.swift`
 
-Adding KV cache to the CoreML model is the #1 blocker before any integration.
+Remaining before production: optimize prefill speed (FP16, quantization) and Operator integration.
 
-### What we tried and why it failed
+## KV Cache: How It Works
 
-1. **Padded fixed-size KV cache (`convert_decode.py` with `--max-seq-len 256`):**
-   - Allocated [1, 2, 256, 256] zero-padded KV tensors
-   - `Qwen3_5DynamicCache.get_seq_length()` returned 256 (the pad size) instead of the real filled count
-   - This corrupted internal position calculations and causal mask construction
-   - Result: max logit diff 6.0, wrong top-1 token
-   - The attention computation was correct in isolation (we proved a single attention layer with padded cache + mask gives diff=0.0), but the model-level code uses `get_seq_length()` in ways we couldn't override through tracing
+**Padded fixed-size KV cache + external attention mask + torch.where update.**
 
-2. **Variable-length KV cache (`ct.RangeDim`):**
-   - CoreML's `RangeDim` for the sequence dimension caused symbolic shape errors during conversion
-   - The `slice` op inside attention couldn't handle symbolic dimensions
-   - Never got past the conversion step
+Key insights:
+1. `get_seq_length()` is NOT called inside individual decoder layers — only at the model level. Since we call layers directly, we bypass it entirely.
+2. `apply_mask_to_padding_states()` is a no-op when `mask.shape[1] == 1` (single-token decode). So we safely pass the 4D attention mask `[1, 1, 1, max_seq_len]` to ALL layers — DeltaNet ignores it, attention uses it.
+3. The attention mask is an explicit model INPUT (not constructed inside), avoiding any dependence on cache state. Swift constructs it per-step: 0 for positions 0..pos, -1e4 for padding.
+4. KV cache update uses `torch.where(pos == arange, new_kv, old_cache)` — a comparison mask that works reliably in CoreML. (`torch.scatter` also works but `torch.where` avoids the `expand` op issue in coremltools conversion.)
 
-3. **Scatter-based fixed-size update:**
-   - Used `torch.scatter` to write new KV at `cache_position` instead of concatenating
-   - The scatter worked but `get_seq_length()` still returned the wrong value
-   - Overriding `get_seq_length` with a lambda didn't help because trace bakes it as a constant
+### Pitfalls we hit
 
-### The correct PyTorch implementation (reference)
+1. **PyTorch conv_states have non-contiguous (Fortran) memory order.** When saved via `tensor.numpy()` → `np.save()`, the Fortran order is preserved in the .npy file. Swift's `loadNpy` copies bytes assuming C-order, scrambling the data. **Fix:** `np.ascontiguousarray()` before saving. This caused all the "CoreML produces wrong values" symptoms.
 
-This code produces 10/10 token match. The key: use the REAL HuggingFace cache object with naturally growing KV tensors, passed to ALL layers:
+2. **FP16 model outputs are Float16 MLMultiArray.** Reading with `dataPointer.bindMemory(to: Float.self)` reinterprets 2-byte float16 as 4-byte float32 — garbage. **Fix:** Check `arr.dataType == .float16` and read with `Float16.self`. This caused all the "inf" symptoms.
 
-```python
-# Prefill → get cache
-pt_out = model(prompt_ids, use_cache=True)
-cache = pt_out.past_key_values
+3. **Previous KV cache attempts failed for real reasons:**
+   - Padded KV + `get_seq_length()`: returned pad size (256) instead of filled count, corrupting position calculations inside the HF model forward. Solved by calling layers directly.
+   - `RangeDim` variable-length: symbolic shape errors in coremltools conversion. Not fixable.
+   - These were genuine blockers. The external-mask approach bypasses both.
 
-# Decode one token at a time
-for i in range(num_tokens):
-    hidden = model.model.embed_tokens(torch.tensor([[current_token]]))
-    cos, sin = all_cos[:, pos:pos+1, :], all_sin[:, pos:pos+1, :]
+### Verification
 
-    for layer in model.model.layers:
-        result = layer(hidden, position_embeddings=(cos, sin),
-                      past_key_values=cache, cache_position=torch.tensor([pos]))
-        hidden = result[0] if isinstance(result, tuple) else result
+All three decode approaches produce identical tokens in PyTorch (10/10):
+1. HF native `model.forward()` with growing cache
+2. Manual layer-by-layer with growing cache
+3. Manual layer-by-layer with padded cache + external mask
 
-    hidden = model.model.norm(hidden)
-    logits = model.lm_head(hidden)
-    current_token = torch.argmax(logits[0, -1]).item()
-    pos += 1
-```
+CoreML (both FP16 and FP32) matches PyTorch exactly on first decode step and full 15-token generation.
 
-The cache object grows by 1 each step (attention layers call `cache.update()` which concatenates). This is what CoreML needs to replicate.
+### Scripts
 
-### Suggested approach for next session
-
-The most promising path is to **separate attention layers into their own CoreML models** that each manage a small, growing KV cache:
-
-1. Split into 3 model types:
-   - **DeltaNet chunks** (3 layers each, 6 models): fixed-size state, no KV issue
-   - **Attention models** (1 layer each, 6 models): each has its own KV cache [1, 2, N, 256] where N grows
-   - **Head model**: norm + lm_head
-
-2. For each attention model, use `EnumeratedShapes` to support specific cache sizes (e.g., 1, 5, 10, 20, 50, 100 entries) instead of `RangeDim`. CoreML supports enumerated shapes well.
-
-3. Or: keep attention layers in PyTorch (they're only 1.2ms each × 6 = 7.2ms) and only convert DeltaNet layers + head to CoreML. The DeltaNet layers are the compute-heavy part (8ms) and have no KV cache issue.
+- `verify_kv_decode.py` — PyTorch 3-way correctness proof
+- `convert_split2_kv.py` — 2-chunk conversion with KV cache
+- `kv_gen.swift` — Swift KV-cached generation benchmark (handles float16 outputs)
 
 ## Next Steps
 
 ### High Priority
-1. **Add KV cache to the CoreML pipeline** — Required for correctness. See "Suggested approach" above. Without this, the model cannot generate coherent text.
-2. **Convert the 4B model** — Better cleanup quality. The conversion pipeline is model-agnostic. The lm_head bottleneck is proportionally smaller on 4B (transformer layers dominate).
-3. **Integrate into Operator** — Wire up the Swift inference pipeline into `finishAndTranscribe()`.
+1. **Optimize prefill speed** — Current 42ms/token is 3x slower than decode. Try FP16 prefill, or pre-compile the mlpackage.
+2. **Integrate into Operator** — Wire the Swift inference pipeline into `finishAndTranscribe()`. Prefill at app startup, decode per-request.
 
 ### Medium Priority
-4. **Streaming prefill during speech** — Feed confirmed WhisperKit tokens through the model while the user is still speaking. Requires fixing the conv_state handoff between batches.
-5. **PAL-4bit the 2-chunk model** — Free 1.04x speedup + 4x model size reduction.
-6. **Pre-compute system prompt** — Cache DeltaNet states + KV cache for the 300-token system prompt at app startup.
+3. **Convert the 4B model** — Better cleanup quality. The conversion pipeline is model-agnostic. The lm_head bottleneck is proportionally smaller on 4B (transformer layers dominate).
+4. **PAL-4bit quantization** — Free 1.04x speedup + 4x model size reduction. Proven on the old model.
+5. **Streaming prefill during speech** — Feed confirmed WhisperKit tokens through the model while the user is still speaking.
 
 ### Exploration
-7. **4B model with MTP** — MTP is viable on 4B where transformer layers (not head) are the bottleneck. 77.6% hit rate already proven.
-8. **Vocabulary pruning** — The 248K vocab head is the bottleneck. For text cleanup, only ~5K tokens are ever produced. A pruned head projection could be 50x smaller.
-9. **ANEMLL-style Conv2d optimization** — Rewrite layers as Conv2d for ANE acceleration.
+6. **4B model with MTP** — MTP is viable on 4B where transformer layers (not head) are the bottleneck. 77.6% hit rate already proven.
+7. **Vocabulary pruning** — The 248K vocab head is 55% of inference time. For text cleanup, only ~5K tokens are ever produced.
 
 ## File Map
 

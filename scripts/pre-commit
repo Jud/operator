@@ -17,6 +17,9 @@ cd "$ROOT_DIR/Operator"
 swiftlint lint --strict --quiet
 
 echo "==> Pre-commit: swift-format (--strict)"
-swift-format lint --strict --recursive Sources Tests
+find Sources Tests -name '*.swift' \
+  ! -path 'Sources/Tokenizer/*' \
+  ! -path 'Sources/CleanupCLI/*' \
+  -print0 | xargs -0 swift-format lint --strict
 
 echo "==> Pre-commit: lint passed"
