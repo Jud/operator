@@ -61,31 +61,18 @@ def torch_chunk_gated_delta_rule_functional(
     g = g.reshape(g.shape[0], g.shape[1], -1, chunk_size)
     mask_upper = torch.triu(torch.ones(chunk_size, chunk_size, dtype=torch.bool, device=query.device), diagonal=0)
 
-    # chunk decay — FP16-safe: clamp values before exp() to prevent overflow.
-    # Original: decay_diff.tril().exp() — coremltools FP16 may reorder to exp().tril(),
-    # causing exp(+60) overflow. Fix: clamp to [-88, 0] before exp.
-    # -88 is safe floor (exp(-88) underflows to 0 in FP32, well within FP16).
-    # 0 is safe ceiling (exp(0) = 1, prevents FP16 overflow from positive values).
-    # The outer .tril() then zeros the upper triangle (where exp(0)=1).
+    # chunk decay
     g = g.cumsum(dim=-1)
-    decay_diff = g.unsqueeze(-1) - g.unsqueeze(-2)  # [..., CS, CS]
-    decay_clamped = torch.clamp(decay_diff, min=-88.0, max=0.0)
-    decay_mask = decay_clamped.exp().tril()
+    decay_mask = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().float()).tril()
     attn_raw = -((k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask_upper, 0)
 
-    # ── FIX 1: Resolution matrix via Neumann series with product factorization ──
-    # Computes (I - L)^{-1} = I + L + L^2 + ... + L^63 where L = attn_raw (strictly lower triangular).
-    # Since L^64 = 0 (strictly lower triangular), the series is exact.
-    # Product factorization: (I+L)(I+L^2)(I+L^4)(I+L^8)(I+L^16)(I+L^32)
-    # = 5 squarings + 5 matmuls = 10 ops (vs 64 sequential row ops)
-    L = attn_raw  # strictly lower triangular [B, H, C, CS, CS]
-    eye = torch.eye(chunk_size, dtype=L.dtype, device=L.device)
-    L2 = L @ L
-    L4 = L2 @ L2
-    L8 = L4 @ L4
-    L16 = L8 @ L8
-    L32 = L16 @ L16
-    attn = (eye + L) @ (eye + L2) @ (eye + L4) @ (eye + L8) @ (eye + L16) @ (eye + L32)
+    # ── FIX 1: Resolution matrix via blocked forward substitution ──
+    # True triangular solve: (I - L)^{-1} computed via block-8 forward substitution.
+    # 8 diagonal blocks solved exactly (3 matmuls each, Neumann for 8×8).
+    # 7 propagation steps via matmul with already-computed rows.
+    # FP16-safe: no high matrix powers, intermediate values stay bounded.
+    from solve_triangular_blocked import solve_triangular_blocked
+    attn = solve_triangular_blocked(attn_raw, chunk_size, block_size=8)
 
     value = attn @ v_beta
     k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
