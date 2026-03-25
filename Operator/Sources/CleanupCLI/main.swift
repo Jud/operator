@@ -223,6 +223,10 @@ class CleanupEngine {
         let vocab = logits.shape.last!.intValue
         let firstTok = Int32(argmax(logits, offset: (n - 1) * vocab, count: vocab))
 
+        // Extract conv states at the REAL token boundary, not the padded tail.
+        // Conv output is [1, 6144, conv_k + fixedN]. The last 4 real QKV projections
+        // start at offset `n` (= conv_k + n_real_tokens - conv_k = n_real_tokens).
+        let convStart = n  // = actual token count (conv_k prepended + n real - conv_k)
         var co = [MLMultiArray](), ro = [MLMultiArray]()
         for j in 0 ..< nDelta {
             let full = out.featureValue(for: "conv_state_\(j)_out")!.multiArrayValue!
@@ -231,11 +235,11 @@ class CleanupEngine {
             if full.dataType == .float16 {
                 let s = full.dataPointer.bindMemory(to: UInt16.self, capacity: full.count)
                 let dd = sl.dataPointer.bindMemory(to: UInt16.self, capacity: sl.count)
-                for ch in 0 ..< 6144 { for kk in 0 ..< 4 { dd[ch * 4 + kk] = s[ch * w + w - 4 + kk] } }
+                for ch in 0 ..< 6144 { for kk in 0 ..< 4 { dd[ch * 4 + kk] = s[ch * w + convStart + kk] } }
             } else {
                 let s = full.dataPointer.bindMemory(to: Float.self, capacity: full.count)
                 let dd = sl.dataPointer.bindMemory(to: Float.self, capacity: sl.count)
-                for ch in 0 ..< 6144 { for kk in 0 ..< 4 { dd[ch * 4 + kk] = s[ch * w + w - 4 + kk] } }
+                for ch in 0 ..< 6144 { for kk in 0 ..< 4 { dd[ch * 4 + kk] = s[ch * w + convStart + kk] } }
             }
             co.append(sl); ro.append(out.featureValue(for: "rec_state_\(j)_out")!.multiArrayValue!)
         }
