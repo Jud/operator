@@ -27,6 +27,7 @@ def torch_chunk_gated_delta_rule_functional(
     initial_state=None,
     output_final_state=False,
     use_qk_l2norm_in_kernel=False,
+    use_neumann=True,
 ):
     """Functional chunked DeltaNet — identical math, no in-place ops.
 
@@ -66,19 +67,29 @@ def torch_chunk_gated_delta_rule_functional(
     decay_mask = ((g.unsqueeze(-1) - g.unsqueeze(-2)).tril().exp().float()).tril()
     attn_raw = -((k_beta @ key.transpose(-1, -2)) * decay_mask).masked_fill(mask_upper, 0)
 
-    # ── FIX 1: Resolution matrix via Neumann series with product factorization ──
-    # Computes (I - L)^{-1} = I + L + L^2 + ... + L^63 where L = attn_raw (strictly lower triangular).
-    # Since L^64 = 0 (strictly lower triangular), the series is exact.
-    # Product factorization: (I+L)(I+L^2)(I+L^4)(I+L^8)(I+L^16)(I+L^32)
-    # = 5 squarings + 5 matmuls = 10 ops (vs 64 sequential row ops)
-    L = attn_raw  # strictly lower triangular [B, H, C, CS, CS]
-    eye = torch.eye(chunk_size, dtype=L.dtype, device=L.device)
-    L2 = L @ L
-    L4 = L2 @ L2
-    L8 = L4 @ L4
-    L16 = L8 @ L8
-    L32 = L16 @ L16
-    attn = (eye + L) @ (eye + L2) @ (eye + L4) @ (eye + L8) @ (eye + L16) @ (eye + L32)
+    # ── FIX 1: Resolution matrix (I - L)^{-1} ──
+    if use_neumann:
+        # Neumann series product factorization: (I+L)(I+L²)(I+L⁴)(I+L⁸)(I+L¹⁶)(I+L³²)
+        # 10 matmuls, fast but requires FP32 (FP16 accumulation error in chained 64x64 matmuls)
+        L = attn_raw
+        eye = torch.eye(chunk_size, dtype=L.dtype, device=L.device)
+        L2 = L @ L
+        L4 = L2 @ L2
+        L8 = L4 @ L4
+        L16 = L8 @ L8
+        L32 = L16 @ L16
+        attn = (eye + L) @ (eye + L2) @ (eye + L4) @ (eye + L8) @ (eye + L16) @ (eye + L32)
+    else:
+        # Row-by-row forward substitution: 64 sequential ops, but FP16-safe
+        rows = [attn_raw[..., 0:1, :]]
+        for i in range(1, chunk_size):
+            raw_row = attn_raw[..., i:i+1, :i]
+            all_prev = torch.cat(rows, dim=-2)
+            sub = all_prev[..., :i, :i]
+            resolved = raw_row + raw_row @ sub
+            rows.append(F.pad(resolved, (0, chunk_size - i)))
+        attn = torch.cat(rows, dim=-2)
+        attn = attn + torch.eye(chunk_size, dtype=attn.dtype, device=attn.device)
 
     value = attn @ v_beta
     k_cumdecay = attn @ (k_beta * g.exp().unsqueeze(-1))
