@@ -41,14 +41,30 @@ Per-token Decode (monolith KV cache model)
 
 ## Regenerate from Scratch
 
+**All commands must be run from the project root** (`/Users/jud/Projects/operator`).
+The CleanupCLI and tokenizer helper resolve paths relative to the working directory.
+
+### Prerequisites
+
 ```bash
+# Python venv with coremltools + transformers
+/tmp/coreml-venv/bin/python -c "import coremltools, transformers; print('ok')"
+
+# Swift (for CleanupCLI)
+swift --version
+```
+
+### Generate Models
+
+```bash
+cd /Users/jud/Projects/operator
 PYTHON=/tmp/coreml-venv/bin/python
 
-# 1. Decode model (monolith, FP16, ~30s)
+# 1. Decode model (monolith KV, FP16, ~30s)
 $PYTHON scripts/pipeline/convert_decode.py Qwen/Qwen3.5-0.8B \
     --output models/monolith_kv_fp16/
 
-# 2. Pre-compute system prompt cache (~5s)
+# 2. Pre-compute system prompt cache (131 tokens → 13MB FP16, ~5s)
 $PYTHON scripts/pipeline/gen_prompt_cache.py \
     --output models/monolith_kv_fp16/prompt_cache/
 
@@ -56,16 +72,62 @@ $PYTHON scripts/pipeline/gen_prompt_cache.py \
 $PYTHON scripts/pipeline/convert_prefill.py Qwen/Qwen3.5-0.8B \
     --output models/batch_prefill_fp16/
 
-# 4. Download tokenizer files
+# 4. Download tokenizer files (for Swift QwenTokenizer module)
 mkdir -p models/monolith_kv_fp16/tokenizer
 curl -sL https://huggingface.co/Qwen/Qwen3.5-0.8B/resolve/main/tokenizer.json \
     -o models/monolith_kv_fp16/tokenizer/tokenizer.json
 curl -sL https://huggingface.co/Qwen/Qwen3.5-0.8B/resolve/main/tokenizer_config.json \
     -o models/monolith_kv_fp16/tokenizer/tokenizer_config.json
-
-# 5. Test
-echo "um so I was like going to the uh store" | swift run -c release CleanupCLI
 ```
+
+### Run CleanupCLI
+
+```bash
+# IMPORTANT: run from the project root, NOT from Operator/
+cd /Users/jud/Projects/operator
+
+# Build (first time only, ~10s)
+cd Operator && swift build --target CleanupCLI -c release && cd ..
+
+# Run — uses default model paths (models/monolith_kv_fp16 + models/batch_prefill_fp16)
+echo "um so I was like going to the uh store" | \
+    Operator/.build/arm64-apple-macosx/release/CleanupCLI
+
+# Or with custom model paths (e.g. after regenerating to /tmp/)
+echo "um so I was like going to the uh store" | \
+    Operator/.build/arm64-apple-macosx/release/CleanupCLI \
+    --model-dir /tmp/pipeline-test/decode \
+    --prefill-dir /tmp/pipeline-test/prefill
+```
+
+### What the CLI expects at runtime
+
+```
+models/monolith_kv_fp16/          (--model-dir)
+├── model.mlpackage/              decode model
+├── prompt_cache/                 pre-computed states
+│   ├── meta.json
+│   ├── conv_state_*.npy
+│   ├── rec_state_*.npy
+│   ├── key_cache_*.npy
+│   ├── value_cache_*.npy
+│   ├── rope_cos.npy
+│   └── rope_sin.npy
+└── tokenizer/
+    ├── tokenizer.json
+    └── tokenizer_config.json
+
+models/batch_prefill_fp16/        (--prefill-dir)
+└── model.mlpackage/              prefill model
+
+scripts/pipeline/
+└── tokenizer_helper.py           Python tokenizer (also bundled in CleanupCLI source)
+```
+
+The CLI finds `tokenizer_helper.py` via a fallback chain: next to executable →
+SPM bundle → `scripts/pipeline/tokenizer_helper.py` from working directory.
+Model dirs default to `models/monolith_kv_fp16` and `models/batch_prefill_fp16`
+but can be overridden with `--model-dir` and `--prefill-dir`.
 
 ## Key Design Decisions
 
