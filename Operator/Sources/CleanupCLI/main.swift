@@ -50,7 +50,11 @@ class TokenizerHelper {
 
         // Wait for "ready"
         let ready = readOneLine()
-        precondition(ready == "ready", "Tokenizer helper did not start: got '\(ready ?? "nil")'")
+        if ready != "ready" {
+            fputs("FATAL: Tokenizer helper did not start. Got: '\(ready ?? "nil")'\n", stderr)
+            fputs("  Python: \(pythonPath)\n  Script: \(scriptPath)\n", stderr)
+            fatalError("Tokenizer helper failed")
+        }
     }
 
     private func readOneLine() -> String? {
@@ -346,16 +350,22 @@ class CleanupEngine {
 // Resolve tokenizer_helper.py relative to the executable (works from any working directory)
 let execDir = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().path
 let bundledScript: String = {
+    let fm = FileManager.default
     // Check next to executable first (bundled resource)
     let beside = "\(execDir)/CleanupCLI_tokenizer_helper.py.resources/tokenizer_helper.py"
-    if FileManager.default.fileExists(atPath: beside) { return beside }
+    if fm.fileExists(atPath: beside) { return beside }
     // Check in SPM resource bundle
     let bundle = "\(execDir)/CleanupCLI_CleanupCLI.bundle/tokenizer_helper.py"
-    if FileManager.default.fileExists(atPath: bundle) { return bundle }
-    // Fallback: relative to working directory
-    let fallback = "scripts/pipeline/tokenizer_helper.py"
-    if FileManager.default.fileExists(atPath: fallback) { return fallback }
-    // Last resort
+    if fm.fileExists(atPath: bundle) { return bundle }
+    // Fallback: relative to working directory (project root)
+    for candidate in [
+        "scripts/pipeline/tokenizer_helper.py",
+        "../scripts/pipeline/tokenizer_helper.py",          // when run from Operator/
+        "scripts/coreml-convert/tokenizer_helper.py",
+        "../scripts/coreml-convert/tokenizer_helper.py",
+    ] {
+        if fm.fileExists(atPath: candidate) { return candidate }
+    }
     fatalError("tokenizer_helper.py not found. Run from project root or place next to binary.")
 }()
 
@@ -382,5 +392,8 @@ fputs("Ready. Enter transcriptions (Ctrl-D to quit):\n", stderr)
 while let line = Swift.readLine() {
     let t = line.trimmingCharacters(in: .whitespacesAndNewlines)
     if t.isEmpty { continue }
-    print(engine.cleanup(t))
+    fputs("  Processing: \(t.prefix(40))...\n", stderr)
+    let result = engine.cleanup(t)
+    fputs("  Result: \(result.prefix(40))...\n", stderr)
+    print(result)
 }
