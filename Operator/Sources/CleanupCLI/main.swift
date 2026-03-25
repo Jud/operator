@@ -181,6 +181,7 @@ class CleanupEngine {
 
     func batchPrefill(_ textIds: [Int32]) -> (Int32, [MLMultiArray], [MLMultiArray], [MLMultiArray], [MLMultiArray], Int) {
         let all = textIds + suffix; let n = all.count
+        let buildStart = CFAbsoluteTimeGetCurrent()
 
         let ids = try! MLMultiArray(shape: [1, NSNumber(value: fixedN)], dataType: .int32)
         let ip = ids.dataPointer.bindMemory(to: Int32.self, capacity: fixedN)
@@ -212,7 +213,11 @@ class CleanupEngine {
         for j in 0 ..< nDelta { d["conv_state_\(j)"] = .init(multiArray: initConv[j]); d["rec_state_\(j)"] = .init(multiArray: initRec[j]) }
         for j in 0 ..< nAttn { d["key_cache_\(j)"] = .init(multiArray: initKey[j]); d["value_cache_\(j)"] = .init(multiArray: initVal[j]) }
 
+        let buildMs = (CFAbsoluteTimeGetCurrent() - buildStart) * 1000
+        let predictStart = CFAbsoluteTimeGetCurrent()
         let out = try! prefill.prediction(from: MLDictionaryFeatureProvider(dictionary: d))
+        let predictMs = (CFAbsoluteTimeGetCurrent() - predictStart) * 1000
+        let extractStart = CFAbsoluteTimeGetCurrent()
 
         let logits = out.featureValue(for: "logits")!.multiArrayValue!
         let vocab = logits.shape.last!.intValue
@@ -239,6 +244,8 @@ class CleanupEngine {
             ko.append(out.featureValue(for: "key_cache_\(j)_out")!.multiArrayValue!)
             vo.append(out.featureValue(for: "value_cache_\(j)_out")!.multiArrayValue!)
         }
+        let extractMs = (CFAbsoluteTimeGetCurrent() - extractStart) * 1000
+        fputs("    prefill breakdown: build=\(String(format: "%.0f", buildMs))ms predict=\(String(format: "%.0f", predictMs))ms extract=\(String(format: "%.0f", extractMs))ms\n", stderr)
         return (firstTok, co, ro, ko, vo, sysLen + n)
     }
 
@@ -273,27 +280,59 @@ class CleanupEngine {
     // MARK: Full pipeline
 
     func cleanup(_ text: String) -> String {
-        let t0 = CFAbsoluteTimeGetCurrent()
-        let textIds = tok.encode(text)
-        let pStart = CFAbsoluteTimeGetCurrent()
-        var (firstTok, cv, rc, kc, vc, pos) = batchPrefill(textIds)
-        let pMs = (CFAbsoluteTimeGetCurrent() - pStart) * 1000
+        let wall = CFAbsoluteTimeGetCurrent()
 
+        // 1. Tokenize (Python helper)
+        var t = CFAbsoluteTimeGetCurrent()
+        let textIds = tok.encode(text)
+        let tokenizeMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
+
+        // 2. Batch prefill (input build + predict + state extract)
+        t = CFAbsoluteTimeGetCurrent()
+        var (firstTok, cv, rc, kc, vc, pos) = batchPrefill(textIds)
+        let prefillMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
+
+        // 3. Skip thinking
+        var thinkMs = 0.0
         if firstTok == thinkTokenId {
+            t = CFAbsoluteTimeGetCurrent()
             _ = step(thinkEndTokenId, pos, &cv, &rc, &kc, &vc); pos += 1
             firstTok = step(198, pos, &cv, &rc, &kc, &vc); pos += 1
+            thinkMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
         }
 
-        let gStart = CFAbsoluteTimeGetCurrent()
+        // 4. Generate (per-step timing)
+        t = CFAbsoluteTimeGetCurrent()
         var gen: [Int32] = [firstTok]; var cur = firstTok
+        var stepTimes = [Double]()
         for _ in 0 ..< min(maxGenTokens, maxKV - pos - 1) {
-            let t = step(cur, pos, &cv, &rc, &kc, &vc)
-            if t == eosTokenId || t == imEndTokenId { break }
-            gen.append(t); cur = t; pos += 1
+            let s = CFAbsoluteTimeGetCurrent()
+            let tok = step(cur, pos, &cv, &rc, &kc, &vc)
+            stepTimes.append((CFAbsoluteTimeGetCurrent() - s) * 1000)
+            if tok == eosTokenId || tok == imEndTokenId { break }
+            gen.append(tok); cur = tok; pos += 1
         }
-        let gMs = (CFAbsoluteTimeGetCurrent() - gStart) * 1000
+        let genMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
+
+        // 5. Detokenize (Python helper)
+        t = CFAbsoluteTimeGetCurrent()
         let output = tok.decode(gen)
-        fputs("  [\(textIds.count)+\(suffix.count) prefill \(String(format: "%.0f", pMs))ms | \(gen.count) gen \(String(format: "%.0f", gMs))ms | \(String(format: "%.0f", (CFAbsoluteTimeGetCurrent() - t0) * 1000))ms total]\n", stderr)
+        let detokMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
+
+        let totalMs = (CFAbsoluteTimeGetCurrent() - wall) * 1000
+
+        // Detailed timing breakdown
+        stepTimes.sort()
+        let medStep = stepTimes.isEmpty ? 0 : stepTimes[stepTimes.count / 2]
+        let tokPerSec = stepTimes.isEmpty ? 0 : 1000.0 / medStep
+
+        fputs("  tokenize: \(String(format: "%.0f", tokenizeMs))ms\n", stderr)
+        fputs("  prefill:  \(String(format: "%.0f", prefillMs))ms (\(textIds.count)+\(suffix.count)=\(textIds.count + suffix.count) tokens)\n", stderr)
+        if thinkMs > 0 { fputs("  no-think: \(String(format: "%.0f", thinkMs))ms (2 decode steps)\n", stderr) }
+        fputs("  generate: \(String(format: "%.0f", genMs))ms (\(gen.count) tokens, \(String(format: "%.1f", medStep))ms/tok median, \(String(format: "%.0f", tokPerSec)) tok/s)\n", stderr)
+        fputs("  detokize: \(String(format: "%.0f", detokMs))ms\n", stderr)
+        fputs("  TOTAL:    \(String(format: "%.0f", totalMs))ms\n", stderr)
+
         return output
     }
 }
