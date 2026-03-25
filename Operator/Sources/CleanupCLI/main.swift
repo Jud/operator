@@ -161,14 +161,45 @@ class CleanupEngine {
     let initVal: [MLMultiArray]
     let sysLen: Int
 
+    /// Compile .mlpackage to .mlmodelc next to it (reuses if already compiled and up-to-date).
+    static func compiledURL(for mlpackagePath: String) throws -> URL {
+        let src = URL(fileURLWithPath: mlpackagePath)
+        let compiled = src.deletingPathExtension().appendingPathExtension("mlmodelc")
+        let fm = FileManager.default
+
+        // Reuse if compiled model exists and is newer than source
+        if fm.fileExists(atPath: compiled.path) {
+            let srcDate = (try? fm.attributesOfItem(atPath: src.path)[.modificationDate] as? Date) ?? .distantPast
+            let cmpDate = (try? fm.attributesOfItem(atPath: compiled.path)[.modificationDate] as? Date) ?? .distantPast
+            if cmpDate >= srcDate {
+                return compiled
+            }
+            try? fm.removeItem(at: compiled)
+        }
+
+        // Compile to temp, copy to permanent location
+        let tempCompiled = try MLModel.compileModel(at: src)
+        do {
+            if fm.fileExists(atPath: compiled.path) { try fm.removeItem(at: compiled) }
+            try fm.copyItem(at: tempCompiled, to: compiled)
+            try? fm.removeItem(at: tempCompiled)
+            fputs("  Compiled \(src.lastPathComponent) → \(compiled.lastPathComponent)\n", stderr)
+        } catch {
+            fputs("  Warning: could not cache compiled model: \(error.localizedDescription)\n", stderr)
+            fputs("    src: \(tempCompiled.path)\n    dst: \(compiled.path)\n", stderr)
+            return tempCompiled  // fall back to temp
+        }
+        return compiled
+    }
+
     init(decodeDir: String, prefillDir: String, python: String, script: String) throws {
         let t0 = CFAbsoluteTimeGetCurrent()
         tok = TokenizerHelper(pythonPath: python, scriptPath: script)
         suffix = tok.suffixIds()
 
         let cfg = MLModelConfiguration(); cfg.computeUnits = .cpuAndGPU
-        decode = try MLModel(contentsOf: MLModel.compileModel(at: URL(fileURLWithPath: "\(decodeDir)/model.mlpackage")), configuration: cfg)
-        prefill = try MLModel(contentsOf: MLModel.compileModel(at: URL(fileURLWithPath: "\(prefillDir)/model.mlpackage")), configuration: cfg)
+        decode = try MLModel(contentsOf: Self.compiledURL(for: "\(decodeDir)/model.mlpackage"), configuration: cfg)
+        prefill = try MLModel(contentsOf: Self.compiledURL(for: "\(prefillDir)/model.mlpackage"), configuration: cfg)
 
         let cd = "\(decodeDir)/prompt_cache"
         var c = [MLMultiArray](), r = [MLMultiArray](), k = [MLMultiArray](), v = [MLMultiArray]()
