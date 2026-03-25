@@ -293,8 +293,8 @@ def main():
         all_cos, all_sin = model.model.rotary_emb(dummy, torch.arange(args.max_kv).unsqueeze(0))
     rope_dim = all_cos.shape[-1]
 
-    # Use Neumann for FP32 (fast), row-by-row for FP16 (numerically stable)
-    use_neumann = args.fp32
+    # Truncated Neumann (3 factors) is FP16-safe — use for both precisions
+    use_neumann = True
     wrapper = BatchPrefillWrapper(model, config, fixed_n=args.fixed_n, max_kv=args.max_kv, use_neumann=use_neumann)
     print(f"Resolution: {'Neumann series' if use_neumann else 'row-by-row (FP16 safe)'}")
     wrapper.eval()
