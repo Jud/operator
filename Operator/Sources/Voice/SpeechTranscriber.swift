@@ -1,13 +1,12 @@
 @preconcurrency import AVFoundation
 import Accelerate
-import AudioToolbox
 import os
 
-/// Wraps a ``TranscriptionEngine`` and AVAudioEngine for on-device speech-to-text.
+/// Wraps a ``TranscriptionEngine`` for on-device speech-to-text.
 ///
 /// Designed for push-to-talk: call startListening() when the user presses the key,
-/// and stopListening() when they release. The engine accumulates audio buffers
-/// during the listening period and returns the final transcription on stop.
+/// and stopListening() when they release. Uses AudioHub's shared AVAudioEngine —
+/// installs/removes an input tap per session without starting/stopping the engine.
 ///
 /// Audio is also accumulated in a side buffer and written to a WAV file in
 /// `~/Library/Application Support/Operator/audio-traces/` for offline analysis.
@@ -33,7 +32,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
     // MARK: - Instance Properties
 
     private var engine: any TranscriptionEngine
-    private let audioEngine = AVAudioEngine()
+    private let audioHub: AudioHub
 
     /// Whether the audio engine is currently capturing microphone input.
     public private(set) var isListening = false
@@ -54,37 +53,20 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
     // MARK: - Initialization
 
-    /// Creates a new speech transcriber with the given transcription engine.
+    /// Creates a new speech transcriber with the given transcription engine and audio hub.
     ///
     /// - Parameters:
+    ///   - audioHub: The shared audio hub that owns the AVAudioEngine.
     ///   - engine: The recognition backend (default: ``AppleSpeechEngine``).
     ///   - levelMonitor: Optional audio level monitor for waveform visualization.
-    public init(engine: any TranscriptionEngine = AppleSpeechEngine(), levelMonitor: AudioLevelMonitor? = nil) {
+    public init(
+        audioHub: AudioHub,
+        engine: any TranscriptionEngine = AppleSpeechEngine(),
+        levelMonitor: AudioLevelMonitor? = nil
+    ) {
+        self.audioHub = audioHub
         self.engine = engine
         self.levelMonitor = levelMonitor
-    }
-
-    /// Pre-warm the audio engine with a full start/stop cycle at launch.
-    ///
-    /// Forces CoreAudio aggregate device creation and HAL negotiation so the
-    /// first real push-to-talk activation captures audio immediately. Causes a
-    /// one-time Bluetooth audio blip at launch (unavoidable without a custom
-    /// aggregate device — tracked for future investigation).
-    public func warmUp() {
-        applyInputDevice()
-        let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { _, _ in }
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            Self.logger.info("Audio engine warm-up: started (sampleRate=\(format.sampleRate))")
-        } catch {
-            Self.logger.warning("Audio engine warm-up failed: \(error)")
-        }
-        audioEngine.stop()
-        inputNode.removeTap(onBus: 0)
-        Self.logger.info("Audio engine warm-up complete")
     }
 
     // MARK: - Type Methods
@@ -236,18 +218,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
         try engine.prepare(contextualStrings: contextualStrings)
 
-        let inputNode = audioEngine.inputNode
-
-        // Voice processing (AEC) intentionally NOT used — it creates a
-        // system-wide aggregate audio device that degrades other apps' audio
-        // and forces Bluetooth into low-quality HFP mode. Push-to-talk with
-        // mute-on-talk means the speaker is silent during recording, so
-        // there is no echo to cancel. The feedback tone is handled by the
-        // RMS skip window in computeRMS().
-
-        applyInputDevice()
-
-        let tapFormat = inputNode.outputFormat(forBus: 0)
+        let tapFormat = audioHub.inputFormat
 
         // Without voice processing the input is typically mono. Handle
         // multi-channel gracefully in case an external device provides it.
@@ -277,8 +248,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
                 sampleRate: Float(monoFormat.sampleRate)
             ) : nil
 
-        inputNode.installTap(
-            onBus: 0,
+        audioHub.installInputTap(
             bufferSize: 1_024,
             format: tapFormat
         ) { @Sendable buffer, _ in
@@ -302,10 +272,8 @@ public final class SpeechTranscriber: SpeechTranscribing {
             }
         }
 
-        audioEngine.prepare()
-        try audioEngine.start()
         isListening = true
-        Self.logger.info("Audio engine started, listening for speech")
+        Self.logger.info("Listening for speech (tap installed on shared engine)")
     }
 
     /// RMS threshold below which audio is considered silence.
@@ -422,44 +390,13 @@ public final class SpeechTranscriber: SpeechTranscribing {
     ///
     /// If no preference is set, falls back to the built-in mic to avoid
     /// triggering a Bluetooth profile switch on wireless headphones.
-    private func applyInputDevice() {
-        let uid = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? ""
-        let deviceID: AudioDeviceID
-        if !uid.isEmpty, let preferred = AudioDeviceManager.deviceID(forUID: uid) {
-            deviceID = preferred
-        } else if let builtIn = AudioDeviceManager.builtInMicID() {
-            deviceID = builtIn
-        } else {
-            return
-        }
-
-        guard let audioUnit = audioEngine.inputNode.audioUnit else {
-            Self.logger.warning("No audio unit on input node, cannot set device")
-            return
-        }
-        var devID = deviceID
-        let status = AudioUnitSetProperty(
-            audioUnit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &devID,
-            UInt32(MemoryLayout<AudioDeviceID>.size)
-        )
-        if status == noErr {
-            Self.logger.info("Set input device to \(uid.isEmpty ? "built-in mic" : uid)")
-        } else {
-            Self.logger.warning("Failed to set input device (status: \(status)), using default")
-        }
-    }
-
-    /// Cancel any in-flight session and stop audio capture.
+    /// Cancel any in-flight session and remove the input tap.
     private func cancelExistingSession() {
         engine.cancel()
 
-        if audioEngine.isRunning {
+        if isListening {
             tearDownAudioCapture()
-            Self.logger.debug("Stopped running audio engine from previous cycle")
+            Self.logger.debug("Removed input tap from previous cycle")
         }
     }
 
@@ -507,10 +444,11 @@ public final class SpeechTranscriber: SpeechTranscribing {
         return (meanSquare / Float(totalFrames)).squareRoot()
     }
 
-    /// Stop the audio engine, remove the input tap, and clear the listening flag.
+    /// Remove the input tap and clear the listening flag.
+    ///
+    /// The shared engine (AudioHub) stays running — only the tap is removed.
     private func tearDownAudioCapture() {
-        audioEngine.stop()
-        audioEngine.inputNode.removeTap(onBus: 0)
+        audioHub.removeInputTap()
         isListening = false
         levelMonitor?.reset()
     }

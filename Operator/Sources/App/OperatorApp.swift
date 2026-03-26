@@ -105,6 +105,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var voiceManager: VoiceManager?
     private var speechManager: (any SpeechManaging)?
     private var audioQueue: AudioQueue?
+    private var audioHub: AudioHub?
     private var registry: SessionRegistry?
     private var discoveryService: SessionDiscoveryService?
     private var onboardingWindow: OnboardingWindow?
@@ -122,16 +123,26 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         Self.logger.info("Operator launching")
         bootstrapPrerequisites()
 
-        let (ttsManager, vm) = bootstrapTTS()
+        // AudioHub owns the single AVAudioEngine. Created early, started after permissions.
+        let hub = AudioHub()
+        self.audioHub = hub
+
+        let (ttsManager, vm) = bootstrapTTS(audioHub: hub)
         voiceManager = vm
-        let sharedAudioEngine = (ttsManager as? KokoroSpeechManager)?.audioEngine
-        let fb = AudioFeedback(sharedEngine: sharedAudioEngine)
+        let fb = AudioFeedback(playerNode: hub.feedbackPlayerNode)
         speechManager = ttsManager
 
         if OnboardingViewModel.shouldShowOnboarding() {
             await showOnboardingAndWait()
         } else {
             await checkPermissions(speechManager: ttsManager, voiceManager: vm)
+        }
+
+        // Start the engine AFTER permissions are granted.
+        do {
+            try hub.start()
+        } catch {
+            Self.logger.error("Failed to start AudioHub: \(error)")
         }
 
         let aq = AudioQueue(speechManager: ttsManager, feedback: fb)
@@ -174,40 +185,23 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         Self.logger.info("Operator startup complete")
     }
 
-    private func bootstrapTTS() -> (any SpeechManaging, VoiceManager) {
+    private func bootstrapTTS(audioHub: AudioHub) -> (any SpeechManaging, VoiceManager) {
         if KokoroEngine.isDownloaded {
             do {
                 let engine = try KokoroEngine(
                     modelDirectory: KokoroEngine.defaultModelDirectory
                 )
-                let mgr = KokoroSpeechManager(engine: engine)
+                let mgr = KokoroSpeechManager(engine: engine, playerNode: audioHub.ttsPlayerNode)
                 Self.logger.info("Using Kokoro CoreML (\(engine.availableVoices.count) voices)")
                 return (mgr, VoiceManager(kokoroVoices: engine.availableVoices))
             } catch {
-                Self.logger.warning("Kokoro CoreML init failed: \(error). Falling back to Apple TTS.")
+                Self.logger.error("Kokoro CoreML init failed: \(error). No TTS available.")
             }
         } else {
-            Self.logger.info("Kokoro models not downloaded. Starting background download.")
-            startKokoroDownload()
+            Self.logger.error("Kokoro models not downloaded. TTS unavailable until onboarding completes.")
         }
+        // Fallback: Apple TTS (temporary — onboarding should ensure Kokoro is available)
         return (SpeechManager(), VoiceManager())
-    }
-
-    /// Download Kokoro models in the background and hot-swap when ready.
-    private func startKokoroDownload() {
-        KokoroDownloadModel.shared.downloadIfNeeded { [weak self] engine in
-            guard let self
-            else { return }
-            let mgr = KokoroSpeechManager(engine: engine)
-            let vm = VoiceManager(kokoroVoices: engine.availableVoices)
-            self.speechManager = mgr
-            self.voiceManager = vm
-            self.stateMachine?.replaceSpeechManager(mgr)
-            Task {
-                await self.audioQueue?.replaceSpeechManager(mgr)
-            }
-            Self.logger.notice("Hot-swapped to Kokoro CoreML TTS")
-        }
     }
 
     private func bootstrapPrerequisites() {
@@ -263,8 +257,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         vm: VoiceManager
     ) -> OperatorCore.SpeechTranscriber {
         let levelMonitor = AudioLevelMonitor()
-        let transcriber = SpeechTranscriber(engine: stt, levelMonitor: levelMonitor)
-        transcriber.warmUp()
+        guard let hub = audioHub else {
+            fatalError("AudioHub must be initialized before bootstrapStateMachine")
+        }
+        let transcriber = SpeechTranscriber(audioHub: hub, engine: stt, levelMonitor: levelMonitor)
         let wp = WaveformPanel(levelMonitor: levelMonitor)
         waveformPanel = wp
 

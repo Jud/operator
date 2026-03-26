@@ -164,7 +164,9 @@ internal final class E2EHarness {
         let vm = VoiceManager()
         voiceManager = vm
 
-        let fb = AudioFeedback()
+        let hub = AudioHub()
+        try? hub.start()
+        let fb = AudioFeedback(playerNode: hub.feedbackPlayerNode)
         feedback = fb
 
         let aq = AudioQueue(speechManager: mockSpeechManager, feedback: fb)

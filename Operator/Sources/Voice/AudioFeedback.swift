@@ -28,9 +28,8 @@ public protocol AudioFeedbackProviding: Sendable {
 
 /// Plays non-verbal audio feedback tones at state transitions.
 ///
-/// When a shared AVAudioEngine is provided (from KokoroSpeechManager), tones
-/// play through the same output stream as TTS — no AudioQueue teardown/recreate,
-/// no Bluetooth audio blip. Falls back to AVAudioPlayer when no engine is provided.
+/// Tones play through an externally-owned AVAudioPlayerNode (from AudioHub),
+/// sharing the same output stream as TTS. No AudioQueue teardown, no Bluetooth blip.
 ///
 /// Seven bundled .caf files provide immediate audible feedback without speech:
 /// - listening: soft rising tone when push-to-talk activates
@@ -47,78 +46,48 @@ public final class AudioFeedback: AudioFeedbackProviding {
     /// Minimum time between the start of one cue and the start of the next.
     private static let minimumSpacing: TimeInterval = 0.3
 
-    /// Pre-loaded audio buffers for engine-based playback.
+    /// Pre-loaded audio buffers keyed by cue.
     private let buffers: [AudioCue: AVAudioPCMBuffer]
 
-    /// Fallback AVAudioPlayer instances (used when no shared engine is available).
-    private let fallbackPlayers: [AudioCue: AVAudioPlayer]
-
-    /// Shared audio engine for blip-free playback through the same output stream as TTS.
-    private let sharedEngine: AVAudioEngine?
-
-    /// Dedicated player node for feedback tones, attached to the shared engine.
-    private let feedbackNode: AVAudioPlayerNode?
+    /// Player node owned by AudioHub, already attached and playing.
+    private let playerNode: AVAudioPlayerNode
 
     /// Earliest time a follow-up cue (via `playAfterCurrent`) should start.
     private var nextAllowedPlayTime: Date = .distantPast
 
-    /// Creates a new audio feedback player, pre-loading all tone files.
+    /// Creates a new audio feedback player, pre-loading all tone files as PCM buffers.
     ///
-    /// - Parameter sharedEngine: Optional AVAudioEngine (typically from KokoroSpeechManager).
-    ///   When provided, tones play through a dedicated node on the shared engine,
-    ///   avoiding AudioQueue teardown that causes Bluetooth audio blips.
-    public init(sharedEngine: AVAudioEngine? = nil) {
-        self.sharedEngine = sharedEngine
+    /// - Parameter playerNode: An AVAudioPlayerNode already attached to AudioHub's
+    ///   engine, connected to the mixer, and in the playing state.
+    public init(playerNode: AVAudioPlayerNode) {
+        self.playerNode = playerNode
 
-        var loadedBuffers: [AudioCue: AVAudioPCMBuffer] = [:]
-        var loadedPlayers: [AudioCue: AVAudioPlayer] = [:]
-
+        var loaded: [AudioCue: AVAudioPCMBuffer] = [:]
         for cue in AudioCue.allCases {
             guard let url = Bundle.module.url(forResource: cue.rawValue, withExtension: "caf") else {
                 Self.logger.error("Missing audio resource: \(cue.rawValue).caf")
                 continue
             }
             do {
-                if sharedEngine != nil {
-                    let audioFile = try AVAudioFile(forReading: url)
-                    guard
-                        let buffer = AVAudioPCMBuffer(
-                            pcmFormat: audioFile.processingFormat,
-                            frameCapacity: AVAudioFrameCount(audioFile.length)
-                        )
-                    else {
-                        Self.logger.error("Failed to create buffer for \(cue.rawValue)")
-                        continue
-                    }
-                    try audioFile.read(into: buffer)
-                    loadedBuffers[cue] = buffer
-                    Self.logger.debug("Loaded audio cue (buffer): \(cue.rawValue)")
-                } else {
-                    let player = try AVAudioPlayer(contentsOf: url)
-                    player.prepareToPlay()
-                    loadedPlayers[cue] = player
-                    Self.logger.debug("Loaded audio cue (player): \(cue.rawValue)")
+                let audioFile = try AVAudioFile(forReading: url)
+                guard
+                    let buffer = AVAudioPCMBuffer(
+                        pcmFormat: audioFile.processingFormat,
+                        frameCapacity: AVAudioFrameCount(audioFile.length)
+                    )
+                else {
+                    Self.logger.error("Failed to create buffer for \(cue.rawValue)")
+                    continue
                 }
+                try audioFile.read(into: buffer)
+                loaded[cue] = buffer
+                Self.logger.debug("Loaded audio cue: \(cue.rawValue)")
             } catch {
                 Self.logger.error("Failed to load \(cue.rawValue).caf: \(error)")
             }
         }
-
-        buffers = loadedBuffers
-        fallbackPlayers = loadedPlayers
-
-        if let engine = sharedEngine, let firstBuffer = loadedBuffers.values.first {
-            let node = AVAudioPlayerNode()
-            engine.attach(node)
-            // Connect with the buffer's format (1ch 44.1kHz) — the mixer handles
-            // conversion to the engine's output format automatically.
-            engine.connect(node, to: engine.mainMixerNode, format: firstBuffer.format)
-            node.play()
-            self.feedbackNode = node
-            Self.logger.info("Feedback tones attached to shared audio engine")
-        } else {
-            self.feedbackNode = nil
-        }
+        buffers = loaded
+        Self.logger.info("AudioFeedback initialized (\(loaded.count) cues loaded)")
     }
 
     /// Play an audio feedback tone immediately.
@@ -126,23 +95,16 @@ public final class AudioFeedback: AudioFeedbackProviding {
         guard UserDefaults.standard.bool(forKey: "feedbackSoundsEnabled") else {
             return
         }
-
-        let duration: TimeInterval
-
-        if let node = feedbackNode, let buffer = buffers[cue] {
-            node.stop()
-            node.play()
-            node.scheduleBuffer(buffer, at: nil)
-            duration = Double(buffer.frameLength) / buffer.format.sampleRate
-        } else if let player = fallbackPlayers[cue] {
-            player.currentTime = 0
-            player.play()
-            duration = player.duration
-        } else {
-            Self.logger.warning("No player available for cue: \(cue.rawValue)")
+        guard let buffer = buffers[cue] else {
+            Self.logger.warning("No buffer available for cue: \(cue.rawValue)")
             return
         }
 
+        playerNode.stop()
+        playerNode.play()
+        playerNode.scheduleBuffer(buffer, at: nil)
+
+        let duration = Double(buffer.frameLength) / buffer.format.sampleRate
         let now = Date()
         nextAllowedPlayTime = max(
             now.addingTimeInterval(duration),

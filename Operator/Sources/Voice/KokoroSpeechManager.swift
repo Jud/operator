@@ -1,20 +1,18 @@
 @preconcurrency import AVFoundation
 import KokoroCoreML
 
-/// Speech manager using Kokoro neural TTS via AVAudioEngine + AVAudioPlayerNode.
+/// Speech manager using Kokoro neural TTS via an externally-owned AVAudioPlayerNode.
 ///
 /// Conforms to `SpeechManaging` so it's a drop-in replacement for `SpeechManager`.
-/// Audio engine is kept running permanently (no start/stop per utterance).
-/// Uses the streaming `speak()` API — audio chunks play as soon as they're
-/// synthesized, cutting perceived latency for long utterances.
+/// The player node is created, attached, and started by `AudioHub` — this class
+/// only schedules audio buffers on it. Uses the streaming `speak()` API — audio
+/// chunks play as soon as they're synthesized, cutting perceived latency.
 @MainActor
 public final class KokoroSpeechManager: NSObject, SpeechManaging {
     private static let logger = Log.logger(for: "KokoroSpeechManager")
 
     private let engine: KokoroEngine
-    /// Shared audio engine — exposed so feedback tones can play through the same output stream.
-    public let audioEngine = AVAudioEngine()
-    private let playerNode = AVAudioPlayerNode()
+    private let playerNode: AVAudioPlayerNode
 
     /// The full text of the currently playing utterance.
     private var currentText: String = ""
@@ -39,27 +37,18 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     /// Default 1.0.
     public var speechRate: Float = 1.0
 
-    /// Create a KokoroSpeechManager with a loaded engine.
-    public init(engine: KokoroEngine) {
+    /// Create a KokoroSpeechManager with a synthesis engine and an externally-owned player node.
+    ///
+    /// The player node must already be attached to an AVAudioEngine, connected
+    /// to its mixer, and in the playing state (managed by AudioHub).
+    public init(engine: KokoroEngine, playerNode: AVAudioPlayerNode) {
         self.engine = engine
+        self.playerNode = playerNode
         let (stream, continuation) = AsyncStream<Void>.makeStream()
         self.finishedSpeaking = stream
         self.finishedContinuation = continuation
         super.init()
-
-        audioEngine.attach(playerNode)
-        audioEngine.connect(
-            playerNode,
-            to: audioEngine.mainMixerNode,
-            format: KokoroEngine.audioFormat
-        )
-        do {
-            try audioEngine.start()
-            playerNode.play()
-            Self.logger.info("Audio engine started, player node armed")
-        } catch {
-            Self.logger.error("Failed to start audio engine: \(error)")
-        }
+        Self.logger.info("KokoroSpeechManager initialized (external player node)")
     }
 
     /// Whether the player node is currently playing.
