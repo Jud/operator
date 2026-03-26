@@ -124,7 +124,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         let (ttsManager, vm) = bootstrapTTS()
         voiceManager = vm
-        let fb = AudioFeedback()
+        let sharedAudioEngine = (ttsManager as? KokoroSpeechManager)?.audioEngine
+        let fb = AudioFeedback(sharedEngine: sharedAudioEngine)
         speechManager = ttsManager
 
         if OnboardingViewModel.shouldShowOnboarding() {

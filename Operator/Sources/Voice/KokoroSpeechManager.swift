@@ -12,7 +12,8 @@ public final class KokoroSpeechManager: NSObject, SpeechManaging {
     private static let logger = Log.logger(for: "KokoroSpeechManager")
 
     private let engine: KokoroEngine
-    private let audioEngine = AVAudioEngine()
+    /// Shared audio engine — exposed so feedback tones can play through the same output stream.
+    public let audioEngine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
 
     /// The full text of the currently playing utterance.

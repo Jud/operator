@@ -28,7 +28,11 @@ public protocol AudioFeedbackProviding: Sendable {
 
 /// Plays non-verbal audio feedback tones at state transitions.
 ///
-/// Six bundled .caf files provide immediate audible feedback without speech:
+/// When a shared AVAudioEngine is provided (from KokoroSpeechManager), tones
+/// play through the same output stream as TTS — no AudioQueue teardown/recreate,
+/// no Bluetooth audio blip. Falls back to AVAudioPlayer when no engine is provided.
+///
+/// Seven bundled .caf files provide immediate audible feedback without speech:
 /// - listening: soft rising tone when push-to-talk activates
 /// - processing: brief double-tick when push-to-talk releases
 /// - delivered: low pleasant chime on successful message delivery
@@ -36,69 +40,116 @@ public protocol AudioFeedbackProviding: Sendable {
 /// - pending: subtle notification when returning to IDLE with queued messages
 /// - dictation: short, subtle high-pitched chime confirming text insertion at cursor
 /// - dismissed: gentle soft pop when recording is empty or too short (no error)
-///
-/// Each tone is pre-loaded via AVAudioPlayer.prepareToPlay() for zero-latency playback.
-/// The play method resets currentTime to 0 before playing, allowing rapid re-trigger
-/// without waiting for the previous playback to finish.
 @MainActor
 public final class AudioFeedback: AudioFeedbackProviding {
     private static let logger = Log.logger(for: "AudioFeedback")
 
-    private let players: [AudioCue: AVAudioPlayer]
-
-    /// Earliest time a follow-up cue (via `playAfterCurrent`) should start.
-    ///
-    /// Set to the later of: current cue's end time, or current cue's start + minimumSpacing.
-    private var nextAllowedPlayTime: Date = .distantPast
-
     /// Minimum time between the start of one cue and the start of the next.
     private static let minimumSpacing: TimeInterval = 0.3
 
+    /// Pre-loaded audio buffers for engine-based playback.
+    private let buffers: [AudioCue: AVAudioPCMBuffer]
+
+    /// Fallback AVAudioPlayer instances (used when no shared engine is available).
+    private let fallbackPlayers: [AudioCue: AVAudioPlayer]
+
+    /// Shared audio engine for blip-free playback through the same output stream as TTS.
+    private let sharedEngine: AVAudioEngine?
+
+    /// Dedicated player node for feedback tones, attached to the shared engine.
+    private let feedbackNode: AVAudioPlayerNode?
+
+    /// Earliest time a follow-up cue (via `playAfterCurrent`) should start.
+    private var nextAllowedPlayTime: Date = .distantPast
+
     /// Creates a new audio feedback player, pre-loading all tone files.
-    public init() {
-        var loaded: [AudioCue: AVAudioPlayer] = [:]
+    ///
+    /// - Parameter sharedEngine: Optional AVAudioEngine (typically from KokoroSpeechManager).
+    ///   When provided, tones play through a dedicated node on the shared engine,
+    ///   avoiding AudioQueue teardown that causes Bluetooth audio blips.
+    public init(sharedEngine: AVAudioEngine? = nil) {
+        self.sharedEngine = sharedEngine
+
+        var loadedBuffers: [AudioCue: AVAudioPCMBuffer] = [:]
+        var loadedPlayers: [AudioCue: AVAudioPlayer] = [:]
+
         for cue in AudioCue.allCases {
             guard let url = Bundle.module.url(forResource: cue.rawValue, withExtension: "caf") else {
                 Self.logger.error("Missing audio resource: \(cue.rawValue).caf")
                 continue
             }
             do {
-                let player = try AVAudioPlayer(contentsOf: url)
-                player.prepareToPlay()
-                loaded[cue] = player
-                Self.logger.debug("Loaded audio cue: \(cue.rawValue)")
+                if sharedEngine != nil {
+                    let audioFile = try AVAudioFile(forReading: url)
+                    guard
+                        let buffer = AVAudioPCMBuffer(
+                            pcmFormat: audioFile.processingFormat,
+                            frameCapacity: AVAudioFrameCount(audioFile.length)
+                        )
+                    else {
+                        Self.logger.error("Failed to create buffer for \(cue.rawValue)")
+                        continue
+                    }
+                    try audioFile.read(into: buffer)
+                    loadedBuffers[cue] = buffer
+                    Self.logger.debug("Loaded audio cue (buffer): \(cue.rawValue)")
+                } else {
+                    let player = try AVAudioPlayer(contentsOf: url)
+                    player.prepareToPlay()
+                    loadedPlayers[cue] = player
+                    Self.logger.debug("Loaded audio cue (player): \(cue.rawValue)")
+                }
             } catch {
-                Self.logger.error("Failed to load \(cue.rawValue).caf: \(error.localizedDescription)")
+                Self.logger.error("Failed to load \(cue.rawValue).caf: \(error)")
             }
         }
-        players = loaded
+
+        buffers = loadedBuffers
+        fallbackPlayers = loadedPlayers
+
+        if let engine = sharedEngine, let firstBuffer = loadedBuffers.values.first {
+            let node = AVAudioPlayerNode()
+            engine.attach(node)
+            engine.connect(node, to: engine.mainMixerNode, format: firstBuffer.format)
+            node.play()
+            self.feedbackNode = node
+            Self.logger.info("Feedback tones attached to shared audio engine")
+        } else {
+            self.feedbackNode = nil
+        }
     }
 
     /// Play an audio feedback tone immediately.
-    ///
-    /// Resets playback position to allow rapid re-triggering.
     public func play(_ cue: AudioCue) {
         guard UserDefaults.standard.bool(forKey: "feedbackSoundsEnabled") else {
             return
         }
-        guard let player = players[cue] else {
+
+        let duration: TimeInterval
+
+        if let node = feedbackNode, let buffer = buffers[cue] {
+            node.stop()
+            node.play()
+            node.scheduleBuffer(buffer, at: nil)
+            duration = Double(buffer.frameLength) / buffer.format.sampleRate
+        } else if let player = fallbackPlayers[cue] {
+            player.currentTime = 0
+            player.play()
+            duration = player.duration
+        } else {
             Self.logger.warning("No player available for cue: \(cue.rawValue)")
             return
         }
-        player.currentTime = 0
-        player.play()
+
         let now = Date()
         nextAllowedPlayTime = max(
-            now.addingTimeInterval(player.duration),
+            now.addingTimeInterval(duration),
             now.addingTimeInterval(Self.minimumSpacing)
         )
         Self.logger.debug("Playing cue: \(cue.rawValue)")
     }
 
     /// Play an audio feedback tone after any currently playing cue finishes.
-    ///
-    /// If nothing is playing, plays immediately. Otherwise schedules playback
-    /// after the current cue's remaining duration plus a small gap.
     public func playAfterCurrent(_ cue: AudioCue) {
         let delay = nextAllowedPlayTime.timeIntervalSinceNow
         if delay <= 0 {
