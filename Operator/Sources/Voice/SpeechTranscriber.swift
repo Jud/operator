@@ -64,38 +64,22 @@ public final class SpeechTranscriber: SpeechTranscribing {
         self.levelMonitor = levelMonitor
     }
 
-    /// Start the audio engine permanently so the CoreAudio aggregate device
-    /// stays alive between activations.
+    /// Set the process default input to the built-in mic so the aggregate
+    /// device AVAudioEngine creates won't include the Bluetooth mic.
     ///
-    /// Sets the process-level default input device to the built-in mic BEFORE
-    /// touching AVAudioEngine, so the automatic aggregate device doesn't pull
-    /// in the Bluetooth mic (which causes an audio blip on AirPods). The engine
-    /// then stays running permanently — startListening/tearDown only toggle the tap.
+    /// Must be called early — before `audioEngine.inputNode` is first accessed.
     public func warmUp() {
-        // Set process default input to built-in mic BEFORE AVAudioEngine
-        // creates its aggregate device. This prevents the aggregate from
-        // including the Bluetooth mic, avoiding a profile renegotiation blip.
         setProcessDefaultInput()
-
-        applyInputDevice()
-        let inputNode = audioEngine.inputNode
-        _ = inputNode.outputFormat(forBus: 0)
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            Self.logger.info("Audio engine started permanently (aggregate device alive)")
-        } catch {
-            Self.logger.warning("Audio engine warm-up failed: \(error)")
-        }
+        Self.logger.info("Audio engine warm-up: process default input set to built-in mic")
     }
 
-    /// Override the process-level default input device to the built-in mic.
+    /// Set the input device on the audio engine's input node to the built-in mic.
     ///
-    /// Must be called before accessing `audioEngine.inputNode` — that access
-    /// triggers aggregate device creation using the current default input.
-    /// If the default is Bluetooth, the aggregate includes the BT mic,
-    /// causing a profile switch blip.
+    /// Uses `kAudioOutputUnitProperty_CurrentDevice` on the audio unit directly.
+    /// This must happen AFTER `audioEngine.inputNode` is accessed but BEFORE
+    /// `audioEngine.start()`, so the aggregate device picks up the override.
     private func setProcessDefaultInput() {
+        // Resolve target: user preference > built-in mic > system default
         let uid = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? ""
         let targetID: AudioDeviceID
         if !uid.isEmpty, let preferred = AudioDeviceManager.deviceID(forUID: uid) {
@@ -107,24 +91,25 @@ public final class SpeechTranscriber: SpeechTranscribing {
             return
         }
 
-        var deviceID = targetID
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultInputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectSetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
+        // Access inputNode to force creation, then immediately override its device
+        // before the engine starts and creates the aggregate.
+        guard let audioUnit = audioEngine.inputNode.audioUnit else {
+            Self.logger.warning("No audio unit on input node during warm-up")
+            return
+        }
+        var devID = targetID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
             0,
-            nil,
-            UInt32(MemoryLayout<AudioDeviceID>.size),
-            &deviceID
+            &devID,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
         )
         if status == noErr {
-            Self.logger.info("Set process default input to device \(targetID)")
+            Self.logger.info("Set input audio unit to built-in mic (device \(targetID))")
         } else {
-            Self.logger.warning("Failed to set process default input (status: \(status))")
+            Self.logger.warning("Failed to set input audio unit device (status: \(status))")
         }
     }
 
@@ -343,12 +328,8 @@ public final class SpeechTranscriber: SpeechTranscribing {
             }
         }
 
-        // Engine is kept running permanently (started in warmUp) to avoid
-        // tearing down the aggregate device. Just start if not already running.
-        if !audioEngine.isRunning {
-            audioEngine.prepare()
-            try audioEngine.start()
-        }
+        audioEngine.prepare()
+        try audioEngine.start()
         isListening = true
         Self.logger.info("Audio engine started, listening for speech")
     }
@@ -552,11 +533,9 @@ public final class SpeechTranscriber: SpeechTranscribing {
         return (meanSquare / Float(totalFrames)).squareRoot()
     }
 
-    /// Remove the input tap and clear the listening flag.
-    ///
-    /// The audio engine is kept running to preserve the CoreAudio aggregate
-    /// device — stopping it would cause a Bluetooth audio blip on next start.
+    /// Stop the audio engine, remove the input tap, and clear the listening flag.
     private func tearDownAudioCapture() {
+        audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         isListening = false
         levelMonitor?.reset()
