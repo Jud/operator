@@ -107,12 +107,12 @@ public final class AudioFeedback: AudioFeedbackProviding {
         buffers = loadedBuffers
         fallbackPlayers = loadedPlayers
 
-        if let engine = sharedEngine, !loadedBuffers.isEmpty {
+        if let engine = sharedEngine, let firstBuffer = loadedBuffers.values.first {
             let node = AVAudioPlayerNode()
             engine.attach(node)
-            // Connect with nil format — lets AVAudioEngine handle sample rate
-            // conversion between 44.1kHz feedback tones and Kokoro's 24kHz engine.
-            engine.connect(node, to: engine.mainMixerNode, format: nil)
+            // Connect with the buffer's format (1ch 44.1kHz) — the mixer handles
+            // conversion to the engine's output format automatically.
+            engine.connect(node, to: engine.mainMixerNode, format: firstBuffer.format)
             node.play()
             self.feedbackNode = node
             Self.logger.info("Feedback tones attached to shared audio engine")
