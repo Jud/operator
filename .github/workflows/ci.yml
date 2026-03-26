@@ -61,6 +61,5 @@ jobs:
         run: |
           find Sources Tests -name '*.swift' \
             ! -path 'Sources/Tokenizer/*' \
-            ! -path 'Sources/CleanupCLI/*' \
             ! -path 'Sources/QwenTokenizerRust/*' \
             -print0 | xargs -0 swift-format lint --strict

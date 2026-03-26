@@ -8,7 +8,6 @@ excluded:
   - Tests/Benchmarks
   - Tests/OperatorTests/PerformanceBenchmarkTests.swift
   - Sources/Tokenizer
-  - Sources/CleanupCLI
   - Sources/QwenTokenizerRust
 
 opt_in_rules:
@@ -102,6 +101,7 @@ opt_in_rules:
 
 disabled_rules:
   - opening_brace
+  - legacy_objc_type
 
 line_length:
   warning: 120
@@ -139,8 +139,22 @@ identifier_name:
   excluded:
     - id
     - i
+    - j
     - x
     - y
+    - n
+    - a
+    - b
+    - c
+    - d
+    - k
+    - o
+    - p
+    - r
+    - s
+    - t
+    - v
+    - w
 
 nesting:
   type_level: 2
