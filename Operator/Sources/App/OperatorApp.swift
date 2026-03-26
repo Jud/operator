@@ -263,6 +263,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     ) -> OperatorCore.SpeechTranscriber {
         let levelMonitor = AudioLevelMonitor()
         let transcriber = SpeechTranscriber(engine: stt, levelMonitor: levelMonitor)
+        transcriber.warmUp()
         let wp = WaveformPanel(levelMonitor: levelMonitor)
         waveformPanel = wp
 

@@ -64,6 +64,28 @@ public final class SpeechTranscriber: SpeechTranscribing {
         self.levelMonitor = levelMonitor
     }
 
+    /// Pre-warm the AVAudioEngine so the first real activation captures audio immediately.
+    ///
+    /// On cold launch, the first `audioEngine.start()` triggers HAL device negotiation
+    /// which can take hundreds of milliseconds. During that window the tap receives no
+    /// samples, causing the first recording to appear silent. A quick prepare/start/stop
+    /// cycle at launch forces this negotiation to happen before the user presses the key.
+    public func warmUp() {
+        let inputNode = audioEngine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { _, _ in }
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            Self.logger.info("Audio engine warm-up: started (sampleRate=\(format.sampleRate))")
+        } catch {
+            Self.logger.warning("Audio engine warm-up failed: \(error)")
+        }
+        audioEngine.stop()
+        inputNode.removeTap(onBus: 0)
+        Self.logger.info("Audio engine warm-up complete")
+    }
+
     // MARK: - Type Methods
 
     /// Extract channel 0 from a multi-channel buffer into a new mono buffer.
