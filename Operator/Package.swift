@@ -20,6 +20,15 @@ let package = Package(
             name: "QwenTokenizer",
             path: "Sources/Tokenizer"
         ),
+        .binaryTarget(
+            name: "QwenTokenizerFFI",
+            path: "Frameworks/QwenTokenizerFFI.xcframework"
+        ),
+        .target(
+            name: "QwenTokenizerRust",
+            dependencies: ["QwenTokenizerFFI"],
+            path: "Sources/QwenTokenizerRust"
+        ),
         .target(
             name: "OperatorCore",
             dependencies: [
@@ -38,6 +47,7 @@ let package = Package(
                 "MCPServer/",
                 "Tokenizer/",
                 "CleanupCLI/",
+                "QwenTokenizerRust/",
             ],
             resources: [
                 .process("Resources"),
@@ -61,7 +71,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "CleanupCLI",
-            dependencies: ["QwenTokenizer"],
+            dependencies: ["QwenTokenizerRust"],
             path: "Sources/CleanupCLI",
             exclude: ["tokenizer_helper.py"]
         ),

@@ -1,7 +1,7 @@
 // CleanupCLI v2 — Speech cleanup via CoreML batch prefill + decode.
 //
 // Architecture:
-//   Python helper (tokenizer_helper.py) ← tokenize/detokenize
+//   Rust tokenizer (via UniFFI) ← tokenize/detokenize
 //   Swift (this file) ← CoreML inference + state management
 //
 // Usage:
@@ -10,6 +10,7 @@
 
 import CoreML
 import Foundation
+import QwenTokenizerRust
 
 // MARK: - Config
 
@@ -24,68 +25,30 @@ let imEndTokenId: Int32 = 248_046
 let thinkTokenId: Int32 = 248_068
 let thinkEndTokenId: Int32 = 248_069
 
-// MARK: - Python tokenizer helper
+// MARK: - Rust tokenizer (via UniFFI)
 
 class TokenizerHelper {
-    let process: Process
-    let stdinHandle: FileHandle
-    let reader: FileHandle
+    let inner: QwenTokenizer
 
-    init(pythonPath: String, scriptPath: String) {
-        process = Process()
-        process.executableURL = URL(fileURLWithPath: pythonPath)
-        process.arguments = [scriptPath]
-        process.environment = ProcessInfo.processInfo.environment
-
-        let inPipe = Pipe()
-        let outPipe = Pipe()
-        process.standardInput = inPipe
-        process.standardOutput = outPipe
-        process.standardError = FileHandle.nullDevice
-
-        stdinHandle = inPipe.fileHandleForWriting
-        reader = outPipe.fileHandleForReading
-
-        try! process.run()
-
-        // Wait for "ready"
-        let ready = readOneLine()
-        if ready != "ready" {
-            fputs("FATAL: Tokenizer helper did not start. Got: '\(ready ?? "nil")'\n", stderr)
-            fputs("  Python: \(pythonPath)\n  Script: \(scriptPath)\n", stderr)
-            fatalError("Tokenizer helper failed")
+    init(tokenizerJsonPath: String) {
+        do {
+            inner = try loadTokenizer(tokenizerJsonPath: tokenizerJsonPath)
+        } catch {
+            fatalError("Failed to load tokenizer from \(tokenizerJsonPath): \(error)")
         }
-    }
-
-    private func readOneLine() -> String? {
-        var buf = Data()
-        while true {
-            let byte = reader.readData(ofLength: 1)
-            if byte.isEmpty { return nil }
-            if byte[0] == 0x0A { break }
-            buf.append(byte)
-        }
-        return String(data: buf, encoding: .utf8)
-    }
-
-    private func send(_ cmd: String) -> String {
-        stdinHandle.write(Data((cmd + "\n").utf8))
-        return readOneLine() ?? ""
     }
 
     func encode(_ text: String) -> [Int32] {
-        send("encode \(text)").split(separator: " ").compactMap { Int32($0) }
+        inner.encode(text: text)
     }
 
     func decode(_ ids: [Int32]) -> String {
-        send("decode \(ids.map { String($0) }.joined(separator: " "))")
+        (try? inner.decode(ids: ids)) ?? ""
     }
 
     func suffixIds() -> [Int32] {
-        send("suffix").split(separator: " ").compactMap { Int32($0) }
+        inner.suffixIds()
     }
-
-    deinit { stdinHandle.write(Data("quit\n".utf8)); process.terminate() }
 }
 
 // MARK: - Npy loader
@@ -192,9 +155,9 @@ class CleanupEngine {
         return compiled
     }
 
-    init(decodeDir: String, prefillDir: String, python: String, script: String) throws {
+    init(decodeDir: String, prefillDir: String, tokenizerJsonPath: String) throws {
         let t0 = CFAbsoluteTimeGetCurrent()
-        tok = TokenizerHelper(pythonPath: python, scriptPath: script)
+        tok = TokenizerHelper(tokenizerJsonPath: tokenizerJsonPath)
         suffix = tok.suffixIds()
 
         let cfg = MLModelConfiguration(); cfg.computeUnits = .cpuAndGPU
@@ -378,28 +341,6 @@ class CleanupEngine {
 
 // MARK: - Main
 
-// Resolve tokenizer_helper.py relative to the executable (works from any working directory)
-let execDir = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent().path
-let bundledScript: String = {
-    let fm = FileManager.default
-    // Check next to executable first (bundled resource)
-    let beside = "\(execDir)/CleanupCLI_tokenizer_helper.py.resources/tokenizer_helper.py"
-    if fm.fileExists(atPath: beside) { return beside }
-    // Check in SPM resource bundle
-    let bundle = "\(execDir)/CleanupCLI_CleanupCLI.bundle/tokenizer_helper.py"
-    if fm.fileExists(atPath: bundle) { return bundle }
-    // Fallback: relative to working directory (project root)
-    for candidate in [
-        "scripts/pipeline/tokenizer_helper.py",
-        "../scripts/pipeline/tokenizer_helper.py",          // when run from Operator/
-        "scripts/coreml-convert/tokenizer_helper.py",
-        "../scripts/coreml-convert/tokenizer_helper.py",
-    ] {
-        if fm.fileExists(atPath: candidate) { return candidate }
-    }
-    fatalError("tokenizer_helper.py not found. Run from project root or place next to binary.")
-}()
-
 let modelDir: String
 let prefillDir: String
 if let idx = CommandLine.arguments.firstIndex(of: "--model-dir"), idx + 1 < CommandLine.arguments.count {
@@ -413,11 +354,23 @@ if let idx = CommandLine.arguments.firstIndex(of: "--prefill-dir"), idx + 1 < Co
     prefillDir = "models/batch_prefill_fp16"
 }
 
+// Resolve tokenizer.json — check model dir first, then fallback paths
+let tokenizerJson: String = {
+    let fm = FileManager.default
+    for candidate in [
+        "\(modelDir)/tokenizer/tokenizer.json",
+        "models/monolith_kv_fp16/tokenizer/tokenizer.json",
+        "../models/monolith_kv_fp16/tokenizer/tokenizer.json",
+    ] {
+        if fm.fileExists(atPath: candidate) { return candidate }
+    }
+    fatalError("tokenizer.json not found. Expected at \(modelDir)/tokenizer/tokenizer.json")
+}()
+
 let engine = try CleanupEngine(
     decodeDir: modelDir,
     prefillDir: prefillDir,
-    python: "/tmp/coreml-venv/bin/python",
-    script: bundledScript
+    tokenizerJsonPath: tokenizerJson
 )
 fputs("Ready. Enter transcriptions (Ctrl-D to quit):\n", stderr)
 while let line = Swift.readLine() {
