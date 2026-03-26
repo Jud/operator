@@ -70,7 +70,13 @@ public final class SpeechTranscriber: SpeechTranscribing {
     /// which can take hundreds of milliseconds. During that window the tap receives no
     /// samples, causing the first recording to appear silent. A quick prepare/start/stop
     /// cycle at launch forces this negotiation to happen before the user presses the key.
+    ///
+    /// Applies the user's preferred input device (or the built-in mic) before starting
+    /// so macOS doesn't try to activate a Bluetooth mic profile and cause an audio blip
+    /// on wireless headphones.
     public func warmUp() {
+        applyInputDevice()
+
         let inputNode = audioEngine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { _, _ in }
@@ -417,10 +423,18 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
     // MARK: - Private
 
-    /// Apply the user-selected input device to the audio engine, if configured.
+    /// Apply the user-selected input device to the audio engine.
+    ///
+    /// If no preference is set, falls back to the built-in mic to avoid
+    /// triggering a Bluetooth profile switch on wireless headphones.
     private func applyInputDevice() {
         let uid = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? ""
-        guard !uid.isEmpty, let deviceID = AudioDeviceManager.deviceID(forUID: uid) else {
+        let deviceID: AudioDeviceID
+        if !uid.isEmpty, let preferred = AudioDeviceManager.deviceID(forUID: uid) {
+            deviceID = preferred
+        } else if let builtIn = AudioDeviceManager.builtInMicID() {
+            deviceID = builtIn
+        } else {
             return
         }
 
@@ -438,7 +452,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
         if status == noErr {
-            Self.logger.info("Set input device to \(uid)")
+            Self.logger.info("Set input device to \(uid.isEmpty ? "built-in mic" : uid)")
         } else {
             Self.logger.warning("Failed to set input device (status: \(status)), using default")
         }

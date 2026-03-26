@@ -28,6 +28,18 @@ public enum AudioDeviceManager {
         allDevices().first { $0.uid == uid }?.id
     }
 
+    /// Find the built-in microphone, preferring it over Bluetooth devices.
+    ///
+    /// Looks for devices with "Built-in" or "MacBook" in the name that have
+    /// input streams. Returns nil if no built-in mic is found.
+    public static func builtInMicID() -> AudioDeviceID? {
+        let inputs = inputDevices()
+        let builtIn = inputs.first {
+            $0.name.contains("Built-in") || $0.name.contains("MacBook")
+        }
+        return builtIn?.id
+    }
+
     // MARK: - Private
 
     private static func allDevices() -> [AudioDevice] {
