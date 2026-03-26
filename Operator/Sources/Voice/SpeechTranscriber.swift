@@ -64,53 +64,27 @@ public final class SpeechTranscriber: SpeechTranscribing {
         self.levelMonitor = levelMonitor
     }
 
-    /// Set the process default input to the built-in mic so the aggregate
-    /// device AVAudioEngine creates won't include the Bluetooth mic.
+    /// Pre-warm the audio engine with a full start/stop cycle at launch.
     ///
-    /// Must be called early — before `audioEngine.inputNode` is first accessed.
+    /// Forces CoreAudio aggregate device creation and HAL negotiation so the
+    /// first real push-to-talk activation captures audio immediately. Causes a
+    /// one-time Bluetooth audio blip at launch (unavoidable without a custom
+    /// aggregate device — tracked for future investigation).
     public func warmUp() {
-        setProcessDefaultInput()
-        Self.logger.info("Audio engine warm-up: process default input set to built-in mic")
-    }
-
-    /// Set the input device on the audio engine's input node to the built-in mic.
-    ///
-    /// Uses `kAudioOutputUnitProperty_CurrentDevice` on the audio unit directly.
-    /// This must happen AFTER `audioEngine.inputNode` is accessed but BEFORE
-    /// `audioEngine.start()`, so the aggregate device picks up the override.
-    private func setProcessDefaultInput() {
-        // Resolve target: user preference > built-in mic > system default
-        let uid = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? ""
-        let targetID: AudioDeviceID
-        if !uid.isEmpty, let preferred = AudioDeviceManager.deviceID(forUID: uid) {
-            targetID = preferred
-        } else if let builtIn = AudioDeviceManager.builtInMicID() {
-            targetID = builtIn
-        } else {
-            Self.logger.debug("No built-in mic found, using system default")
-            return
+        applyInputDevice()
+        let inputNode = audioEngine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { _, _ in }
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            Self.logger.info("Audio engine warm-up: started (sampleRate=\(format.sampleRate))")
+        } catch {
+            Self.logger.warning("Audio engine warm-up failed: \(error)")
         }
-
-        // Access inputNode to force creation, then immediately override its device
-        // before the engine starts and creates the aggregate.
-        guard let audioUnit = audioEngine.inputNode.audioUnit else {
-            Self.logger.warning("No audio unit on input node during warm-up")
-            return
-        }
-        var devID = targetID
-        let status = AudioUnitSetProperty(
-            audioUnit,
-            kAudioOutputUnitProperty_CurrentDevice,
-            kAudioUnitScope_Global,
-            0,
-            &devID,
-            UInt32(MemoryLayout<AudioDeviceID>.size)
-        )
-        if status == noErr {
-            Self.logger.info("Set input audio unit to built-in mic (device \(targetID))")
-        } else {
-            Self.logger.warning("Failed to set input audio unit device (status: \(status))")
-        }
+        audioEngine.stop()
+        inputNode.removeTap(onBus: 0)
+        Self.logger.info("Audio engine warm-up complete")
     }
 
     // MARK: - Type Methods
