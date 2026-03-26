@@ -451,12 +451,14 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
             options.chunkingStrategy = .vad
 
             let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
-            guard let groundTruth = results.first else {
-                qualityLogger.notice("Ground truth: decode returned nil")
+            guard !results.isEmpty else {
+                qualityLogger.notice("Ground truth: decode returned no results")
                 return
             }
 
-            let gtText = TranscriptionSession.cleanText(groundTruth.text)
+            // VAD chunking returns one result per chunk; join all of them.
+            let allText = results.map(\.text).joined(separator: " ")
+            let gtText = TranscriptionSession.cleanText(allText)
             guard !gtText.isEmpty else {
                 qualityLogger.notice("Ground truth: empty after cleaning")
                 return
@@ -573,7 +575,7 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
     }
 
     /// Levenshtein similarity ratio (0.0 = completely different, 1.0 = identical).
-    private static func levenshteinSimilarity(_ lhs: String, _ rhs: String) -> Double {
+    static func levenshteinSimilarity(_ lhs: String, _ rhs: String) -> Double {
         let left = Array(lhs.lowercased())
         let right = Array(rhs.lowercased())
         let leftLen = left.count
