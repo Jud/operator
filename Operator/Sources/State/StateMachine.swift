@@ -801,6 +801,17 @@ extension StateMachine {
     /// If messages are pending, AudioQueue plays the "pending" tone to alert the user.
     private func enterIdle() {
         cancelInFlightWork()
+
+        // Ensure the audio engine is stopped if still running. This covers
+        // early-exit paths (cancel, too-short, double-tap, error) that skip
+        // the normal stopAndCheckSilence() flow.
+        if transcriber.isListening {
+            Self.logger.debug("enterIdle: stopping transcriber that was still listening")
+            _ = Task { @MainActor [transcriber] in
+                _ = await transcriber.stopAndCheckSilence()
+            }
+        }
+
         transition(to: .idle)
         waveformPanel?.fadeOut()
 
