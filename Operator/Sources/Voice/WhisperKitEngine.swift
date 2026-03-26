@@ -1,11 +1,8 @@
 import AVFoundation
+import AppKit
 import VocabularyCorrector
 import WhisperKit
 import os
-
-#if DEBUG
-    import AppKit
-#endif
 
 /// WhisperKit-based speech-to-text with word-level streaming confirmation.
 public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @unchecked Sendable {
@@ -274,26 +271,23 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
             "Result: \(totalMs)ms (await=\(awaitMs)ms final=\(finalMs)ms) \"\(preview, privacy: .public)\""
         )
 
-        #if DEBUG
-            // Only run ground truth comparison in the live app, not test runners.
-            // Test runners trigger this code path and auto-capture garbage fixtures
-            // because the "most recent audio trace" belongs to a different session.
-            if Bundle.main.bundleIdentifier == "com.operator.app" {
-                let debugSamples = samples
-                let debugResult = corrected
-                let debugPipe = self.pipe
-                let debugLatencyMs = totalMs
-                Task.detached {
-                    await Self.compareGroundTruth(
-                        streamingResult: debugResult,
-                        samples: debugSamples,
-                        audioDuration: audioDur,
-                        latencyMs: debugLatencyMs,
-                        pipe: debugPipe
-                    )
-                }
+        // Run ground truth comparison in the live app only (not test runners).
+        // Runs in a detached task — no latency impact on the user.
+        if Bundle.main.bundleIdentifier == "com.operator.app" {
+            let bgSamples = samples
+            let bgResult = corrected
+            let bgPipe = self.pipe
+            let bgLatencyMs = totalMs
+            Task.detached {
+                await Self.compareGroundTruth(
+                    streamingResult: bgResult,
+                    samples: bgSamples,
+                    audioDuration: audioDur,
+                    latencyMs: bgLatencyMs,
+                    pipe: bgPipe
+                )
             }
-        #endif
+        }
 
         return corrected
     }
@@ -435,176 +429,174 @@ public final class WhisperKitEngine: TranscriptionEngine, SchedulableEngine, @un
         }
     }
 
-    // MARK: - Debug Ground Truth
+    // MARK: - Ground Truth Quality Gate
 
-    #if DEBUG
-        private static let qualityLogger = Log.logger(for: "TranscriptionQuality")
+    private static let qualityLogger = Log.logger(for: "TranscriptionQuality")
 
-        /// Run a clean batch decode and compare against the streaming result.
-        ///
-        /// Called in a detached task -- no latency impact on the user.
-        private static func compareGroundTruth(
-            streamingResult: String,
-            samples: [Float],
-            audioDuration: Float,
-            latencyMs: Int,
-            pipe: WhisperKit
-        ) async {
-            do {
-                var options = DecodingOptions()
-                options.language = "en"
-                options.skipSpecialTokens = true
-                options.wordTimestamps = false
-                options.chunkingStrategy = .vad
+    /// Run a clean batch decode and compare against the streaming result.
+    ///
+    /// Called in a detached task -- no latency impact on the user.
+    private static func compareGroundTruth(
+        streamingResult: String,
+        samples: [Float],
+        audioDuration: Float,
+        latencyMs: Int,
+        pipe: WhisperKit
+    ) async {
+        do {
+            var options = DecodingOptions()
+            options.language = "en"
+            options.skipSpecialTokens = true
+            options.wordTimestamps = false
+            options.chunkingStrategy = .vad
 
-                let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
-                guard let groundTruth = results.first else {
-                    qualityLogger.notice("Ground truth: decode returned nil")
-                    return
-                }
+            let results = try await pipe.transcribe(audioArray: samples, decodeOptions: options)
+            guard let groundTruth = results.first else {
+                qualityLogger.notice("Ground truth: decode returned nil")
+                return
+            }
 
-                let gtText = TranscriptionSession.cleanText(groundTruth.text)
-                guard !gtText.isEmpty else {
-                    qualityLogger.notice("Ground truth: empty after cleaning")
-                    return
-                }
+            let gtText = TranscriptionSession.cleanText(groundTruth.text)
+            guard !gtText.isEmpty else {
+                qualityLogger.notice("Ground truth: empty after cleaning")
+                return
+            }
 
-                let similarity = levenshteinSimilarity(streamingResult, gtText)
-                let pct = Int(similarity * 100)
+            let similarity = levenshteinSimilarity(streamingResult, gtText)
+            let pct = Int(similarity * 100)
 
-                let highLatency = latencyMs > 1_500
+            let highLatency = latencyMs > 1_500
 
-                if similarity >= 0.85 && !highLatency {
-                    let ok = "✅ \(pct)% match, \(latencyMs)ms (\(audioDuration)s)"
-                    qualityLogger.info("\(ok, privacy: .public)")
-                } else {
-                    let tag = highLatency ? "slow" : "quality"
-                    let msg = "⚠️ \(tag): \(pct)% match, \(latencyMs)ms (\(audioDuration)s)"
-                    qualityLogger.warning("\(msg, privacy: .public)")
-                    qualityLogger.warning(
-                        "  Streaming: \"\(streamingResult.prefix(100), privacy: .public)\""
-                    )
-                    qualityLogger.warning(
-                        "  Ground truth: \"\(gtText.prefix(100), privacy: .public)\""
-                    )
+            if similarity >= 0.85 && !highLatency {
+                let ok = "✅ \(pct)% match, \(latencyMs)ms (\(audioDuration)s)"
+                qualityLogger.info("\(ok, privacy: .public)")
+            } else {
+                let tag = highLatency ? "slow" : "quality"
+                let msg = "⚠️ \(tag): \(pct)% match, \(latencyMs)ms (\(audioDuration)s)"
+                qualityLogger.warning("\(msg, privacy: .public)")
+                qualityLogger.warning(
+                    "  Streaming: \"\(streamingResult.prefix(100), privacy: .public)\""
+                )
+                qualityLogger.warning(
+                    "  Ground truth: \"\(gtText.prefix(100), privacy: .public)\""
+                )
 
-                    // Auto-capture fixture and alert
-                    autoCapture(
-                        similarity: pct,
-                        groundTruth: gtText,
-                        audioDuration: audioDuration
-                    )
-                    // Play a subtle alert — only in the live app, not test runners
-                    if Bundle.main.bundleIdentifier == "com.operator.app" {
-                        await MainActor.run {
-                            _ = NSSound(named: "Submarine")?.play()
-                        }
+                // Auto-capture fixture and alert
+                autoCapture(
+                    similarity: pct,
+                    groundTruth: gtText,
+                    audioDuration: audioDuration
+                )
+                if Bundle.main.bundleIdentifier == "com.operator.app" {
+                    await MainActor.run {
+                        _ = NSSound(named: "Submarine")?.play()
                     }
                 }
-            } catch {
-                qualityLogger.notice("Ground truth decode failed: \(error)")
             }
+        } catch {
+            qualityLogger.notice("Ground truth decode failed: \(error)")
+        }
+    }
+
+    /// Auto-capture a test fixture when quality drops below threshold.
+    ///
+    /// Finds the most recent audio trace and copies it + ground truth
+    /// to the test-fixtures directory.
+    private static func autoCapture(
+        similarity: Int,
+        groundTruth: String,
+        audioDuration: Float
+    ) {
+        let fm = FileManager.default
+        guard
+            let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else {
+            qualityLogger.warning("Auto-capture: no application support directory")
+            return
+        }
+        let traceDir = appSupport.appendingPathComponent("Operator/audio-traces")
+        let fixtureDir = appSupport.appendingPathComponent("Operator/test-fixtures")
+
+        guard
+            let traces = try? fm.contentsOfDirectory(
+                at: traceDir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: .skipsHiddenFiles
+            )
+        else {
+            qualityLogger.warning("Auto-capture: no audio traces directory")
+            return
         }
 
-        /// Auto-capture a test fixture when quality drops below threshold.
-        ///
-        /// Finds the most recent audio trace and copies it + ground truth
-        /// to the test-fixtures directory.
-        private static func autoCapture(
-            similarity: Int,
-            groundTruth: String,
-            audioDuration: Float
-        ) {
-            let fm = FileManager.default
-            guard
-                let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            else {
-                qualityLogger.warning("Auto-capture: no application support directory")
-                return
-            }
-            let traceDir = appSupport.appendingPathComponent("Operator/audio-traces")
-            let fixtureDir = appSupport.appendingPathComponent("Operator/test-fixtures")
-
-            // Find the most recent audio trace
-            guard
-                let traces = try? fm.contentsOfDirectory(
-                    at: traceDir,
-                    includingPropertiesForKeys: [.contentModificationDateKey],
-                    options: .skipsHiddenFiles
-                )
-            else {
-                qualityLogger.warning("Auto-capture: no audio traces directory")
-                return
+        let wavFiles =
+            traces.filter { $0.pathExtension == "wav" }
+            .sorted { lhs, rhs in
+                let d1 =
+                    (try? lhs.resourceValues(forKeys: [.contentModificationDateKey])
+                        .contentModificationDate)
+                    ?? .distantPast
+                let d2 =
+                    (try? rhs.resourceValues(forKeys: [.contentModificationDateKey])
+                        .contentModificationDate)
+                    ?? .distantPast
+                return d1 > d2
             }
 
-            let wavFiles = traces.filter { $0.pathExtension == "wav" }
-                .sorted { lhs, rhs in
-                    let d1 =
-                        (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                        ?? .distantPast
-                    let d2 =
-                        (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                        ?? .distantPast
-                    return d1 > d2
-                }
-
-            guard let latestTrace = wavFiles.first else {
-                qualityLogger.warning("Auto-capture: no WAV files in traces")
-                return
-            }
-
-            let traceName = latestTrace.deletingPathExtension().lastPathComponent
-            let fixtureName = "auto-\(similarity)pct-\(traceName)"
-            let fixtureWav = fixtureDir.appendingPathComponent("\(fixtureName).wav")
-            let fixtureExpected = fixtureDir.appendingPathComponent("\(fixtureName).expected.txt")
-
-            // Skip if already captured
-            guard !fm.fileExists(atPath: fixtureWav.path) else {
-                qualityLogger.info("Auto-capture: fixture already exists: \(fixtureName)")
-                return
-            }
-
-            do {
-                try fm.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
-                try fm.copyItem(at: latestTrace, to: fixtureWav)
-                try groundTruth.write(to: fixtureExpected, atomically: true, encoding: .utf8)
-                qualityLogger.warning(
-                    "📁 Auto-captured fixture: \(fixtureName, privacy: .public)"
-                )
-                qualityLogger.warning(
-                    "  Run: make test-transcription"
-                )
-            } catch {
-                qualityLogger.warning("Auto-capture failed: \(error)")
-            }
+        guard let latestTrace = wavFiles.first else {
+            qualityLogger.warning("Auto-capture: no WAV files in traces")
+            return
         }
 
-        /// Levenshtein similarity ratio (0.0 = completely different, 1.0 = identical).
-        private static func levenshteinSimilarity(_ lhs: String, _ rhs: String) -> Double {
-            let left = Array(lhs.lowercased())
-            let right = Array(rhs.lowercased())
-            let leftLen = left.count
-            let rightLen = right.count
-            if leftLen == 0 && rightLen == 0 {
-                return 1.0
-            }
-            if leftLen == 0 || rightLen == 0 {
-                return 0.0
-            }
+        let traceName = latestTrace.deletingPathExtension().lastPathComponent
+        let fixtureName = "auto-\(similarity)pct-\(traceName)"
+        let fixtureWav = fixtureDir.appendingPathComponent("\(fixtureName).wav")
+        let fixtureExpected = fixtureDir.appendingPathComponent("\(fixtureName).expected.txt")
 
-            var prev = Array(0...rightLen)
-            var curr = [Int](repeating: 0, count: rightLen + 1)
-
-            for li in 1...leftLen {
-                curr[0] = li
-                for ri in 1...rightLen {
-                    let cost = left[li - 1] == right[ri - 1] ? 0 : 1
-                    curr[ri] = min(prev[ri] + 1, curr[ri - 1] + 1, prev[ri - 1] + cost)
-                }
-                swap(&prev, &curr)
-            }
-
-            return 1.0 - Double(prev[rightLen]) / Double(max(leftLen, rightLen))
+        guard !fm.fileExists(atPath: fixtureWav.path) else {
+            qualityLogger.info("Auto-capture: fixture already exists: \(fixtureName)")
+            return
         }
-    #endif
+
+        do {
+            try fm.createDirectory(at: fixtureDir, withIntermediateDirectories: true)
+            try fm.copyItem(at: latestTrace, to: fixtureWav)
+            try groundTruth.write(to: fixtureExpected, atomically: true, encoding: .utf8)
+            qualityLogger.warning(
+                "📁 Auto-captured fixture: \(fixtureName, privacy: .public)"
+            )
+            qualityLogger.warning(
+                "  Run: make test-transcription"
+            )
+        } catch {
+            qualityLogger.warning("Auto-capture failed: \(error)")
+        }
+    }
+
+    /// Levenshtein similarity ratio (0.0 = completely different, 1.0 = identical).
+    private static func levenshteinSimilarity(_ lhs: String, _ rhs: String) -> Double {
+        let left = Array(lhs.lowercased())
+        let right = Array(rhs.lowercased())
+        let leftLen = left.count
+        let rightLen = right.count
+        if leftLen == 0 && rightLen == 0 {
+            return 1.0
+        }
+        if leftLen == 0 || rightLen == 0 {
+            return 0.0
+        }
+
+        var prev = Array(0...rightLen)
+        var curr = [Int](repeating: 0, count: rightLen + 1)
+
+        for li in 1...leftLen {
+            curr[0] = li
+            for ri in 1...rightLen {
+                let cost = left[li - 1] == right[ri - 1] ? 0 : 1
+                curr[ri] = min(prev[ri] + 1, curr[ri - 1] + 1, prev[ri - 1] + cost)
+            }
+            swap(&prev, &curr)
+        }
+
+        return 1.0 - Double(prev[rightLen]) / Double(max(leftLen, rightLen))
+    }
 }
