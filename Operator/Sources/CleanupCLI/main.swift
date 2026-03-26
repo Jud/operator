@@ -284,7 +284,7 @@ class CleanupEngine {
     func cleanup(_ text: String) -> String {
         let wall = CFAbsoluteTimeGetCurrent()
 
-        // 1. Tokenize (Python helper)
+        // 1. Tokenize
         var t = CFAbsoluteTimeGetCurrent()
         let textIds = tok.encode(text)
         let tokenizeMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
@@ -316,7 +316,7 @@ class CleanupEngine {
         }
         let genMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
 
-        // 5. Detokenize (Python helper)
+        // 5. Detokenize
         t = CFAbsoluteTimeGetCurrent()
         let output = tok.decode(gen)
         let detokMs = (CFAbsoluteTimeGetCurrent() - t) * 1000
