@@ -17,9 +17,23 @@ let package = Package(
             path: "Sources/OperatorShared"
         ),
         .target(
+            name: "QwenTokenizer",
+            path: "Sources/Tokenizer"
+        ),
+        .binaryTarget(
+            name: "QwenTokenizerFFI",
+            path: "Frameworks/QwenTokenizerFFI.xcframework"
+        ),
+        .target(
+            name: "QwenTokenizerRust",
+            dependencies: ["QwenTokenizerFFI"],
+            path: "Sources/QwenTokenizerRust"
+        ),
+        .target(
             name: "OperatorCore",
             dependencies: [
                 "OperatorShared",
+                "QwenTokenizer",
                 .product(name: "KokoroCoreML", package: "kokoro-coreml"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
                 .product(name: "Hummingbird", package: "hummingbird"),
@@ -31,6 +45,9 @@ let package = Package(
                 "App/",
                 "OperatorShared/",
                 "MCPServer/",
+                "Tokenizer/",
+                "CleanupCLI/",
+                "QwenTokenizerRust/",
             ],
             resources: [
                 .process("Resources"),
@@ -51,6 +68,12 @@ let package = Package(
             name: "OperatorMCP",
             dependencies: ["OperatorMCPCore"],
             path: "Sources/MCPServer/Entry"
+        ),
+        .executableTarget(
+            name: "CleanupCLI",
+            dependencies: ["QwenTokenizerRust"],
+            path: "Sources/CleanupCLI",
+            exclude: ["tokenizer_helper.py"]
         ),
         .executableTarget(
             name: "E2ETests",

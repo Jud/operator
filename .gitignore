@@ -47,3 +47,6 @@ plugin/
 test-harness-type.sh
 spikes/kokoro-coreml/
 .claude/worktrees/
+models/
+.venv-poc/
+__pycache__/

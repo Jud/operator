@@ -1,0 +1,20 @@
+namespace qwen_tokenizer {
+    [Throws=TokenizerError]
+    QwenTokenizer load_tokenizer(string tokenizer_json_path);
+};
+
+[Error]
+enum TokenizerError {
+    "LoadFailed",
+    "EncodeFailed",
+    "DecodeFailed",
+};
+
+interface QwenTokenizer {
+    sequence<i32> encode(string text);
+
+    [Throws=TokenizerError]
+    string decode(sequence<i32> ids);
+
+    sequence<i32> suffix_ids();
+};

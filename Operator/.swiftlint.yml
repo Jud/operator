@@ -7,6 +7,9 @@ excluded:
   - DerivedData
   - Tests/Benchmarks
   - Tests/OperatorTests/PerformanceBenchmarkTests.swift
+  - Sources/Tokenizer
+  - Sources/CleanupCLI
+  - Sources/QwenTokenizerRust
 
 opt_in_rules:
   - array_init
