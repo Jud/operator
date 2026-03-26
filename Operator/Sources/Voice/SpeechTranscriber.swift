@@ -75,21 +75,12 @@ public final class SpeechTranscriber: SpeechTranscribing {
     /// so macOS doesn't try to activate a Bluetooth mic profile and cause an audio blip
     /// on wireless headphones.
     public func warmUp() {
-        applyInputDevice()
-
-        let inputNode = audioEngine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: format) { _, _ in }
-        audioEngine.prepare()
-        do {
-            try audioEngine.start()
-            Self.logger.info("Audio engine warm-up: started (sampleRate=\(format.sampleRate))")
-        } catch {
-            Self.logger.warning("Audio engine warm-up failed: \(error)")
-        }
-        audioEngine.stop()
-        inputNode.removeTap(onBus: 0)
-        Self.logger.info("Audio engine warm-up complete")
+        // Intentionally empty — accessing audioEngine.inputNode or calling
+        // prepare() triggers a Bluetooth audio blip on wireless headphones.
+        // The first real activation may capture silence; this is handled by
+        // the too-short/silence detection in the StateMachine which returns
+        // to IDLE cleanly, and the second activation works normally.
+        Self.logger.info("Audio engine warm-up: skipped (Bluetooth blip avoidance)")
     }
 
     // MARK: - Type Methods

@@ -81,9 +81,15 @@ public struct BearerAuthMiddleware: RouterMiddleware {
 public final class OperatorHTTPServer: Sendable {
     private static let logger = Log.logger(for: "HTTPServer")
 
+    /// Grace period after launch during which session announcements are suppressed.
+    ///
+    /// Existing sessions reconnect on Operator restart; announcing each one is noisy.
+    private static let startupGracePeriod: TimeInterval = 10
+
     private let sessionRegistry: SessionRegistry
     private let audioQueue: AudioQueue
     private let port: Int
+    private let launchTime = Date()
 
     /// Closure that returns the current daemon state string.
     ///
@@ -160,8 +166,8 @@ extension OperatorHTTPServer {
             }
 
             let sessionName = body.session ?? "Unknown"
-            let priority: AudioQueue.QueuedMessage.Priority =
-                body.priority == "urgent" ? .urgent : .normal
+
+            let priority = Self.parsePriority(body.priority)
             async let voice = registry.voiceFor(session: body.session)
             async let pitch = registry.pitchFor(session: body.session)
             async let spokenName = registry.nicknameFor(session: body.session)
@@ -181,6 +187,20 @@ extension OperatorHTTPServer {
                 "Queued speech from '\(sessionName)' via HTTP (priority: \(String(describing: priority)))"
             )
             return QueuedResponse(queued: true)
+        }
+    }
+
+    /// Map a priority string from the HTTP request to the AudioQueue priority enum.
+    private static func parsePriority(_ value: String?) -> AudioQueue.QueuedMessage.Priority {
+        switch value {
+        case "urgent":
+            return .urgent
+
+        case "low":
+            return .low
+
+        default:
+            return .normal
         }
     }
 
@@ -253,6 +273,7 @@ extension OperatorHTTPServer {
         registry: SessionRegistry,
         queue: AudioQueue
     ) {
+        let launched = launchTime
         router.post("/hook/session-start") { request, context -> HookSessionStartResponse in
             let body = try await context.requestDecoder.decode(
                 HookSessionStartRequest.self,
@@ -268,8 +289,13 @@ extension OperatorHTTPServer {
             )
             Self.logger.info("Hook session-start for session \(body.sessionId)")
 
-            if result.isNew {
+            // Suppress announcements during startup grace period — existing
+            // sessions reconnect on Operator restart and announcing each one is noisy.
+            let inGracePeriod = Date().timeIntervalSince(launched) < Self.startupGracePeriod
+            if result.isNew && !inGracePeriod {
                 Self.announceNewSession(result.displayName, registry: registry, queue: queue)
+            } else if result.isNew {
+                Self.logger.info("Suppressed announcement for \(body.sessionId) (startup grace period)")
             }
 
             return HookSessionStartResponse(ok: result.ok, needsTerminalId: result.needsTerminalId)

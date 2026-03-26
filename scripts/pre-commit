@@ -12,8 +12,25 @@ if [ -z "$SWIFT_STAGED" ]; then
     exit 0
 fi
 
-echo "==> Pre-commit: SwiftLint (--strict)"
 cd "$ROOT_DIR/Operator"
+
+# Auto-fix first, then re-stage fixed files
+echo "==> Pre-commit: auto-fixing with SwiftLint and swift-format"
+swiftlint lint --fix --quiet 2>/dev/null || true
+find Sources Tests -name '*.swift' \
+  ! -path 'Sources/Tokenizer/*' \
+  ! -path 'Sources/QwenTokenizerRust/*' \
+  -print0 | xargs -0 swift-format format --in-place 2>/dev/null || true
+
+# Re-stage any auto-fixed files
+cd "$ROOT_DIR"
+echo "$SWIFT_STAGED" | while IFS= read -r f; do
+  [ -f "$f" ] && git add "$f"
+done
+
+# Now lint strictly — should pass after auto-fix
+cd "$ROOT_DIR/Operator"
+echo "==> Pre-commit: SwiftLint (--strict)"
 swiftlint lint --strict --quiet
 
 echo "==> Pre-commit: swift-format (--strict)"
