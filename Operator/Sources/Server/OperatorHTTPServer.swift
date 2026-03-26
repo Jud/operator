@@ -164,6 +164,7 @@ extension OperatorHTTPServer {
                 body.priority == "urgent" ? .urgent : .normal
             async let voice = registry.voiceFor(session: body.session)
             async let pitch = registry.pitchFor(session: body.session)
+            async let spokenName = registry.nicknameFor(session: body.session)
 
             await queue.enqueue(
                 AudioQueue.QueuedMessage(
@@ -171,7 +172,8 @@ extension OperatorHTTPServer {
                     text: body.message,
                     priority: priority,
                     voice: voice,
-                    pitchMultiplier: pitch
+                    pitchMultiplier: pitch,
+                    spokenName: spokenName
                 )
             )
 
@@ -267,23 +269,33 @@ extension OperatorHTTPServer {
             Self.logger.info("Hook session-start for session \(body.sessionId)")
 
             if result.isNew {
-                let name = result.displayName
-                Task {
-                    let voice = await registry.voiceFor(session: name)
-                    let pitch = await registry.pitchFor(session: name)
-                    await queue.enqueue(
-                        AudioQueue.QueuedMessage(
-                            sessionName: name,
-                            text: "connected.",
-                            priority: .normal,
-                            voice: voice,
-                            pitchMultiplier: pitch
-                        )
-                    )
-                }
+                Self.announceNewSession(result.displayName, registry: registry, queue: queue)
             }
 
             return HookSessionStartResponse(ok: result.ok, needsTerminalId: result.needsTerminalId)
+        }
+    }
+
+    /// Announce a newly connected session via the audio queue.
+    private static func announceNewSession(
+        _ name: String,
+        registry: SessionRegistry,
+        queue: AudioQueue
+    ) {
+        Task {
+            let voice = await registry.voiceFor(session: name)
+            let pitch = await registry.pitchFor(session: name)
+            let nick = await registry.nicknameFor(session: name)
+            await queue.enqueue(
+                AudioQueue.QueuedMessage(
+                    sessionName: name,
+                    text: "connected.",
+                    priority: .normal,
+                    voice: voice,
+                    pitchMultiplier: pitch,
+                    spokenName: nick
+                )
+            )
         }
     }
 

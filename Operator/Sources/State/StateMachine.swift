@@ -396,6 +396,8 @@ extension StateMachine {
             await performDictation(trimmed)
 
         case .noTextField:
+            // Store the transcription so double-tap replay works after refocusing an input.
+            dictationDelivery.storeForReplay(text)
             await postBimodalTrace(text: text, result: .noSessions, audioFile: audioFile)
             feedback.play(.dismissed)
             enterIdle()
@@ -580,6 +582,7 @@ extension StateMachine {
     private func enqueueReplay(context: PendingInterruption) async {
         let voice = await registry.voiceFor(session: context.session)
         let pitch = await registry.pitchFor(session: context.session)
+        let nick = await registry.nicknameFor(session: context.session)
 
         let fullText = context.heardText + context.unheardText
 
@@ -589,7 +592,8 @@ extension StateMachine {
                 text: fullText,
                 priority: .urgent,
                 voice: voice,
-                pitchMultiplier: pitch
+                pitchMultiplier: pitch,
+                spokenName: nick
             )
         )
     }

@@ -38,6 +38,14 @@ public protocol DictationDelivering: AnyObject, Sendable {
     /// - Returns: The result of the delivery attempt.
     func deliver(_ text: String) async -> DictationResult
 
+    /// Store text for later replay without attempting delivery.
+    ///
+    /// Used when no text field is focused — preserves the transcription
+    /// so double-tap replay works after the user refocuses an input.
+    ///
+    /// - Parameter text: The transcribed text to store.
+    func storeForReplay(_ text: String)
+
     /// Replay the last successfully dictated text at the cursor.
     ///
     /// Uses the same pasteboard cycle as `deliver(_:)` with the stored
@@ -71,6 +79,12 @@ public final class DictationDelivery: DictationDelivering {
 
     /// Creates a new dictation delivery instance.
     public init() {}
+
+    /// Store text for later replay without attempting delivery.
+    public func storeForReplay(_ text: String) {
+        Self.logger.info("Storing dictation for replay (\(text.count) chars, no text field)")
+        lastDictation = text
+    }
 
     /// Insert text at the current cursor position via pasteboard cycle.
     public func deliver(_ text: String) async -> DictationResult {

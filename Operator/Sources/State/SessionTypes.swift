@@ -37,8 +37,10 @@ public struct SessionMessage: Codable, Sendable {
 ///
 /// Reference: technical-spec.md, Session State Model
 public struct SessionState: Sendable {
-    /// The human-readable session name.
+    /// The human-readable session name (full project/directory name).
     public var name: String
+    /// Short speakable name for TTS and voice routing (e.g., "Kokoro" instead of "kokoro-tts-swift").
+    public var nickname: String
     /// The typed terminal identifier for this session (TTY path or Ghostty terminal ID).
     public let identifier: TerminalIdentifier
     /// The working directory of the session.
@@ -72,9 +74,11 @@ public struct SessionState: Sendable {
         lastActivity: Date,
         voice: VoiceDescriptor,
         pitchMultiplier: Float,
-        sessionId: String? = nil
+        sessionId: String? = nil,
+        nickname: String? = nil
     ) {
         self.name = name
+        self.nickname = nickname ?? NicknameGenerator.nickname(from: name)
         self.identifier = identifier
         self.cwd = cwd
         self.context = context
@@ -97,7 +101,8 @@ public struct SessionState: Sendable {
         lastActivity: Date,
         voice: VoiceDescriptor,
         pitchMultiplier: Float,
-        sessionId: String? = nil
+        sessionId: String? = nil,
+        nickname: String? = nil
     ) {
         self.init(
             name: name,
@@ -109,7 +114,8 @@ public struct SessionState: Sendable {
             lastActivity: lastActivity,
             voice: voice,
             pitchMultiplier: pitchMultiplier,
-            sessionId: sessionId
+            sessionId: sessionId,
+            nickname: nickname
         )
     }
 
@@ -125,7 +131,8 @@ public struct SessionState: Sendable {
             lastActivity: lastActivity,
             voice: voice,
             pitchMultiplier: pitchMultiplier,
-            sessionId: sessionId
+            sessionId: sessionId,
+            nickname: nickname
         )
     }
 }
@@ -140,13 +147,16 @@ public struct SessionSnapshot: Codable, Sendable {
     // MARK: - Subtypes
 
     private enum CodingKeys: String, CodingKey {
-        case name, identifier, tty, cwd, context, recentMessages, status, lastActivity, pitchMultiplier, sessionId
+        case name, nickname, identifier, tty, cwd, context, recentMessages, status, lastActivity
+        case pitchMultiplier, sessionId
     }
 
     // MARK: - Properties
 
     /// The human-readable session name.
     public let name: String
+    /// Short speakable name for TTS and voice routing.
+    public let nickname: String
     /// The typed terminal identifier for this session.
     public let identifier: TerminalIdentifier
     /// The working directory of the session.
@@ -172,6 +182,7 @@ public struct SessionSnapshot: Codable, Sendable {
     /// Creates a new session snapshot with a typed terminal identifier.
     public init(
         name: String,
+        nickname: String,
         identifier: TerminalIdentifier,
         cwd: String,
         context: String,
@@ -182,6 +193,7 @@ public struct SessionSnapshot: Codable, Sendable {
         sessionId: String?
     ) {
         self.name = name
+        self.nickname = nickname
         self.identifier = identifier
         self.cwd = cwd
         self.context = context
@@ -196,6 +208,7 @@ public struct SessionSnapshot: Codable, Sendable {
     public init(from state: SessionState) {
         self.init(
             name: state.name,
+            nickname: state.nickname,
             identifier: state.identifier,
             cwd: state.cwd,
             context: state.context,
@@ -211,6 +224,9 @@ public struct SessionSnapshot: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         name = try container.decode(String.self, forKey: .name)
+        nickname =
+            try container.decodeIfPresent(String.self, forKey: .nickname)
+            ?? NicknameGenerator.nickname(from: name)
         if let id = try container.decodeIfPresent(TerminalIdentifier.self, forKey: .identifier) {
             identifier = id
         } else {
@@ -232,6 +248,7 @@ public struct SessionSnapshot: Codable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(name, forKey: .name)
+        try container.encode(nickname, forKey: .nickname)
         try container.encode(identifier, forKey: .identifier)
         try container.encode(tty, forKey: .tty)
         try container.encode(cwd, forKey: .cwd)

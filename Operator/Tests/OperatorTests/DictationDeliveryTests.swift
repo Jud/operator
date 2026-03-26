@@ -25,6 +25,13 @@ internal final class MockDictationDelivery: DictationDelivering {
         return deliverResult
     }
 
+    var storeForReplayCallCount = 0
+
+    func storeForReplay(_ text: String) {
+        storeForReplayCallCount += 1
+        lastDictation = text
+    }
+
     func replayLast() async -> DictationResult {
         replayCallCount += 1
         guard lastDictation != nil else {
@@ -52,6 +59,13 @@ internal enum DictationDeliveryTests {
         func initialLastDictationIsNil() {
             let delivery = DictationDelivery()
             #expect(delivery.lastDictation == nil)
+        }
+
+        @Test("storeForReplay sets lastDictation without delivering")
+        func storeForReplaySetsLastDictation() {
+            let delivery = DictationDelivery()
+            delivery.storeForReplay("hello world")
+            #expect(delivery.lastDictation == "hello world")
         }
     }
 }

@@ -74,15 +74,17 @@ public actor SessionRegistry {
         }
 
         let uniqueName = deduplicatedName(name, forIdentifier: identifier)
+        let nick = deduplicatedNickname(for: name, excludingIdentifier: identifier)
 
         if let existing = sessions[identifier] {
             var updated = existing
             updated.name = uniqueName
+            updated.nickname = nick
             updated.cwd = cwd
             if let context { updated.context = context }
             updated.lastActivity = Date()
             sessions[identifier] = updated
-            Self.logger.info("Re-registered session '\(uniqueName)' at \(identifier)")
+            Self.logger.info("Re-registered session '\(uniqueName)' (nickname: \(nick)) at \(identifier)")
             return true
         }
 
@@ -97,10 +99,11 @@ public actor SessionRegistry {
             status: .idle,
             lastActivity: Date(),
             voice: voice,
-            pitchMultiplier: 1.0
+            pitchMultiplier: 1.0,
+            nickname: nick
         )
         sessions[identifier] = state
-        Self.logger.info("Registered session '\(uniqueName)' at \(identifier)")
+        Self.logger.info("Registered session '\(uniqueName)' (nickname: \(nick)) at \(identifier)")
         return true
     }
 
@@ -173,6 +176,28 @@ public actor SessionRegistry {
         session.flatMap(self.session(named:))?.pitchMultiplier ?? 1.0
     }
 
+    /// Look up the nickname for a session by name.
+    ///
+    /// - Parameter session: The session name to look up.
+    /// - Returns: The short speakable nickname, or the session name if not found.
+    public func nicknameFor(session: String?) -> String {
+        guard let session else {
+            return "Unknown"
+        }
+        return self.session(named: session)?.nickname ?? session
+    }
+
+    /// Get a map of nickname → canonical session name for all registered sessions.
+    ///
+    /// Used by `AgentNameMatcher` to match voice commands against short nicknames.
+    public func nicknameMap() -> [String: String] {
+        var map: [String: String] = [:]
+        for state in sessions.values {
+            map[state.nickname] = state.name
+        }
+        return map
+    }
+
     // MARK: - Hook Handlers
 
     /// Handle a Claude Code session-start hook.
@@ -199,12 +224,14 @@ public actor SessionRegistry {
         let baseName = sessionId.lowercased() == "operator" ? "op-agent" : sessionId
         let id = resolveIdentifier(forTTY: tty)
         let displayName = deduplicatedName(baseName, forIdentifier: id)
+        let nick = deduplicatedNickname(for: baseName, excludingIdentifier: id)
 
         if var existing = sessions[id] {
             existing.sessionId = sessionId
             // Only override display name if it collides with the reserved "operator" name.
             if existing.name.lowercased() == "operator" {
                 existing.name = displayName
+                existing.nickname = nick
             }
             existing.lastActivity = Date()
             sessions[id] = existing
@@ -228,10 +255,13 @@ public actor SessionRegistry {
             lastActivity: Date(),
             voice: voice,
             pitchMultiplier: 1.0,
-            sessionId: sessionId
+            sessionId: sessionId,
+            nickname: nick
         )
         sessions[id] = state
-        Self.logger.info("Hook session-start: registered new session \(displayName) at \(id)")
+        Self.logger.info(
+            "Hook session-start: registered new session \(displayName) (nickname: \(nick)) at \(id)"
+        )
         return SessionStartResult(
             ok: true,
             needsTerminalId: terminalType == .ghostty && ttyToGhosttyId[tty] == nil,
@@ -379,6 +409,20 @@ public actor SessionRegistry {
         var suffix = 2
         while taken.contains("\(name) \(suffix)") { suffix += 1 }
         return "\(name) \(suffix)"
+    }
+
+    /// Generate a unique nickname for TTS and voice routing.
+    ///
+    /// Uses `NicknameGenerator` to create a short speakable name, then
+    /// deduplicates with NATO phonetic suffixes against existing nicknames.
+    private func deduplicatedNickname(for name: String, excludingIdentifier id: TerminalIdentifier) -> String {
+        let baseNickname = NicknameGenerator.nickname(from: name)
+        let existingNicknames =
+            sessions
+            .filter { $0.key != id }
+            .values
+            .map(\.nickname)
+        return NicknameGenerator.deduplicate(baseNickname, existing: existingNicknames)
     }
 
     /// Remove cached TTY-to-Ghostty mapping when a Ghostty session is removed.

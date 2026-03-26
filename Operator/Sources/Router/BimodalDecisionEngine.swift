@@ -76,8 +76,9 @@ public struct BimodalDecisionEngine: Sendable {
         // regardless of which app is frontmost.
         let sessions = await registry.allSessions()
         let sessionNames = sessions.map(\.name)
+        let nickMap = Dictionary(sessions.map { ($0.nickname, $0.name) }) { first, _ in first }
         if !sessionNames.isEmpty,
-            AgentNameMatcher.match(in: text, sessionNames: sessionNames) != nil
+            AgentNameMatcher.match(in: text, sessionNames: sessionNames, nicknames: nickMap) != nil
         {
             Self.logger.info("Bimodal: keyword match -> routeToAgent")
             return .routeToAgent(text)

@@ -134,15 +134,17 @@ public struct InterruptionHandler: Sendable {
 
 extension InterruptionHandler {
     /// Check if the user's utterance contains an explicit agent target pattern
-    /// referencing a registered session name.
+    /// referencing a registered session name or nickname.
     private static func matchAgentTarget(
         utterance: String,
-        registeredSessionNames: [String]
+        registeredSessionNames: [String],
+        nicknames: [String: String] = [:]
     ) -> InterruptionAction? {
         guard
             let result = AgentNameMatcher.match(
                 in: utterance,
-                sessionNames: registeredSessionNames
+                sessionNames: registeredSessionNames,
+                nicknames: nicknames
             )
         else {
             return nil

@@ -92,13 +92,15 @@ public struct OperatorCommandHandler {
         if let last = await audioQueue.lastSpokenMessage() {
             async let voice = registry.voiceFor(session: last.session)
             async let pitch = registry.pitchFor(session: last.session)
+            async let nick = registry.nicknameFor(session: last.session)
             await audioQueue.enqueue(
                 AudioQueue.QueuedMessage(
                     sessionName: last.session,
                     text: last.text,
                     priority: .urgent,
                     voice: await voice,
-                    pitchMultiplier: await pitch
+                    pitchMultiplier: await pitch,
+                    spokenName: await nick
                 )
             )
             return nil
@@ -115,13 +117,15 @@ public struct OperatorCommandHandler {
         {
             async let voice = registry.voiceFor(session: agentName)
             async let pitch = registry.pitchFor(session: agentName)
+            async let nick = registry.nicknameFor(session: agentName)
             await audioQueue.enqueue(
                 AudioQueue.QueuedMessage(
                     sessionName: agentName,
                     text: text,
                     priority: .urgent,
                     voice: await voice,
-                    pitchMultiplier: await pitch
+                    pitchMultiplier: await pitch,
+                    spokenName: await nick
                 )
             )
             return nil

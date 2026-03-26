@@ -37,8 +37,10 @@ public actor AudioQueue {
             case urgent
         }
 
-        /// The session name associated with this message.
+        /// The session name associated with this message (full name, used for tracking).
         public let sessionName: String
+        /// Short speakable name used as TTS prefix (defaults to sessionName).
+        public let spokenName: String
         /// The text content to speak.
         public let text: String
         /// The priority level of this message.
@@ -54,9 +56,11 @@ public actor AudioQueue {
             text: String,
             priority: Priority,
             voice: VoiceDescriptor,
-            pitchMultiplier: Float = 1.0
+            pitchMultiplier: Float = 1.0,
+            spokenName: String? = nil
         ) {
             self.sessionName = sessionName
+            self.spokenName = spokenName ?? sessionName
             self.text = text
             self.priority = priority
             self.voice = voice
@@ -240,7 +244,7 @@ public actor AudioQueue {
             mgr.speak(
                 msg.text,
                 voice: msg.voice,
-                prefix: msg.sessionName,
+                prefix: msg.spokenName,
                 pitchMultiplier: msg.pitchMultiplier
             )
         }

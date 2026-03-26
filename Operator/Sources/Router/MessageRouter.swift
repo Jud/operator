@@ -160,8 +160,9 @@ extension MessageRouter {
             sessions = await registry.allSessions()
         }
         let sessionNames = sessions.map(\.name)
+        let nickMap = Dictionary(sessions.map { ($0.nickname, $0.name) }) { first, _ in first }
 
-        if let match = AgentNameMatcher.match(in: trimmed, sessionNames: sessionNames) {
+        if let match = AgentNameMatcher.match(in: trimmed, sessionNames: sessionNames, nicknames: nickMap) {
             Self.logger.info("Keyword match: routing to '\(match.session)'")
             return .resolved(
                 .route(session: match.session, message: match.message),

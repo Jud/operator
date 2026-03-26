@@ -31,16 +31,19 @@ public enum AgentNameMatcher {
     /// Attempt to match an explicit agent name in the given utterance.
     ///
     /// The extracted name is matched case-insensitively against the provided
-    /// session names. If a match is found, the canonical name (preserving
-    /// original casing) is returned along with the message text.
+    /// session names and nicknames. Nicknames are checked first since they are
+    /// the short speakable names the user is most likely to say. If a match is
+    /// found, the canonical session name is returned along with the message text.
     ///
     /// - Parameters:
     ///   - utterance: The user's utterance to search for an agent name pattern.
     ///   - sessionNames: The list of registered session names to match against.
+    ///   - nicknames: Optional map of nickname → canonical session name for matching short spoken names.
     /// - Returns: An `AgentNameMatch` if a registered agent name was found, nil otherwise.
     public static func match(
         in utterance: String,
-        sessionNames: [String]
+        sessionNames: [String],
+        nicknames: [String: String] = [:]
     ) -> AgentNameMatch? {
         guard let pattern else {
             return nil
@@ -57,7 +60,12 @@ public enum AgentNameMatcher {
 
         let extractedName = String(utterance[nameRange]).lowercased()
 
-        guard let canonical = sessionNames.first(where: { $0.lowercased() == extractedName }) else {
+        // Try nickname match first (more likely in voice interaction).
+        let canonical: String? =
+            nicknames.first { $0.key.lowercased() == extractedName }?.value
+            ?? sessionNames.first { $0.lowercased() == extractedName }
+
+        guard let canonical else {
             return nil
         }
 
