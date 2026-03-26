@@ -74,13 +74,25 @@ public final class SpeechTranscriber: SpeechTranscribing {
     /// Applies the user's preferred input device (or the built-in mic) before starting
     /// so macOS doesn't try to activate a Bluetooth mic profile and cause an audio blip
     /// on wireless headphones.
+    /// Start the audio engine permanently so the CoreAudio aggregate device
+    /// stays alive between activations.
+    ///
+    /// macOS creates an aggregate device when AVAudioEngine starts with an
+    /// input node. Tearing it down and recreating it on every push-to-talk
+    /// causes a ~100ms Bluetooth audio blip. By keeping the engine running
+    /// and only installing/removing the tap, the aggregate device persists
+    /// and there's no audio disruption.
     public func warmUp() {
-        // Intentionally empty — accessing audioEngine.inputNode or calling
-        // prepare() triggers a Bluetooth audio blip on wireless headphones.
-        // The first real activation may capture silence; this is handled by
-        // the too-short/silence detection in the StateMachine which returns
-        // to IDLE cleanly, and the second activation works normally.
-        Self.logger.info("Audio engine warm-up: skipped (Bluetooth blip avoidance)")
+        applyInputDevice()
+        let inputNode = audioEngine.inputNode
+        _ = inputNode.outputFormat(forBus: 0)
+        audioEngine.prepare()
+        do {
+            try audioEngine.start()
+            Self.logger.info("Audio engine started permanently (aggregate device alive)")
+        } catch {
+            Self.logger.warning("Audio engine warm-up failed: \(error)")
+        }
     }
 
     // MARK: - Type Methods
@@ -298,8 +310,12 @@ public final class SpeechTranscriber: SpeechTranscribing {
             }
         }
 
-        audioEngine.prepare()
-        try audioEngine.start()
+        // Engine is kept running permanently (started in warmUp) to avoid
+        // tearing down the aggregate device. Just start if not already running.
+        if !audioEngine.isRunning {
+            audioEngine.prepare()
+            try audioEngine.start()
+        }
         isListening = true
         Self.logger.info("Audio engine started, listening for speech")
     }
@@ -503,9 +519,11 @@ public final class SpeechTranscriber: SpeechTranscribing {
         return (meanSquare / Float(totalFrames)).squareRoot()
     }
 
-    /// Stop the audio engine, remove the input tap, and clear the listening flag.
+    /// Remove the input tap and clear the listening flag.
+    ///
+    /// The audio engine is kept running to preserve the CoreAudio aggregate
+    /// device — stopping it would cause a Bluetooth audio blip on next start.
     private func tearDownAudioCapture() {
-        audioEngine.stop()
         audioEngine.inputNode.removeTap(onBus: 0)
         isListening = false
         levelMonitor?.reset()
