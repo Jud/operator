@@ -182,6 +182,28 @@ Key principle: **each conversion step adds one measurable error source.** No amb
 - `NpyLoader` — loads .npy files (FP16, FP32, int32) into MTLBuffers
 - `compareBuffers` — reports maxDiff, avgDiff with configurable tolerance and FP16/FP32 mode
 
+## Next Steps
+
+### Immediate (continue building the FP32 graph)
+1. **DeltaNet recurrence in FP32** — Add conv1d update + gates + recurrence + gated norm to `VerifyFP32.swift`. Verify the full black box matches PyTorch exactly (maxDiff < 1e-4). All the math is documented above.
+2. **FFN (SwiGLU)** — Three bias-free linears + silu + mul. Should be straightforward. Verify against `layer_0_ffn_gate_out`, `layer_0_ffn_up_out`, `layer_0_ffn_down_out`.
+3. **Full attention layer** — Layers 3,7,11,15,19,23. Q/K/V projections + RoPE + softmax + KV cache update. GQA with 2 KV heads / 16 query heads. RoPE cos/sin are in `decode_inputs/rope_cos.npy`.
+4. **LM head** — Final RMSNorm (1+weight variant) + linear → logits. Verify argmax matches `expected_token.npy`.
+5. **Residual connections** — Wire layers together: `output = hidden + attention(norm(hidden))` then `output = output + ffn(post_norm(output))`.
+6. **Full model end-to-end** — Run all 24 layers + embed + lm_head as one verification. Output token should match reference `second_token=198`.
+
+### After FP32 verification passes
+7. **Wire into single MPSGraph** — Move all verified ops from individual test graphs into one production graph. Compile once with `MPSGraphExecutable`.
+8. **Convert to FP16** — Change all dtypes to `.float16`, re-run verification. Measure the FP16 rounding error budget (expected: small, since CoreML FP16 already works).
+9. **Add LUT dequant** — Replace FP16/FP32 weight placeholders with `MPSGraph.dequantize(_:LUTTensor:)` using 256-entry global LUT (mapped from PAL4 gs=16 centroids). This is the whole point — PAL4 quality at fused-kernel speed.
+10. **Benchmark** — Compare full model decode latency: MPSGraph LUT vs CoreML PAL4 gs=16 vs CoreML INT4 bs=8.
+
+### Production integration
+11. **KV cache management** — Pre-allocate MTLBuffers for all cache states. Update in-place between decode steps (no allocation in hot path).
+12. **Prompt cache loading** — Load pre-computed system prompt KV states from `.npy` files (same as CleanupCLI does for CoreML).
+13. **Integration with CleanupEngine** — Replace CoreML `model.predict()` with `MPSGraphExecutable.run()`. Same tokenizer, same pipeline, different execution engine.
+14. **Token generation loop** — Argmax on logits buffer, feed back as next input. No Swift↔Python boundary.
+
 ## Future Optimizations (not now)
 
 - **Conv1d → Conv2d**: ANE prefers Conv2d. Could reshape for ANE acceleration. Only matters for prefill.
