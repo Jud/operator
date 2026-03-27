@@ -1,5 +1,6 @@
 import Foundation
 import OperatorMCPCore
+import OperatorShared
 
 @main
 internal enum OperatorMCPApp {

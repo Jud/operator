@@ -44,5 +44,9 @@ internal final class MockSpeechTranscriber: SpeechTranscribing {
         return result
     }
 
+    func tearDownIfListening() {
+        isListening = false
+    }
+
     func replaceEngine(_ newEngine: any TranscriptionEngine) {}
 }

@@ -19,27 +19,32 @@ public struct DaemonClient: Sendable {
         self.token = token
     }
 
-    /// Read the current bearer token, preferring the token file over the cached value.
-    private func currentToken() -> String {
+    /// Read the bearer token from `~/.operator/token`, falling back to the cached value.
+    public static func readToken() -> String? {
         let tokenPath = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".operator/token").path
-        if let data = FileManager.default.contents(atPath: tokenPath),
+        guard let data = FileManager.default.contents(atPath: tokenPath),
             let fileToken = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines),
             !fileToken.isEmpty
-        {
-            return fileToken
+        else {
+            return nil
         }
-        return token
+        return fileToken
+    }
+
+    /// Read the current bearer token, preferring the token file over the cached value.
+    private func currentToken() -> String {
+        Self.readToken() ?? token
     }
 
     /// POST a JSON-encoded body to the daemon and return the raw response data.
     ///
     /// Returns `nil` if the request fails for any reason (network error,
     /// non-2xx status, encoding failure). Failures are logged to stderr.
-    func postRaw<T: Encodable & Sendable>(path: String, body: T) async -> Data? {
+    public func postRaw<T: Encodable & Sendable>(path: String, body: T) async -> Data? {
         guard let url = URL(string: "\(baseURL)\(path)") else {
-            MCPLog.write("Invalid URL: \(baseURL)\(path)")
+            StderrLog.write("Invalid URL: \(baseURL)\(path)")
             return nil
         }
 
@@ -51,7 +56,7 @@ public struct DaemonClient: Sendable {
         do {
             request.httpBody = try encoder.encode(body)
         } catch {
-            MCPLog.write("Failed to encode request body for \(path): \(error)")
+            StderrLog.write("Failed to encode request body for \(path): \(error)")
             return nil
         }
 
@@ -61,13 +66,13 @@ public struct DaemonClient: Sendable {
             if let httpResponse = response as? HTTPURLResponse,
                 !(200...299).contains(httpResponse.statusCode)
             {
-                MCPLog.write("Daemon error \(httpResponse.statusCode) for \(path)")
+                StderrLog.write("Daemon error \(httpResponse.statusCode) for \(path)")
                 return nil
             }
 
             return data
         } catch {
-            MCPLog.write("Daemon unreachable for \(path): \(error)")
+            StderrLog.write("Daemon unreachable for \(path): \(error)")
             return nil
         }
     }
@@ -75,7 +80,7 @@ public struct DaemonClient: Sendable {
     /// POST and decode the response as a specific Decodable type.
     ///
     /// Returns `nil` if the request fails or the response cannot be decoded.
-    func post<T: Encodable & Sendable, R: Decodable>(path: String, body: T) async -> R? {
+    public func post<T: Encodable & Sendable, R: Decodable>(path: String, body: T) async -> R? {
         guard let data = await postRaw(path: path, body: body) else {
             return nil
         }
@@ -83,7 +88,7 @@ public struct DaemonClient: Sendable {
         do {
             return try decoder.decode(R.self, from: data)
         } catch {
-            MCPLog.write("Failed to decode response for \(path): \(error)")
+            StderrLog.write("Failed to decode response for \(path): \(error)")
             return nil
         }
     }

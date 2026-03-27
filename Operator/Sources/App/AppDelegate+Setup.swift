@@ -43,17 +43,19 @@ extension AppDelegate {
 
         let appMacOS = Bundle.main.bundleURL
             .appendingPathComponent("Contents/MacOS")
-        let tool = "operator-mcp"
-        let source = appMacOS.appendingPathComponent(tool)
-        let link = binDir.appendingPathComponent(tool)
 
-        try? fm.removeItem(at: link)
+        for tool in ["operator-mcp", "operator-cli"] {
+            let source = appMacOS.appendingPathComponent(tool)
+            let link = binDir.appendingPathComponent(tool)
 
-        do {
-            try fm.createSymbolicLink(at: link, withDestinationURL: source)
-            Self.logger.info("Symlinked \(link.path) -> \(source.path)")
-        } catch {
-            Self.logger.error("Failed to symlink \(tool): \(error)")
+            try? fm.removeItem(at: link)
+
+            do {
+                try fm.createSymbolicLink(at: link, withDestinationURL: source)
+                Self.logger.info("Symlinked \(link.path) -> \(source.path)")
+            } catch {
+                Self.logger.error("Failed to symlink \(tool): \(error)")
+            }
         }
     }
 

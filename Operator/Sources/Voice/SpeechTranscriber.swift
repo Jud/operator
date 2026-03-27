@@ -390,6 +390,14 @@ public final class SpeechTranscriber: SpeechTranscribing {
     ///
     /// If no preference is set, falls back to the built-in mic to avoid
     /// triggering a Bluetooth profile switch on wireless headphones.
+    /// Synchronously tear down audio capture if currently listening.
+    public func tearDownIfListening() {
+        guard isListening else {
+            return
+        }
+        tearDownAudioCapture()
+    }
+
     /// Cancel any in-flight session and remove the input tap.
     private func cancelExistingSession() {
         engine.cancel()

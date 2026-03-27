@@ -802,14 +802,13 @@ extension StateMachine {
     private func enterIdle() {
         cancelInFlightWork()
 
-        // Ensure the audio engine is stopped if still running. This covers
+        // Ensure the input engine is stopped if still running. This covers
         // early-exit paths (cancel, too-short, double-tap, error) that skip
-        // the normal stopAndCheckSilence() flow.
+        // the normal stopAndCheckSilence() flow. Called synchronously to avoid
+        // a race where a fire-and-forget Task tears down the next session.
         if transcriber.isListening {
             Self.logger.debug("enterIdle: stopping transcriber that was still listening")
-            _ = Task { @MainActor [transcriber] in
-                _ = await transcriber.stopAndCheckSilence()
-            }
+            transcriber.tearDownIfListening()
         }
 
         transition(to: .idle)

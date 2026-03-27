@@ -1,4 +1,5 @@
 import Foundation
+import OperatorShared
 import Testing
 
 @testable import OperatorMCPCore
@@ -98,8 +99,8 @@ internal struct MCPServerProtocolTests {
         #expect(response == nil)
     }
 
-    @Test("tools/list returns exactly one tool named speak")
-    func toolsListSpeakTool() async {
+    @Test("tools/list returns empty tools array (toolless MCP)")
+    func toolsListEmpty() async {
         let server = makeServer()
         let request = JSONRPCRequest(
             jsonrpc: "2.0",
@@ -119,172 +120,31 @@ internal struct MCPServerProtocolTests {
             Issue.record("Expected tools array")
             return
         }
-        #expect(tools.count == 1)
-
-        guard case .object(let tool) = tools.first else {
-            Issue.record("Expected tool object")
-            return
-        }
-        #expect(tool["name"] == .string("speak"))
-    }
-
-    @Test("tools/list speak tool has correct description")
-    func toolsListDescription() async {
-        let server = makeServer()
-        let request = JSONRPCRequest(
-            jsonrpc: "2.0",
-            method: "tools/list",
-            params: nil,
-            id: .int(2)
-        )
-
-        let response = await server.handleRequest(request)
-
-        guard case .object(let result) = response?.result,
-            case .array(let tools) = result["tools"],
-            case .object(let tool) = tools.first
-        else {
-            Issue.record("Expected tool object")
-            return
-        }
-
-        let expectedDesc =
-            "Send a short voice status update to the user. Call at end of every turn and at key milestones."
-            + " One sentence max — like a walkie-talkie, not a presentation."
-        #expect(tool["description"] == .string(expectedDesc))
-    }
-
-    @Test("tools/list input schema defines message as required string")
-    func toolsListMessageSchema() async {
-        let server = makeServer()
-        let request = JSONRPCRequest(
-            jsonrpc: "2.0",
-            method: "tools/list",
-            params: nil,
-            id: .int(2)
-        )
-
-        let response = await server.handleRequest(request)
-
-        guard case .object(let result) = response?.result,
-            case .array(let tools) = result["tools"],
-            case .object(let tool) = tools.first,
-            case .object(let schema) = tool["inputSchema"],
-            case .object(let properties) = schema["properties"],
-            case .object(let messageProp) = properties["message"],
-            case .array(let required) = schema["required"]
-        else {
-            Issue.record("Expected input schema with message property")
-            return
-        }
-
-        #expect(messageProp["type"] == .string("string"))
-        #expect(required.contains(.string("message")))
-    }
-
-    @Test("tools/list input schema defines priority with enum and default")
-    func toolsListPrioritySchema() async {
-        let server = makeServer()
-        let request = JSONRPCRequest(
-            jsonrpc: "2.0",
-            method: "tools/list",
-            params: nil,
-            id: .int(2)
-        )
-
-        let response = await server.handleRequest(request)
-
-        guard case .object(let result) = response?.result,
-            case .array(let tools) = result["tools"],
-            case .object(let tool) = tools.first,
-            case .object(let schema) = tool["inputSchema"],
-            case .object(let properties) = schema["properties"],
-            case .object(let priorityProp) = properties["priority"]
-        else {
-            Issue.record("Expected input schema with priority property")
-            return
-        }
-
-        #expect(priorityProp["type"] == .string("string"))
-        #expect(priorityProp["default"] == .string("normal"))
-        #expect(priorityProp["enum"] == .array([.string("normal"), .string("urgent")]))
+        #expect(tools.isEmpty)
     }
 }
 
-// MARK: - Tools Call + Error Handling
+// MARK: - Error Handling
 
-@Suite("MCPServer - Tools Call and Errors")
-internal struct MCPServerToolsCallTests {
+@Suite("MCPServer - Errors")
+internal struct MCPServerErrorTests {
     private func makeServer() -> MCPServer {
         let client = DaemonClient(baseURL: "http://localhost:0", token: "test-token")
         return MCPServer(client: client, sessionName: "test-session")
     }
 
-    @Test("tools/call with missing tool name returns error")
-    func toolsCallMissingName() async {
+    @Test("tools/call returns method-not-found (toolless MCP)")
+    func toolsCallMethodNotFound() async {
         let server = makeServer()
         let request = JSONRPCRequest(
             jsonrpc: "2.0",
             method: "tools/call",
-            params: [:],
+            params: ["name": .string("speak")],
             id: .int(3)
         )
 
         let response = await server.handleRequest(request)
-        #expect(response?.error?.code == -32_602)
-        #expect(response?.error?.message == "Missing tool name")
-    }
-
-    @Test("tools/call with unknown tool name returns error")
-    func toolsCallUnknownTool() async {
-        let server = makeServer()
-        let request = JSONRPCRequest(
-            jsonrpc: "2.0",
-            method: "tools/call",
-            params: ["name": .string("nonexistent")],
-            id: .int(3)
-        )
-
-        let response = await server.handleRequest(request)
-        #expect(response?.error?.code == -32_602)
-        #expect(response?.error?.message == "Unknown tool: nonexistent")
-    }
-
-    @Test("tools/call for speak with unreachable daemon returns error content block")
-    func toolsCallSpeakDaemonUnreachable() async {
-        let server = makeServer()
-        let request = JSONRPCRequest(
-            jsonrpc: "2.0",
-            method: "tools/call",
-            params: [
-                "name": .string("speak"),
-                "arguments": .object([
-                    "message": .string("hello"),
-                    "priority": .string("normal")
-                ])
-            ],
-            id: .int(4)
-        )
-
-        let response = await server.handleRequest(request)
-        #expect(response != nil)
-        #expect(response?.error == nil)
-
-        guard case .object(let result) = response?.result else {
-            Issue.record("Expected object result")
-            return
-        }
-
-        #expect(result["isError"] == .bool(true))
-
-        guard case .array(let content) = result["content"],
-            case .object(let block) = content.first
-        else {
-            Issue.record("Expected content array with text block")
-            return
-        }
-        #expect(block["type"] == .string("text"))
-        #expect(block["text"] == .string("Operator daemon unreachable"))
+        #expect(response?.error?.code == -32_601)
     }
 
     @Test("unknown method returns -32601 error")

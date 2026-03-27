@@ -33,7 +33,11 @@ public actor AudioQueue {
     public struct QueuedMessage: Sendable {
         /// Priority level for queued messages.
         public enum Priority: Sendable {
+            /// May be dropped under saturation. Queued FIFO behind normal messages.
+            case low
+            /// Default priority. Queued FIFO.
             case normal
+            /// Jumps to the front of the queue.
             case urgent
         }
 

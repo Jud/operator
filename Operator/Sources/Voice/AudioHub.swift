@@ -76,6 +76,26 @@ public final class AudioHub {
         }
 
         Self.logger.info("AudioHub initialized")
+
+        // Observe route changes on both engines.
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: outputEngine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleOutputConfigChange()
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: inputEngine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleInputConfigChange()
+            }
+        }
     }
 
     // MARK: - Output Lifecycle
@@ -94,6 +114,34 @@ public final class AudioHub {
         ttsPlayerNode.play()
         feedbackPlayerNode.play()
         Self.logger.info("Output engine started (TTS + feedback armed)")
+    }
+
+    /// Restart the output engine after an audio route change.
+    private func handleOutputConfigChange() {
+        Self.logger.warning("Output engine config changed — restarting")
+        outputEngine.prepare()
+        disableOutputEngineInput()
+        do {
+            try outputEngine.start()
+            ttsPlayerNode.play()
+            feedbackPlayerNode.play()
+            Self.logger.info("Output engine restarted after config change")
+        } catch {
+            Self.logger.error("Failed to restart output engine: \(error)")
+        }
+    }
+
+    /// Handle input engine config change (e.g., mic disconnected mid-recording).
+    private func handleInputConfigChange() {
+        Self.logger.warning("Input engine config changed")
+        // If actively recording, the tap is now invalid. Stop the input engine
+        // so the next activation starts fresh.
+        if inputTapInstalled {
+            inputEngine.inputNode.removeTap(onBus: 0)
+            inputTapInstalled = false
+        }
+        inputEngine.stop()
+        Self.logger.info("Input engine stopped after config change (will restart on next PTT)")
     }
 
     /// Disable the input scope on the output engine's audio unit.
@@ -131,10 +179,22 @@ public final class AudioHub {
     /// The first call creates the aggregate device (one-time blip on BT);
     /// subsequent calls reuse the warmed HAL path (no blip).
     public func startInput() throws -> AVAudioFormat {
-        let format = inputEngine.inputNode.outputFormat(forBus: 0)
+        // Touch inputNode to materialize the audio unit, then prepare,
+        // then set properties, then query format, then start.
+        // Order matters: the audio unit must exist before property calls,
+        // and the device must be applied before reading the format.
+        _ = inputEngine.inputNode
         inputEngine.prepare()
         applyInputDevice()
         disableInputEngineOutput()
+        let format = inputEngine.inputNode.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else {
+            throw NSError(
+                domain: "AudioHub",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Degenerate input format: \(format)"]
+            )
+        }
         try inputEngine.start()
         Self.logger.info(
             "Input engine started (\(format.sampleRate)Hz, \(format.channelCount)ch)"

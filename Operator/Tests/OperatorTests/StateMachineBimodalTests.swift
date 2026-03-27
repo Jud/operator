@@ -41,6 +41,8 @@ private final class TestSpeechTranscriber: SpeechTranscribing {
         return result
     }
 
+    func tearDownIfListening() { isListening = false }
+
     func replaceEngine(_ newEngine: any TranscriptionEngine) {}
 }
 

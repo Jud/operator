@@ -29,5 +29,12 @@ public protocol SpeechTranscribing: AnyObject, Sendable {
     /// Must be called after ``stopAndCheckSilence()`` returns `true`.
     func finishTranscription() async -> String?
 
+    /// Synchronously tear down audio capture if currently listening.
+    ///
+    /// Unlike `stopAndCheckSilence()`, this is synchronous and does not
+    /// process the captured audio. Used by `enterIdle()` to avoid a race
+    /// with the next `triggerStart()`.
+    func tearDownIfListening()
+
     func replaceEngine(_ newEngine: any TranscriptionEngine)
 }
