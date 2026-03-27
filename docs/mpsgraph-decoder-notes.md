@@ -105,8 +105,30 @@ Monkey-patching DeltaNet.forward() to capture internal activations changes the m
 
 **Solution**: Use ONLY submodule hooks. They fire correctly on the unmodified model. Verify DeltaNet internals as a black box: `qkv_out + z_out + cache → out_proj_input`. If the full chain produces the right output, every intermediate is correct by construction.
 
+### FP16 reference precision loss (CONFIRMED)
+**Hypothesis**: Saving references as FP16 is sufficient for verification.
+**Result**: FAILED. The model computes in FP32. Saving activations, weights, and cache states as FP16 introduces rounding errors that compound through the DeltaNet recurrence. The outer product update `state += outer(k, delta)` on a `[16, 128, 128]` state amplifies small FP16 rounding errors into large output differences (maxDiff 0.57 with FP16 cache, even when PyTorch recomputes from FP16 inputs).
+**Fix**: Save ALL reference data in FP32. The NpyLoader in Swift must handle FP32→FP16 conversion at load time for MPSGraph (which runs in FP16), but the Python verification uses FP32 throughout.
+
 ### FP16 overflow on token IDs
 Token IDs > 65504 overflow FP16. PyTorch hooks capture tensors in their native dtype (int64 for token IDs), but saving as float16 causes overflow → inf. Always use dedicated int32 files for integer data.
+
+## Hypotheses Tested
+
+| # | Hypothesis | Result | Notes |
+|---|-----------|--------|-------|
+| 1 | FP16 references are sufficient for verification | **FAILED** | FP32→FP16 rounding compounds through DeltaNet recurrence (maxDiff 0.57) |
+| 2 | Monkey-patching forward captures clean references | **FAILED** | Changes prefill behavior for all layers, corrupts decode references |
+| 3 | Qwen RMSNorm uses standard `x * weight` | **FAILED** | Uses `x * (1 + weight)` — missing +1 gives 25x error |
+| 4 | Submodule hooks capture correct decode activations | **CONFIRMED** | Hooks fire on unmodified model, all 6 projections match exactly |
+| 5 | MPSGraph matmul matches CoreML for FP16 linear ops | **CONFIRMED** | maxDiff 0.004 on QKV projection |
+| 6 | Conv1d update can be implemented as dot product for decode | **CONFIRMED** | Manual shift+multiply+reduce matches PyTorch exactly (diff 0.0) |
+| 7 | F.normalize uses sqrt(sum + eps) | **FAILED** | Uses max(||x||, eps) — different for near-zero vectors |
+
+## Future Optimizations (not now)
+
+- **Conv1d → Conv2d**: ANE prefers Conv2d. Could reshape the DeltaNet conv1d to Conv2d with height=1 for ANE acceleration. Only matters for prefill — decode step is just a dot product.
+- **ANE scheduling**: Once the full graph works on GPU, explore ANE compute unit targeting for specific ops.
 
 ## General Learnings
 

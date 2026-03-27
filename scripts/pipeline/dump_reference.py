@@ -155,7 +155,8 @@ def dump_reference(model_id, output_dir, prompt_cache_dir=None):
     os.makedirs(act_dir, exist_ok=True)
     for name, arr in sorted(activations.items()):
         path = os.path.join(act_dir, f"{name}.npy")
-        np.save(path, arr.astype(np.float16))
+        # Save in FP32 — FP16 rounding corrupts black-box verification
+        np.save(path, arr.astype(np.float32))
 
     # Save ALL model weights (FP16)
     weight_dir = os.path.join(output_dir, "weights")
@@ -163,7 +164,7 @@ def dump_reference(model_id, output_dir, prompt_cache_dir=None):
     for name, param in model.named_parameters():
         safe_name = name.replace(".", "_")
         np.save(os.path.join(weight_dir, f"{safe_name}.npy"),
-                param.detach().float().numpy().astype(np.float16))
+                param.detach().float().numpy().astype(np.float32))
 
     # Save decode step inputs
     inputs_dir = os.path.join(output_dir, "decode_inputs")
@@ -178,14 +179,15 @@ def dump_reference(model_id, output_dir, prompt_cache_dir=None):
     attn_idx = 0
     for i in range(tc.num_hidden_layers):
         if layer_types[i] == "linear_attention":
+            # Save cache states in FP32 — FP16 rounding corrupts DeltaNet recurrence verification
             np.save(os.path.join(cache_dir, f"conv_state_{delta_idx}.npy"),
-                    cache.conv_states[i].detach().float().numpy().astype(np.float16))
+                    cache.conv_states[i].detach().float().numpy().astype(np.float32))
             np.save(os.path.join(cache_dir, f"rec_state_{delta_idx}.npy"),
-                    cache.recurrent_states[i].detach().float().numpy().astype(np.float16))
+                    cache.recurrent_states[i].detach().float().numpy().astype(np.float32))
             delta_idx += 1
         else:
-            k = cache.key_cache[i].detach().float().numpy().astype(np.float16)
-            v = cache.value_cache[i].detach().float().numpy().astype(np.float16)
+            k = cache.key_cache[i].detach().float().numpy().astype(np.float32)
+            v = cache.value_cache[i].detach().float().numpy().astype(np.float32)
             np.save(os.path.join(cache_dir, f"key_cache_{attn_idx}.npy"), k)
             np.save(os.path.join(cache_dir, f"value_cache_{attn_idx}.npy"), v)
             attn_idx += 1
