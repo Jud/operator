@@ -192,18 +192,12 @@ public final class AudioHub {
             return
         }
 
-        // First call: create aggregate device (one-time blip).
-        // Subsequent calls: resume from pause (no blip).
+        // First call: create aggregate device and restart engine (one-time blip).
+        // Subsequent calls: engine already running, no-op.
         do {
             try ensureInputInitialized()
-            if !engine.isRunning {
-                try engine.start()
-                ttsPlayerNode.play()
-                feedbackPlayerNode.play()
-                Self.logger.debug("Engine resumed from pause for input tap")
-            }
         } catch {
-            Self.logger.error("Failed to start engine for input tap: \(error)")
+            Self.logger.error("Failed to initialize input: \(error)")
             return
         }
 
@@ -217,19 +211,20 @@ public final class AudioHub {
         Self.logger.debug("Input tap installed")
     }
 
-    /// Remove the input tap and pause the engine.
+    /// Remove the input tap.
     ///
-    /// Pausing (vs stopping) keeps the aggregate device configuration alive
-    /// so resuming on next tap is fast and doesn't cause a Bluetooth blip.
-    /// The mic indicator (orange dot) should go away when paused.
+    /// The engine stays running to preserve the aggregate device.
+    ///
+    /// The engine is NOT paused or stopped — doing so destroys the aggregate
+    /// device, causing a Bluetooth audio blip. The tradeoff: the mic indicator
+    /// (orange dot) stays on permanently after the first PTT activation.
     public func removeInputTap() {
         guard inputTapInstalled else {
             return
         }
         engine.inputNode.removeTap(onBus: 0)
         inputTapInstalled = false
-        engine.pause()
-        Self.logger.debug("Input tap removed, engine paused")
+        Self.logger.debug("Input tap removed (engine stays running)")
     }
 
     // MARK: - Input Device
