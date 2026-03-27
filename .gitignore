@@ -50,3 +50,4 @@ spikes/kokoro-coreml/
 models/
 .venv-poc/
 __pycache__/
+models/reference_activations/
