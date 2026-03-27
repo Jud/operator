@@ -88,8 +88,8 @@ public final class AudioHub {
     ///
     /// Runs permanently for the app's lifetime.
     public func start() throws {
-        disableOutputEngineInput()
         outputEngine.prepare()
+        disableOutputEngineInput()
         try outputEngine.start()
         ttsPlayerNode.play()
         feedbackPlayerNode.play()
@@ -131,10 +131,10 @@ public final class AudioHub {
     /// The first call creates the aggregate device (one-time blip on BT);
     /// subsequent calls reuse the warmed HAL path (no blip).
     public func startInput() throws -> AVAudioFormat {
-        applyInputDevice()
-        disableInputEngineOutput()
         let format = inputEngine.inputNode.outputFormat(forBus: 0)
         inputEngine.prepare()
+        applyInputDevice()
+        disableInputEngineOutput()
         try inputEngine.start()
         Self.logger.info(
             "Input engine started (\(format.sampleRate)Hz, \(format.channelCount)ch)"
