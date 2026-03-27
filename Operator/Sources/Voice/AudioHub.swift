@@ -79,6 +79,17 @@ public final class AudioHub {
         }
 
         Self.logger.info("AudioHub initialized (nodes attached, engine not started)")
+
+        // Observe route changes (e.g., AirPods connect/disconnect) and restart.
+        NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleConfigurationChange()
+            }
+        }
     }
 
     // MARK: - Lifecycle
@@ -101,6 +112,30 @@ public final class AudioHub {
         ttsPlayerNode.play()
         feedbackPlayerNode.play()
         Self.logger.info("AudioHub started (engine running, nodes armed)")
+    }
+
+    /// Handle audio route changes (e.g., AirPods connect/disconnect).
+    ///
+    /// The engine is already stopped when this notification fires. Re-prepare
+    /// and restart it so audio continues working with the new route.
+    private func handleConfigurationChange() {
+        Self.logger.warning("Audio configuration changed — restarting engine")
+
+        // Remove any active tap — it's invalid after a config change.
+        if inputTapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            inputTapInstalled = false
+        }
+
+        engine.prepare()
+        do {
+            try engine.start()
+            ttsPlayerNode.play()
+            feedbackPlayerNode.play()
+            Self.logger.info("Engine restarted after configuration change")
+        } catch {
+            Self.logger.error("Failed to restart engine after configuration change: \(error)")
+        }
     }
 
     // MARK: - Input Tap
