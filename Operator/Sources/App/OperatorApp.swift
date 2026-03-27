@@ -147,6 +147,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         let aq = AudioQueue(speechManager: ttsManager, feedback: fb)
         audioQueue = aq
+        hub.onOutputReset = { [weak aq] in
+            await aq?.recoverFromEngineReset()
+        }
         await aq.startListening()
 
         let terminalBridge: any TerminalBridge = MultiTerminalBridge(

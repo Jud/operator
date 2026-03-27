@@ -20,6 +20,11 @@ import KokoroCoreML
 public final class AudioHub {
     private static let logger = Log.logger(for: "AudioHub")
 
+    /// Called when the output engine restarts after a route change.
+    ///
+    /// AudioQueue should use this to recover from a stuck speaking state.
+    public var onOutputReset: (() async -> Void)?
+
     // MARK: - Output Engine
 
     /// Persistent output engine for TTS and feedback tones.
@@ -129,6 +134,9 @@ public final class AudioHub {
             ttsPlayerNode.play()
             feedbackPlayerNode.play()
             Self.logger.info("Output engine restarted after config change")
+            if let onReset = onOutputReset {
+                Task { await onReset() }
+            }
         } catch {
             Self.logger.error("Failed to restart output engine: \(error)")
         }
