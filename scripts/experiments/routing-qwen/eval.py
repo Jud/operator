@@ -784,11 +784,12 @@ def print_summary(all_results: dict[str, tuple[int, int]]):
         print(f"  {name:8s}  {bar}  {correct}/{total} ({pct:.0f}%)")
 
 
-def load_model():
-    print(f"Loading {MODEL_ID} (MPS)...")
-    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float16).to("mps")
+def load_model(model_id=None):
+    mid = model_id or MODEL_ID
+    print(f"Loading {mid} (MPS)...")
+    model = AutoModelForCausalLM.from_pretrained(mid, torch_dtype=torch.float16).to("mps")
     model.eval()
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    tokenizer = AutoTokenizer.from_pretrained(mid)
     print("Model loaded.\n")
     return model, tokenizer
 
@@ -800,9 +801,10 @@ def main():
     parser.add_argument("--holdout", action="store_true", help="Run on holdout set (final eval only)")
     parser.add_argument("--all", action="store_true", help="Run all prompts on all cases")
     parser.add_argument("--blind", action="store_true", help="Run on blind test set (never tuned against)")
+    parser.add_argument("--model", default=None, help="Model ID (default: Qwen/Qwen3.5-0.8B)")
     args = parser.parse_args()
 
-    model, tokenizer = load_model()
+    model, tokenizer = load_model(args.model)
 
     if args.sweep or args.all:
         prompts_to_test = list(PROMPTS.keys())
