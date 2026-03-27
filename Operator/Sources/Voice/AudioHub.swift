@@ -2,42 +2,39 @@ import AVFoundation
 import AudioToolbox
 import KokoroCoreML
 
-/// Central owner of the single AVAudioEngine shared by all audio consumers.
+/// Central owner of all audio I/O, with separate engines for output and input.
 ///
 /// ```
 /// AudioHub
-///  ├─ engine: AVAudioEngine (single, persistent, created once at startup)
-///  ├─ ttsPlayerNode: AVAudioPlayerNode (24kHz mono — Kokoro TTS buffers)
-///  ├─ feedbackPlayerNode: AVAudioPlayerNode (44.1kHz mono — .caf feedback tones)
-///  └─ engine.inputNode (mic capture — tap installed/removed per push-to-talk)
+///  ├─ outputEngine (permanent, starts at launch)
+///  │   ├─ ttsPlayerNode (24kHz mono — Kokoro TTS)
+///  │   └─ feedbackPlayerNode (44.1kHz mono — .caf tones)
+///  └─ inputEngine (start/stop per push-to-talk)
+///      └─ inputNode (mic tap)
 /// ```
 ///
-/// Consumers receive their node, not the engine. KokoroSpeechManager schedules
-/// TTS buffers on `ttsPlayerNode`. AudioFeedback schedules tone buffers on
-/// `feedbackPlayerNode`. SpeechTranscriber installs/removes a tap on the input
-/// node via `installInputTap` / `removeInputTap`.
-///
-/// The engine starts once after permissions are granted and runs for the app's
-/// lifetime. This avoids the Bluetooth audio blip caused by repeated aggregate
-/// device creation/destruction.
+/// Two separate engines avoid the shared-aggregate-device problem: stopping the
+/// input engine for mic release does not interrupt TTS or feedback output. The
+/// output engine runs permanently; the input engine starts/stops per activation.
 @MainActor
 public final class AudioHub {
     private static let logger = Log.logger(for: "AudioHub")
 
-    // MARK: - Public Nodes
+    // MARK: - Output Engine
+
+    /// Persistent output engine for TTS and feedback tones.
+    private let outputEngine = AVAudioEngine()
 
     /// Player node for Kokoro TTS output (24kHz mono float32).
     public let ttsPlayerNode = AVAudioPlayerNode()
 
-    /// Player node for feedback tone output (44.1kHz mono Int16).
+    /// Player node for feedback tone output (44.1kHz mono).
     public let feedbackPlayerNode = AVAudioPlayerNode()
 
-    // MARK: - Engine
+    // MARK: - Input Engine
 
-    /// The single audio engine.
-    ///
-    /// Not exposed — consumers use nodes.
-    private let engine = AVAudioEngine()
+    /// Per-activation input engine for mic capture.
+    private let inputEngine = AVAudioEngine()
 
     /// Whether an input tap is currently installed.
     private var inputTapInstalled = false
@@ -47,7 +44,7 @@ public final class AudioHub {
     /// Kokoro TTS format: 24kHz mono float32.
     private static let ttsFormat = KokoroEngine.audioFormat
 
-    /// Feedback tone format: 44.1kHz mono Int16 (all .caf files use this).
+    /// Feedback tone format: 44.1kHz mono float32.
     private static let feedbackFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 44_100,
@@ -57,131 +54,65 @@ public final class AudioHub {
 
     // MARK: - Initialization
 
-    /// Create the audio hub, attaching and connecting all player nodes.
+    /// Create the audio hub, attaching output player nodes.
     ///
-    /// Does NOT start the engine — call `start()` after permissions are granted.
+    /// Does NOT start either engine — call `start()` after permissions.
     public init() {
-        engine.attach(ttsPlayerNode)
-        engine.attach(feedbackPlayerNode)
+        outputEngine.attach(ttsPlayerNode)
+        outputEngine.attach(feedbackPlayerNode)
 
-        engine.connect(
+        outputEngine.connect(
             ttsPlayerNode,
-            to: engine.mainMixerNode,
+            to: outputEngine.mainMixerNode,
             format: Self.ttsFormat
         )
 
         if let feedbackFmt = Self.feedbackFormat {
-            engine.connect(
+            outputEngine.connect(
                 feedbackPlayerNode,
-                to: engine.mainMixerNode,
+                to: outputEngine.mainMixerNode,
                 format: feedbackFmt
             )
         }
 
-        Self.logger.info("AudioHub initialized (nodes attached, engine not started)")
-
-        // Observe route changes (e.g., AirPods connect/disconnect) and restart.
-        NotificationCenter.default.addObserver(
-            forName: .AVAudioEngineConfigurationChange,
-            object: engine,
-            queue: nil
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.handleConfigurationChange()
-            }
-        }
+        Self.logger.info("AudioHub initialized")
     }
 
-    // MARK: - Lifecycle
+    // MARK: - Output Lifecycle
 
-    /// Start the engine after permissions are granted.
+    /// Start the output engine (TTS + feedback).
     ///
-    /// Applies the preferred input device, prepares the engine, starts it,
-    /// and arms both player nodes. The aggregate device is created here and
-    /// persists for the app's lifetime.
-    /// Whether the input node has been accessed (aggregate device created).
-    private var inputInitialized = false
-
-    /// Start the engine for output only (TTS + feedback tones).
-    ///
-    /// Does NOT access `engine.inputNode` — that would create an aggregate
-    /// device at launch, causing a Bluetooth blip and volume change. The
-    /// input node is initialized lazily on the first push-to-talk activation.
+    /// Runs permanently for the app's lifetime.
     public func start() throws {
-        engine.prepare()
-        try engine.start()
+        outputEngine.prepare()
+        try outputEngine.start()
         ttsPlayerNode.play()
         feedbackPlayerNode.play()
-        Self.logger.info("AudioHub started (output only, input deferred)")
+        Self.logger.info("Output engine started (TTS + feedback armed)")
     }
 
-    /// Initialize the input node on first use.
+    // MARK: - Input Lifecycle
+
+    /// Start the input engine and return the hardware input format.
     ///
-    /// This creates the aggregate device (one-time blip), then the engine
-    /// is restarted with the new configuration. Subsequent taps use
-    /// pause/resume with no blip.
-    private func ensureInputInitialized() throws {
-        guard !inputInitialized else {
-            return
-        }
-
-        // Stop engine before accessing inputNode — the aggregate device
-        // creation requires a reconfiguration.
-        engine.stop()
-
-        let inputFmt = engine.inputNode.outputFormat(forBus: 0)
-        Self.logger.info("Input node initialized: \(inputFmt.sampleRate)Hz, \(inputFmt.channelCount)ch")
-
-        engine.prepare()
-        try engine.start()
-        ttsPlayerNode.play()
-        feedbackPlayerNode.play()
-        inputInitialized = true
-        Self.logger.info("Engine restarted with input node (aggregate device created)")
+    /// Called at the beginning of each push-to-talk activation. Applies the
+    /// preferred input device, prepares, and starts the input engine.
+    /// The first call creates the aggregate device (one-time blip on BT);
+    /// subsequent calls reuse the warmed HAL path (no blip).
+    public func startInput() throws -> AVAudioFormat {
+        applyInputDevice()
+        let format = inputEngine.inputNode.outputFormat(forBus: 0)
+        inputEngine.prepare()
+        try inputEngine.start()
+        Self.logger.info(
+            "Input engine started (\(format.sampleRate)Hz, \(format.channelCount)ch)"
+        )
+        return format
     }
 
-    /// Handle audio route changes (e.g., AirPods connect/disconnect).
+    /// Install a tap on the input node to capture mic audio.
     ///
-    /// The engine is already stopped when this notification fires. Re-prepare
-    /// and restart it so audio continues working with the new route.
-    private func handleConfigurationChange() {
-        Self.logger.warning("Audio configuration changed — restarting engine")
-
-        // Remove any active tap — it's invalid after a config change.
-        if inputTapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            inputTapInstalled = false
-        }
-
-        engine.prepare()
-        do {
-            try engine.start()
-            ttsPlayerNode.play()
-            feedbackPlayerNode.play()
-            Self.logger.info("Engine restarted after configuration change")
-        } catch {
-            Self.logger.error("Failed to restart engine after configuration change: \(error)")
-        }
-    }
-
-    // MARK: - Input Tap
-
-    /// The current input format (sample rate, channels) from the hardware.
-    ///
-    /// Initializes the input node on first access (creating the aggregate
-    /// device if needed). Safe to call before `installInputTap`.
-    public var inputFormat: AVAudioFormat {
-        get throws {
-            try ensureInputInitialized()
-            return engine.inputNode.outputFormat(forBus: 0)
-        }
-    }
-
-    /// Install a tap on the input node to begin capturing mic audio.
-    ///
-    /// Resumes the engine if it was paused (to reactivate the mic).
-    /// Guards against double-install — `installTap` raises an ObjC exception
-    /// if a tap is already installed on the bus.
+    /// Must be called after `startInput()`. Guards against double-install.
     public func installInputTap(
         bufferSize: AVAudioFrameCount,
         format: AVAudioFormat?,
@@ -191,48 +122,30 @@ public final class AudioHub {
             Self.logger.warning("installInputTap called but tap already installed")
             return
         }
-
-        // First call: create aggregate device and restart engine (one-time blip).
-        // Subsequent calls: engine already running, no-op.
-        do {
-            try ensureInputInitialized()
-        } catch {
-            Self.logger.error("Failed to initialize input: \(error)")
-            return
-        }
-
-        engine.inputNode.installTap(
+        inputEngine.inputNode.installTap(
             onBus: 0,
             bufferSize: bufferSize,
             format: format,
             block: block
         )
         inputTapInstalled = true
-        Self.logger.debug("Input tap installed")
     }
 
-    /// Remove the input tap.
+    /// Stop the input engine and remove the tap.
     ///
-    /// The engine stays running to preserve the aggregate device.
-    ///
-    /// The engine is NOT paused or stopped — doing so destroys the aggregate
-    /// device, causing a Bluetooth audio blip. The tradeoff: the mic indicator
-    /// (orange dot) stays on permanently after the first PTT activation.
-    public func removeInputTap() {
-        guard inputTapInstalled else {
-            return
+    /// Does NOT affect the output engine — TTS and feedback keep playing.
+    public func stopInput() {
+        if inputTapInstalled {
+            inputEngine.inputNode.removeTap(onBus: 0)
+            inputTapInstalled = false
         }
-        engine.inputNode.removeTap(onBus: 0)
-        inputTapInstalled = false
-        Self.logger.debug("Input tap removed (engine stays running)")
+        inputEngine.stop()
+        Self.logger.debug("Input engine stopped")
     }
 
     // MARK: - Input Device
 
     /// Apply the user's preferred input device, falling back to the built-in mic.
-    ///
-    /// Prevents the aggregate device from including a Bluetooth mic, which
-    /// would trigger an audio profile renegotiation blip on wireless headphones.
     private func applyInputDevice() {
         let uid = UserDefaults.standard.string(forKey: "inputDeviceUID") ?? ""
         let deviceID: AudioDeviceID
@@ -241,12 +154,11 @@ public final class AudioHub {
         } else if let builtIn = AudioDeviceManager.builtInMicID() {
             deviceID = builtIn
         } else {
-            Self.logger.debug("No preferred or built-in mic found, using system default")
             return
         }
 
-        guard let audioUnit = engine.inputNode.audioUnit else {
-            Self.logger.warning("No audio unit on input node, cannot set device")
+        guard let audioUnit = inputEngine.inputNode.audioUnit else {
+            Self.logger.warning("No audio unit on input node")
             return
         }
         var devID = deviceID
@@ -259,9 +171,9 @@ public final class AudioHub {
             UInt32(MemoryLayout<AudioDeviceID>.size)
         )
         if status == noErr {
-            Self.logger.info("Set input device to \(uid.isEmpty ? "built-in mic" : uid)")
+            Self.logger.info("Input device: \(uid.isEmpty ? "built-in mic" : uid)")
         } else {
-            Self.logger.warning("Failed to set input device (status: \(status)), using default")
+            Self.logger.warning("Failed to set input device (status: \(status))")
         }
     }
 }

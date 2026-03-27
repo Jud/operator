@@ -218,7 +218,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
         try engine.prepare(contextualStrings: contextualStrings)
 
-        let tapFormat = try audioHub.inputFormat
+        let tapFormat = try audioHub.startInput()
 
         // Without voice processing the input is typically mono. Handle
         // multi-channel gracefully in case an external device provides it.
@@ -248,12 +248,9 @@ public final class SpeechTranscriber: SpeechTranscribing {
                 sampleRate: Float(monoFormat.sampleRate)
             ) : nil
 
-        // Pass nil format — let AVAudioEngine use the input node's native format.
-        // Passing an explicit format can crash with "Input HW format is invalid"
-        // if the format doesn't match the hardware after device selection.
         audioHub.installInputTap(
             bufferSize: 1_024,
-            format: nil
+            format: tapFormat
         ) { @Sendable buffer, _ in
             let monoBuffer: AVAudioPCMBuffer
             if needsMonoExtract {
@@ -276,7 +273,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
         }
 
         isListening = true
-        Self.logger.info("Listening for speech (tap installed on shared engine)")
+        Self.logger.info("Listening for speech")
     }
 
     /// RMS threshold below which audio is considered silence.
@@ -447,11 +444,12 @@ public final class SpeechTranscriber: SpeechTranscribing {
         return (meanSquare / Float(totalFrames)).squareRoot()
     }
 
-    /// Remove the input tap and clear the listening flag.
+    /// Stop the input engine, remove the tap, and clear the listening flag.
     ///
-    /// The shared engine (AudioHub) stays running — only the tap is removed.
+    /// AudioHub's input engine is separate from the output engine, so stopping
+    /// it does not affect TTS or feedback tone playback.
     private func tearDownAudioCapture() {
-        audioHub.removeInputTap()
+        audioHub.stopInput()
         isListening = false
         levelMonitor?.reset()
     }
