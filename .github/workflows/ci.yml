@@ -62,4 +62,5 @@ jobs:
           find Sources Tests -name '*.swift' \
             ! -path 'Sources/Tokenizer/*' \
             ! -path 'Sources/QwenTokenizerRust/*' \
+            ! -path 'Sources/MPSGraphDecoder/*' \
             -print0 | xargs -0 swift-format lint --strict

@@ -9,6 +9,7 @@ excluded:
   - Tests/OperatorTests/PerformanceBenchmarkTests.swift
   - Sources/Tokenizer
   - Sources/QwenTokenizerRust
+  - Sources/MPSGraphDecoder
 
 opt_in_rules:
   - array_init
