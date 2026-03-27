@@ -19,8 +19,5 @@ guard FileManager.default.fileExists(atPath: "\(refDir)/meta.json") else {
     exit(1)
 }
 
-verifyLayer0(refDir: refDir)
-print()
-verifyDeltaNet(refDir: refDir)
-print()
-verifyDeltaNetBlackBox(refDir: refDir)
+// FP32 first — zero tolerance for bugs
+verifyAllFP32(refDir: refDir)

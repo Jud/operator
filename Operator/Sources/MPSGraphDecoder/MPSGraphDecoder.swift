@@ -40,26 +40,8 @@ final class NpyLoader {
 
         let buffer = device.makeBuffer(length: bufferSize, options: .storageModeShared)!
 
-        if isFP16 {
-            raw.withUnsafeBytes { src in
-                buffer.contents().copyMemory(from: src.baseAddress!, byteCount: bufferSize)
-            }
-        } else if isFP32 {
-            // Convert FP32 → FP16 on load
-            let fp16Size = count * 2
-            let fp16Buffer = device.makeBuffer(length: fp16Size, options: .storageModeShared)!
-            raw.withUnsafeBytes { src in
-                let srcPtr = src.bindMemory(to: Float.self)
-                let dstPtr = fp16Buffer.contents().bindMemory(to: Float16.self, capacity: count)
-                for i in 0..<count {
-                    dstPtr[i] = Float16(srcPtr[i])
-                }
-            }
-            return (fp16Buffer, shape, count)
-        } else if isInt32 {
-            raw.withUnsafeBytes { src in
-                buffer.contents().copyMemory(from: src.baseAddress!, byteCount: bufferSize)
-            }
+        raw.withUnsafeBytes { src in
+            buffer.contents().copyMemory(from: src.baseAddress!, byteCount: bufferSize)
         }
 
         return (buffer, shape, count)
@@ -72,8 +54,9 @@ final class NpyLoader {
         let hdr = String(data: data[10..<(10 + hdrLen)], encoding: .ascii)!
 
         let isFP16 = hdr.contains("float16") || hdr.contains("<f2")
+        let isFP32 = hdr.contains("float32") || hdr.contains("<f4")
         let isInt32 = hdr.contains("int32") || hdr.contains("<i4")
-        let detectedType: MPSDataType = isInt32 ? .int32 : .float16
+        let detectedType: MPSDataType = isInt32 ? .int32 : (isFP32 ? .float32 : .float16)
         let dt = dataType ?? detectedType
 
         let (buffer, shape, _) = load(path)
@@ -83,14 +66,33 @@ final class NpyLoader {
     }
 }
 
-/// Compare two FP16 buffers and report max absolute difference.
+/// Compare two buffers (FP16 or FP32) and report max absolute difference.
 func compareBuffers(
     _ actual: MTLBuffer,
     _ expected: MTLBuffer,
     count: Int,
     label: String,
-    tolerance: Float = 0.05
+    tolerance: Float = 0.05,
+    fp32: Bool = false
 ) -> Bool {
+    // Handle FP32 or FP16 comparison
+    guard !fp32 else {
+        let a = actual.contents().bindMemory(to: Float.self, capacity: count)
+        let e = expected.contents().bindMemory(to: Float.self, capacity: count)
+        var maxDiff: Float = 0
+        var maxIdx = 0
+        var sumDiff: Float = 0
+        for i in 0..<count {
+            let diff = abs(a[i] - e[i])
+            sumDiff += diff
+            if diff > maxDiff { maxDiff = diff; maxIdx = i }
+        }
+        let avgDiff = sumDiff / Float(count)
+        let pass = maxDiff < tolerance
+        let symbol = pass ? "✓" : "✗"
+        print("  [\(symbol)] \(label): maxDiff=\(String(format: "%.6f", maxDiff)) avgDiff=\(String(format: "%.8f", avgDiff)) at idx=\(maxIdx)")
+        return pass
+    }
     let a = actual.contents().bindMemory(to: Float16.self, capacity: count)
     let e = expected.contents().bindMemory(to: Float16.self, capacity: count)
 

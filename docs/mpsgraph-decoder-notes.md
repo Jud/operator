@@ -118,7 +118,8 @@ Token IDs > 65504 overflow FP16. PyTorch hooks capture tensors in their native d
 | # | Hypothesis | Result | Notes |
 |---|-----------|--------|-------|
 | 1 | FP16 references are sufficient for verification | **PARTIALLY** | FP32→FP16 rounding gives maxDiff 0.57 but correct ranges. avgDiff 0.012 = 0.5% relative error. Acceptable for FP16 implementation. |
-| 8 | DeltaNet black box (conv1d→recurrence→norm→gate) correct | **CONFIRMED** | Output range [-2.39, 1.99] matches reference [-2.40, 2.02]. Individual values differ by ~0.5% due to FP16 activation capture in hooks. |
+| 8 | DeltaNet black box (conv1d→recurrence→norm→gate) correct | **CONFIRMED** | Output range [-2.39, 1.99] matches reference [-2.40, 2.02]. ~0.5% error from mixed FP16/FP32. |
+| 9 | Build in FP32 first, convert to FP16 after verification | **ADOPTED** | FP32 graph must match PyTorch exactly (maxDiff < 1e-5). Then FP16 conversion as separate step to isolate rounding error. No ambiguity about error sources. |
 | 2 | Monkey-patching forward captures clean references | **FAILED** | Changes prefill behavior for all layers, corrupts decode references |
 | 3 | Qwen RMSNorm uses standard `x * weight` | **FAILED** | Uses `x * (1 + weight)` — missing +1 gives 25x error |
 | 4 | Submodule hooks capture correct decode activations | **CONFIRMED** | Hooks fire on unmodified model, all 6 projections match exactly |
