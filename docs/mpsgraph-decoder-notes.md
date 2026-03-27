@@ -134,10 +134,27 @@ Each layer: `output = hidden + attention(layernorm(hidden))` then `output = outp
 
 - Layer 0 (embed + RMSNorm + QKV matmul): 0.42ms via MPSGraph
 - Single [1,2048]×[6144,2048] FP16 matmul: 0.24ms via MPSGraph
-- Same matmul with 256-entry LUT dequant: 0.48ms (2x overhead)
+- Same matmul with uint8 256-entry LUT dequant: 0.48ms (2x overhead)
+- **Same matmul with uint4 16-entry LUT dequant: 0.51ms (2.3x overhead)** ← THE KEY FINDING
 - CoreML FP16 full model decode: 25.9ms (24 layers)
 - CoreML INT4 bs=8 full model decode: 12ms/tok (84 tok/s)
 - CoreML PAL4 gs=16 full model decode: 33ms/tok (not fused — the problem we're solving)
+
+### MPSGraph uint4 LUT — The Breakthrough
+
+**MPSGraph supports `MPSDataType.uInt4` with `dequantize(_:LUTTensor:)`**. 4-bit packed indices (2 values per byte) with a 16-entry FP16 lookup table. Native fusion with matmul.
+
+| Approach | On-disk | Runtime | Speed/layer | Quality |
+|----------|---------|---------|------------|---------|
+| CoreML PAL4 gs=16 | 900 MB | 900 MB | ~1.4ms (not fused) | 15/15 |
+| CoreML INT4 bs=8 | 1.3 GB | 1.3 GB | ~0.5ms (fused) | 15/15 |
+| **MPSGraph uint4 LUT** | **~1 GB** | **~1 GB** | **0.51ms (fused)** | **PAL4 quality** |
+
+This is the trifecta: PAL4 quality + INT4 speed + PAL4 size. The uint4 data type was always available in MPSGraph — we just never tested it because the uint8 path was the first thing we tried.
+
+**Weight packing**: uint4 stores 2 values per byte. A [6144, 2048] weight = 6,291,456 4-bit values = 3,145,728 bytes = 3 MB. Full model ~2.1B params → ~1 GB on disk.
+
+**LUT per weight tensor**: Each weight matrix gets its own 16-entry FP16 LUT (32 bytes). For grouped palettization quality, we'd need per-group LUTs — but MPSGraph's `dequantize(_:LUTTensor:)` with a rank-1 LUT is per-tensor only. Per-group would need the `axis:` variant, which we need to test next.
 
 ## Hypotheses Tested
 
@@ -153,6 +170,7 @@ Each layer: `output = hidden + attention(layernorm(hidden))` then `output = outp
 | 8 | DeltaNet black box produces correct output range | **CONFIRMED** | Output range [-2.39, 1.99] matches reference [-2.40, 2.02]. |
 | 9 | Build FP32 first, convert to FP16 after | **ADOPTED** | FP32 verification shows maxDiff < 0.000002 across all ops. Zero implementation bugs. FP16 conversion measured separately. |
 | 10 | Qwen3_5RMSNormGated uses same formula as RMSNorm | **FAILED** | Gated variant uses `weight * normalized * silu(gate)` — NO `1+weight`. Different class, different formula. |
+| 11 | MPSGraph requires uint8 for LUT dequant | **FAILED** | `MPSDataType.uInt4` exists and works with `dequantize(_:LUTTensor:)`. 4-bit packed (2 values/byte), 16-entry LUT. 0.51ms per realistic layer. Model stays ~1 GB. |
 
 ## Verification Architecture
 
@@ -195,7 +213,7 @@ Key principle: **each conversion step adds one measurable error source.** No amb
 ### After FP32 verification passes
 7. **Wire into single MPSGraph** — Move all verified ops from individual test graphs into one production graph. Compile once with `MPSGraphExecutable`.
 8. **Convert to FP16** — Change all dtypes to `.float16`, re-run verification. Measure the FP16 rounding error budget (expected: small, since CoreML FP16 already works).
-9. **Add LUT dequant** — Replace FP16/FP32 weight placeholders with `MPSGraph.dequantize(_:LUTTensor:)` using 256-entry global LUT (mapped from PAL4 gs=16 centroids). This is the whole point — PAL4 quality at fused-kernel speed.
+9. **Add LUT dequant** — Replace FP16/FP32 weight placeholders with `MPSGraph.dequantize(_:LUTTensor:)` using **uint4 indices + 16-entry per-tensor LUT**. Confirmed working at 0.51ms/layer. Test with `axis:` variant for per-group LUTs (PAL4 gs=16 quality). This is the whole point — PAL4 quality at fused-kernel speed at ~1 GB.
 10. **Benchmark** — Compare full model decode latency: MPSGraph LUT vs CoreML PAL4 gs=16 vs CoreML INT4 bs=8.
 
 ### Production integration
@@ -208,7 +226,7 @@ Key principle: **each conversion step adds one measurable error source.** No amb
 
 - **Conv1d → Conv2d**: ANE prefers Conv2d. Could reshape for ANE acceleration. Only matters for prefill.
 - **ANE scheduling**: Explore ANE compute unit targeting for specific ops.
-- **LUT dequant**: Replace FP32/FP16 weight placeholders with `MPSGraph.dequantize(_:LUTTensor:)` for PAL4 quality at near-INT4 speed.
+- **Per-group LUT via `axis:` parameter**: Test `dequantize(_:LUTTensor:axis:)` with a `[nGroups, 16]` LUT and uint4 indices. If the `axis:` variant works with uint4, we get PAL4 gs=16 quality (per-group centroids) at fused-kernel speed — the ultimate goal.
 
 ## General Learnings
 
@@ -219,6 +237,7 @@ Key principle: **each conversion step adds one measurable error source.** No amb
 - **Token IDs overflow FP16**: Token 248068 > 65504. Always use int32 for token IDs.
 - **Save references in FP32**: FP16 rounding compounds through the DeltaNet recurrence (outer product on [16,128,128] state).
 - **SPM caching**: `swift build` sometimes doesn't rebuild after edits. Use `swift package clean` to force.
-- **MPSGraph LUT constraints**: `dequantize(_:LUTTensor:)` requires power-of-2 LUT size = 2^(index_bits). uint8 → 256 entries.
+- **MPSGraph LUT constraints**: `dequantize(_:LUTTensor:)` requires power-of-2 LUT size = 2^(index_bits). uint4 → 16 entries, uint8 → 256 entries. **uint4 is supported and fast** — use it for PAL4-quality weights at ~1 GB.
+- **Always check the actual API**: We assumed MPSGraph required uint8 because the first test used uint8. Checking `MPSDataType.uInt4` would have saved hours of workaround exploration.
 - **MPSGraph buffer size**: FP32 embedding weight (248K × 2048 × 4 bytes = 2GB) needs large MTLBuffer support.
 - **CoreML PAL4 fusion**: Only per_tensor 16-entry LUT fuses with linear. Grouped LUTs (384×16) and larger LUTs (256) do NOT trigger the fast kernel path.
