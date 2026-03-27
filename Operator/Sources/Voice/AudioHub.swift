@@ -82,13 +82,44 @@ public final class AudioHub {
 
     /// Start the output engine (TTS + feedback).
     ///
+    /// Disables the input side of the output engine's audio unit so macOS
+    /// doesn't create an aggregate device that includes the mic — which
+    /// would cause a Bluetooth audio blip at launch.
+    ///
     /// Runs permanently for the app's lifetime.
     public func start() throws {
+        disableOutputEngineInput()
         outputEngine.prepare()
         try outputEngine.start()
         ttsPlayerNode.play()
         feedbackPlayerNode.play()
         Self.logger.info("Output engine started (TTS + feedback armed)")
+    }
+
+    /// Disable the input scope on the output engine's audio unit.
+    ///
+    /// By default, AVAudioEngine creates an aggregate device combining
+    /// the system default input + output. Disabling input I/O prevents
+    /// the aggregate from including the mic, avoiding a Bluetooth blip.
+    private func disableOutputEngineInput() {
+        guard let audioUnit = outputEngine.outputNode.audioUnit else {
+            Self.logger.warning("No audio unit on output node")
+            return
+        }
+        var enableInput: UInt32 = 0
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Input,
+            1,  // input element
+            &enableInput,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+        if status == noErr {
+            Self.logger.info("Disabled input on output engine audio unit")
+        } else {
+            Self.logger.warning("Failed to disable input on output engine (status: \(status))")
+        }
     }
 
     // MARK: - Input Lifecycle
