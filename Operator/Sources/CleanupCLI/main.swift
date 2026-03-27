@@ -14,10 +14,30 @@ import QwenTokenizerRust
 
 // MARK: - Config
 
-private let nDelta = 18
-private let nAttn = 6
-private let maxKV = 256
-private let ropeDim = 64
+private struct ModelConfig {
+    let nDelta: Int
+    let nAttn: Int
+    let maxKV: Int
+    let ropeDim: Int
+    let convDim: Int
+    let promptLen: Int
+
+    static func load(from metaPath: String) throws -> Self {
+        let data = try Data(contentsOf: URL(fileURLWithPath: metaPath))
+        guard let meta = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw EngineError.missingOutput("meta.json parse failed")
+        }
+        return Self(
+            nDelta: meta["n_delta"] as? Int ?? 18,
+            nAttn: meta["n_attn"] as? Int ?? 6,
+            maxKV: meta["max_kv"] as? Int ?? 256,
+            ropeDim: meta["rope_dim"] as? Int ?? 64,
+            convDim: meta["conv_dim"] as? Int ?? 6_144,
+            promptLen: meta["prompt_len"] as? Int ?? 131
+        )
+    }
+}
+
 private let fixedN = 64
 private let maxGenTokens = 200
 private let eosTokenId: Int32 = 248_044
@@ -161,7 +181,7 @@ private class CleanupEngine {
     let initRec: [MLMultiArray]
     let initKey: [MLMultiArray]
     let initVal: [MLMultiArray]
-    let sysLen: Int
+    let cfg: ModelConfig
 
     /// Compile .mlpackage to .mlmodelc next to it (reuses if already compiled and up-to-date).
     static func compiledURL(for mlpackagePath: String) throws -> URL {
@@ -199,21 +219,29 @@ private class CleanupEngine {
         tok = TokenizerHelper(tokenizerJsonPath: tokenizerJsonPath)
         suffix = tok.suffixIds()
 
-        let cfg = MLModelConfiguration()
-        cfg.computeUnits = .cpuAndGPU
-        decode = try MLModel(contentsOf: Self.compiledURL(for: "\(decodeDir)/model.mlpackage"), configuration: cfg)
-        prefill = try MLModel(contentsOf: Self.compiledURL(for: "\(prefillDir)/model.mlpackage"), configuration: cfg)
-
         let cd = "\(decodeDir)/prompt_cache"
+        cfg = try ModelConfig.load(from: "\(cd)/meta.json")
+
+        let mlCfg = MLModelConfiguration()
+        mlCfg.computeUnits = .cpuAndGPU
+        decode = try MLModel(
+            contentsOf: Self.compiledURL(for: "\(decodeDir)/model.mlpackage"),
+            configuration: mlCfg
+        )
+        prefill = try MLModel(
+            contentsOf: Self.compiledURL(for: "\(prefillDir)/model.mlpackage"),
+            configuration: mlCfg
+        )
+
         var c: [MLMultiArray] = []
         var r: [MLMultiArray] = []
         var k: [MLMultiArray] = []
         var v: [MLMultiArray] = []
-        for j in 0..<nDelta {
+        for j in 0..<cfg.nDelta {
             c.append(try loadNpy("\(cd)/conv_state_\(j).npy"))
             r.append(try loadNpy("\(cd)/rec_state_\(j).npy"))
         }
-        for j in 0..<nAttn {
+        for j in 0..<cfg.nAttn {
             k.append(try loadNpy("\(cd)/key_cache_\(j).npy"))
             v.append(try loadNpy("\(cd)/value_cache_\(j).npy"))
         }
@@ -223,15 +251,8 @@ private class CleanupEngine {
         initVal = v
         cos = try loadNpy("\(cd)/rope_cos.npy")
         sin = try loadNpy("\(cd)/rope_sin.npy")
-        guard
-            let meta = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: "\(cd)/meta.json")))
-                as? [String: Any],
-            let promptLen = meta["prompt_len"] as? Int
-        else {
-            throw NSError(domain: "CleanupEngine", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid meta.json"])
-        }
-        sysLen = promptLen
-        fputs("Loaded in \(String(format: "%.0f", (CFAbsoluteTimeGetCurrent() - t0) * 1_000))ms\n", stderr)
+        let loadMs = String(format: "%.0f", (CFAbsoluteTimeGetCurrent() - t0) * 1_000)
+        fputs("Loaded \(cfg.nDelta)+\(cfg.nAttn) layers in \(loadMs)ms\n", stderr)
     }
 
     // MARK: Prefill
@@ -241,17 +262,17 @@ private class CleanupEngine {
         startOffset: Int
     ) throws -> MLMultiArray {
         let w = full.shape[2].intValue
-        let sl = try MLMultiArray(shape: [1, 6_144, 4], dataType: full.dataType)
+        let sl = try MLMultiArray(shape: [1, cfg.convDim as NSNumber, 4], dataType: full.dataType)
         if full.dataType == .float16 {
             let src = full.dataPointer.bindMemory(to: UInt16.self, capacity: full.count)
             let dst = sl.dataPointer.bindMemory(to: UInt16.self, capacity: sl.count)
-            for ch in 0..<6_144 {
+            for ch in 0..<cfg.convDim {
                 for kk in 0..<4 { dst[ch * 4 + kk] = src[ch * w + startOffset + kk] }
             }
         } else {
             let src = full.dataPointer.bindMemory(to: Float.self, capacity: full.count)
             let dst = sl.dataPointer.bindMemory(to: Float.self, capacity: sl.count)
-            for ch in 0..<6_144 {
+            for ch in 0..<cfg.convDim {
                 for kk in 0..<4 { dst[ch * 4 + kk] = src[ch * w + startOffset + kk] }
             }
         }
@@ -267,43 +288,43 @@ private class CleanupEngine {
         let ip = ids.dataPointer.bindMemory(to: Int32.self, capacity: fixedN)
         for i in 0..<fixedN { ip[i] = i < n ? tokenIds[i] : 0 }
 
-        let bc = try f32Array([1, fixedN, ropeDim])
-        let bs = try f32Array([1, fixedN, ropeDim])
+        let bc = try f32Array([1, fixedN, cfg.ropeDim])
+        let bs = try f32Array([1, fixedN, cfg.ropeDim])
         let ac = cos.dataPointer.bindMemory(to: Float.self, capacity: cos.count)
         let as2 = sin.dataPointer.bindMemory(to: Float.self, capacity: sin.count)
-        let cp = bc.dataPointer.bindMemory(to: Float.self, capacity: fixedN * ropeDim)
-        let sp = bs.dataPointer.bindMemory(to: Float.self, capacity: fixedN * ropeDim)
-        for i in 0..<fixedN where sysLen + i < maxKV {
-            let o = (sysLen + i) * ropeDim
-            for j in 0..<ropeDim {
-                cp[i * ropeDim + j] = ac[o + j]
-                sp[i * ropeDim + j] = as2[o + j]
+        let cp = bc.dataPointer.bindMemory(to: Float.self, capacity: fixedN * cfg.ropeDim)
+        let sp = bs.dataPointer.bindMemory(to: Float.self, capacity: fixedN * cfg.ropeDim)
+        for i in 0..<fixedN where cfg.promptLen + i < cfg.maxKV {
+            let o = (cfg.promptLen + i) * cfg.ropeDim
+            for j in 0..<cfg.ropeDim {
+                cp[i * cfg.ropeDim + j] = ac[o + j]
+                sp[i * cfg.ropeDim + j] = as2[o + j]
             }
         }
 
-        let mask = try f32Array([1, 1, fixedN, maxKV], fill: -1e4)
-        let mp = mask.dataPointer.bindMemory(to: Float.self, capacity: fixedN * maxKV)
+        let mask = try f32Array([1, 1, fixedN, cfg.maxKV], fill: -1e4)
+        let mp = mask.dataPointer.bindMemory(to: Float.self, capacity: fixedN * cfg.maxKV)
         for i in 0..<fixedN {
             if i < n {
-                for j in 0..<(sysLen + i + 1) { mp[i * maxKV + j] = 0 }
+                for j in 0..<(cfg.promptLen + i + 1) { mp[i * cfg.maxKV + j] = 0 }
             } else {
-                mp[i * maxKV] = 0
+                mp[i * cfg.maxKV] = 0
             }
         }
 
         var d: [String: MLFeatureValue] = [
             "input_ids": .init(multiArray: ids),
             "seq_len": .init(multiArray: try int32Array(Int32(n))),
-            "start_pos": .init(multiArray: try int32Array(Int32(sysLen))),
+            "start_pos": .init(multiArray: try int32Array(Int32(cfg.promptLen))),
             "rope_cos": .init(multiArray: bc),
             "rope_sin": .init(multiArray: bs),
             "attn_mask": .init(multiArray: mask)
         ]
-        for j in 0..<nDelta {
+        for j in 0..<cfg.nDelta {
             d["conv_state_\(j)"] = .init(multiArray: initConv[j])
             d["rec_state_\(j)"] = .init(multiArray: initRec[j])
         }
-        for j in 0..<nAttn {
+        for j in 0..<cfg.nAttn {
             d["key_cache_\(j)"] = .init(multiArray: initKey[j])
             d["value_cache_\(j)"] = .init(multiArray: initVal[j])
         }
@@ -333,14 +354,14 @@ private class CleanupEngine {
         // Extract conv states at the REAL token boundary, not the padded tail.
         var co: [MLMultiArray] = []
         var ro: [MLMultiArray] = []
-        for j in 0..<nDelta {
+        for j in 0..<cfg.nDelta {
             let full = try modelArray(out, "conv_state_\(j)_out")
             co.append(try extractConvSlice(full, startOffset: n))
             ro.append(try modelArray(out, "rec_state_\(j)_out"))
         }
         var ko: [MLMultiArray] = []
         var vo: [MLMultiArray] = []
-        for j in 0..<nAttn {
+        for j in 0..<cfg.nAttn {
             ko.append(try modelArray(out, "key_cache_\(j)_out"))
             vo.append(try modelArray(out, "value_cache_\(j)_out"))
         }
@@ -358,7 +379,7 @@ private class CleanupEngine {
             recStates: ro,
             keyCache: ko,
             valCache: vo,
-            position: sysLen + n
+            position: cfg.promptLen + n
         )
     }
 
@@ -374,40 +395,40 @@ private class CleanupEngine {
     ) throws -> Int32 {
         let ta = try MLMultiArray(shape: [1, 1], dataType: .int32)
         ta.dataPointer.bindMemory(to: Int32.self, capacity: 1)[0] = token
-        let cosA = try f32Array([1, 1, ropeDim])
-        let sinA = try f32Array([1, 1, ropeDim])
+        let cosA = try f32Array([1, 1, cfg.ropeDim])
+        let sinA = try f32Array([1, 1, cfg.ropeDim])
         let ac = cos.dataPointer.bindMemory(to: Float.self, capacity: cos.count)
         let as2 = sin.dataPointer.bindMemory(to: Float.self, capacity: sin.count)
-        let cp2 = cosA.dataPointer.bindMemory(to: Float.self, capacity: ropeDim)
-        let sp2 = sinA.dataPointer.bindMemory(to: Float.self, capacity: ropeDim)
-        let o = pos * ropeDim
-        for i in 0..<ropeDim {
+        let cp2 = cosA.dataPointer.bindMemory(to: Float.self, capacity: cfg.ropeDim)
+        let sp2 = sinA.dataPointer.bindMemory(to: Float.self, capacity: cfg.ropeDim)
+        let o = pos * cfg.ropeDim
+        for i in 0..<cfg.ropeDim {
             cp2[i] = ac[o + i]
             sp2[i] = as2[o + i]
         }
-        let mask = try f32Array([1, 1, 1, maxKV], fill: -1e4)
-        let mp = mask.dataPointer.bindMemory(to: Float.self, capacity: maxKV)
+        let mask = try f32Array([1, 1, 1, cfg.maxKV], fill: -1e4)
+        let mp = mask.dataPointer.bindMemory(to: Float.self, capacity: cfg.maxKV)
         for i in 0...pos { mp[i] = 0 }
 
         var d: [String: MLFeatureValue] = [
             "input_id": .init(multiArray: ta), "rope_cos": .init(multiArray: cosA), "rope_sin": .init(multiArray: sinA),
             "cache_position": .init(multiArray: try int32Array(Int32(pos))), "attn_mask": .init(multiArray: mask)
         ]
-        for j in 0..<nDelta {
+        for j in 0..<cfg.nDelta {
             d["conv_state_\(j)"] = .init(multiArray: cv[j])
             d["rec_state_\(j)"] = .init(multiArray: rc[j])
         }
-        for j in 0..<nAttn {
+        for j in 0..<cfg.nAttn {
             d["key_cache_\(j)"] = .init(multiArray: kc[j])
             d["value_cache_\(j)"] = .init(multiArray: vc[j])
         }
 
         let out = try decode.prediction(from: MLDictionaryFeatureProvider(dictionary: d))
-        for j in 0..<nDelta {
+        for j in 0..<cfg.nDelta {
             cv[j] = try modelArray(out, "conv_state_\(j)_out")
             rc[j] = try modelArray(out, "rec_state_\(j)_out")
         }
-        for j in 0..<nAttn {
+        for j in 0..<cfg.nAttn {
             kc[j] = try modelArray(out, "key_cache_\(j)_out")
             vc[j] = try modelArray(out, "value_cache_\(j)_out")
         }
@@ -445,7 +466,7 @@ private class CleanupEngine {
         var gen: [Int32] = [pf.firstToken]
         var cur = pf.firstToken
         var stepTimes: [Double] = []
-        for _ in 0..<min(maxGenTokens, maxKV - pf.position - 1) {
+        for _ in 0..<min(maxGenTokens, cfg.maxKV - pf.position - 1) {
             let s = CFAbsoluteTimeGetCurrent()
             let tok = try step(cur, pf.position, &pf.convStates, &pf.recStates, &pf.keyCache, &pf.valCache)
             stepTimes.append((CFAbsoluteTimeGetCurrent() - s) * 1_000)

@@ -96,12 +96,16 @@ def main():
     np.save(f"{args.output}/rope_cos.npy", all_cos[0].numpy().astype(np.float32))
     np.save(f"{args.output}/rope_sin.npy", all_sin[0].numpy().astype(np.float32))
 
+    conv_dim = tc.linear_key_head_dim * tc.linear_num_key_heads * 2 + tc.linear_value_head_dim * tc.linear_num_value_heads
+
     meta = {
         "prompt_len": prompt_len,
         "max_kv": args.max_kv,
         "rope_dim": rope_dim,
         "n_delta": len(delta_indices),
         "n_attn": len(attn_indices),
+        "conv_dim": conv_dim,
+        "hidden_size": tc.hidden_size,
         "model_id": args.model_id,
     }
     with open(f"{args.output}/meta.json", "w") as f:
