@@ -35,16 +35,11 @@ func verifyDeltaNet(refDir: String) {
     let zPass = compareBuffers(zActBuf, zRefBuf, count: zCount, label: "Z projection")
     allPass = allPass && zPass
 
-    // --- B projection + beta ---
-    print("\nStep 2: B projection → sigmoid → beta")
+    // --- B projection ---
+    print("\nStep 2: B projection")
     let g2 = MPSGraph()
     let (bW, bWShape) = loader.loadTensor("\(refDir)/weights/model_layers_0_linear_attn_in_proj_b_weight.npy")
-
-    // Compare raw B output first, then beta
-    let bRawExists = FileManager.default.fileExists(atPath: "\(refDir)/activations/layer_0_b_raw.npy")
-    let bRefPath = bRawExists ? "\(refDir)/activations/layer_0_b_raw.npy" : "\(refDir)/activations/layer_0_beta.npy"
-    let (bRefBuf, _, bRawCount) = loader.load(bRefPath)
-    let (betaRefBuf, _, betaCount) = loader.load("\(refDir)/activations/layer_0_beta.npy")
+    let (bRefBuf, _, bCount) = loader.load("\(refDir)/activations/layer_0_deltanet_b_out.npy")
 
     let bX = g2.placeholder(shape: zIn.shape, dataType: .float16, name: "x")
     let bWeight = g2.placeholder(shape: bW.shape, dataType: .float16, name: "w")
@@ -52,22 +47,11 @@ func verifyDeltaNet(refDir: String) {
     let bWT = g2.transposeTensor(bWeight, dimension: 0, withDimension: 1, name: nil)
     let bMM = g2.matrixMultiplication(primary: bX2d, secondary: bWT, name: nil)
     let bLinOut = g2.reshape(bMM, shape: [1 as NSNumber, 1 as NSNumber, bWShape[0] as NSNumber], name: nil)
-    let bSigmoid = g2.sigmoid(with: bLinOut, name: "beta")
 
-    let r2 = g2.run(with: commandQueue, feeds: [bX: zIn, bWeight: bW], targetTensors: [bLinOut, bSigmoid], targetOperations: nil)
-
-    // Verify raw B projection
-    let bRawActBuf = device.makeBuffer(length: bRawCount * 2, options: .storageModeShared)!
-    r2[bLinOut]!.mpsndarray().readBytes(bRawActBuf.contents(), strideBytes: nil)
-    let bRawPass = compareBuffers(bRawActBuf, bRefBuf, count: bRawCount, label: bRawExists ? "B raw projection" : "Beta (no b_raw ref)")
-
-    // Verify beta = sigmoid(b)
-    var bPass = bRawPass
-    if bRawExists {
-        let betaActBuf = device.makeBuffer(length: betaCount * 2, options: .storageModeShared)!
-        r2[bSigmoid]!.mpsndarray().readBytes(betaActBuf.contents(), strideBytes: nil)
-        bPass = compareBuffers(betaActBuf, betaRefBuf, count: betaCount, label: "Beta (sigmoid)")
-    }
+    let r2 = g2.run(with: commandQueue, feeds: [bX: zIn, bWeight: bW], targetTensors: [bLinOut], targetOperations: nil)
+    let bActBuf = device.makeBuffer(length: bCount * 2, options: .storageModeShared)!
+    r2[bLinOut]!.mpsndarray().readBytes(bActBuf.contents(), strideBytes: nil)
+    let bPass = compareBuffers(bActBuf, bRefBuf, count: bCount, label: "B projection")
     allPass = allPass && bPass
 
     // --- G gate ---
@@ -77,8 +61,7 @@ func verifyDeltaNet(refDir: String) {
     let (aLog, _) = loader.loadTensor("\(refDir)/weights/model_layers_0_linear_attn_A_log.npy")
     let (dtBias, _) = loader.loadTensor("\(refDir)/weights/model_layers_0_linear_attn_dt_bias.npy")
     let (gRefBuf, _, gCount) = loader.load("\(refDir)/activations/layer_0_g.npy")
-    // Also load a_raw reference if available
-    let aRawPath = "\(refDir)/activations/layer_0_a_raw.npy"
+    let (aRefBuf, _, aCount) = loader.load("\(refDir)/activations/layer_0_deltanet_a_out.npy")
 
     let aX = g3.placeholder(shape: zIn.shape, dataType: .float16, name: "x")
     let aWeight = g3.placeholder(shape: aW.shape, dataType: .float16, name: "w")
@@ -91,14 +74,11 @@ func verifyDeltaNet(refDir: String) {
     let aMM = g3.matrixMultiplication(primary: aX2d, secondary: aWT, name: nil)
     let aOut = g3.reshape(aMM, shape: [1 as NSNumber, 1 as NSNumber, aWShape[0] as NSNumber], name: nil)
 
-    // Verify raw A projection if reference exists
-    if FileManager.default.fileExists(atPath: aRawPath) {
-        let (aRawRef, _, aRawCount) = loader.load(aRawPath)
-        let aRawResult = g3.run(with: commandQueue, feeds: [aX: zIn, aWeight: aW], targetTensors: [aOut], targetOperations: nil)
-        let aRawBuf = device.makeBuffer(length: aRawCount * 2, options: .storageModeShared)!
-        aRawResult[aOut]!.mpsndarray().readBytes(aRawBuf.contents(), strideBytes: nil)
-        let _ = compareBuffers(aRawBuf, aRawRef, count: aRawCount, label: "A raw projection")
-    }
+    // Verify A projection first
+    let aOnlyResult = g3.run(with: commandQueue, feeds: [aX: zIn, aWeight: aW], targetTensors: [aOut], targetOperations: nil)
+    let aActBuf = device.makeBuffer(length: aCount * 2, options: .storageModeShared)!
+    aOnlyResult[aOut]!.mpsndarray().readBytes(aActBuf.contents(), strideBytes: nil)
+    let aPass = compareBuffers(aActBuf, aRefBuf, count: aCount, label: "A projection")
 
     // g = -exp(A_log) * softplus(a + dt_bias) — all in FP32
     let aF32 = g3.cast(aOut, to: .float32, name: nil)
