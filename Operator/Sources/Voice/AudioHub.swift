@@ -147,6 +147,7 @@ public final class AudioHub {
 
     /// Install a tap on the input node to begin capturing mic audio.
     ///
+    /// Resumes the engine if it was paused (to reactivate the mic).
     /// Guards against double-install — `installTap` raises an ObjC exception
     /// if a tap is already installed on the bus.
     public func installInputTap(
@@ -158,6 +159,20 @@ public final class AudioHub {
             Self.logger.warning("installInputTap called but tap already installed")
             return
         }
+
+        // Resume from pause if needed (reactivates mic + aggregate device).
+        if !engine.isRunning {
+            do {
+                try engine.start()
+                ttsPlayerNode.play()
+                feedbackPlayerNode.play()
+                Self.logger.debug("Engine resumed from pause for input tap")
+            } catch {
+                Self.logger.error("Failed to resume engine for input tap: \(error)")
+                return
+            }
+        }
+
         engine.inputNode.installTap(
             onBus: 0,
             bufferSize: bufferSize,
@@ -168,16 +183,19 @@ public final class AudioHub {
         Self.logger.debug("Input tap installed")
     }
 
-    /// Remove the input tap.
+    /// Remove the input tap and pause the engine.
     ///
-    /// The engine stays running — only the tap is removed.
+    /// Pausing (vs stopping) keeps the aggregate device configuration alive
+    /// so resuming on next tap is fast and doesn't cause a Bluetooth blip.
+    /// The mic indicator (orange dot) should go away when paused.
     public func removeInputTap() {
         guard inputTapInstalled else {
             return
         }
         engine.inputNode.removeTap(onBus: 0)
         inputTapInstalled = false
-        Self.logger.debug("Input tap removed")
+        engine.pause()
+        Self.logger.debug("Input tap removed, engine paused")
     }
 
     // MARK: - Input Device
