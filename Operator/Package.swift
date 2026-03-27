@@ -49,6 +49,7 @@ let package = Package(
                 "Tokenizer/",
                 "CleanupCLI/",
                 "QwenTokenizerRust/",
+                "MPSGraphDecoder/",
             ],
             resources: [
                 .process("Resources"),
@@ -80,6 +81,10 @@ let package = Package(
             dependencies: ["QwenTokenizerRust"],
             path: "Sources/CleanupCLI",
             exclude: ["tokenizer_helper.py"]
+        ),
+        .executableTarget(
+            name: "VerifyMPSGraph",
+            path: "Sources/MPSGraphDecoder"
         ),
         .executableTarget(
             name: "E2ETests",

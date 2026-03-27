@@ -151,14 +151,13 @@ def dump_reference(model_id, output_dir, prompt_cache_dir=None):
         path = os.path.join(act_dir, f"{name}.npy")
         np.save(path, arr.astype(np.float16))
 
-    # Save model weights (FP16) for each layer's linear ops
+    # Save ALL model weights (FP16)
     weight_dir = os.path.join(output_dir, "weights")
     os.makedirs(weight_dir, exist_ok=True)
     for name, param in model.named_parameters():
-        if param.dim() >= 2:  # only matrices
-            safe_name = name.replace(".", "_")
-            np.save(os.path.join(weight_dir, f"{safe_name}.npy"),
-                    param.detach().float().numpy().astype(np.float16))
+        safe_name = name.replace(".", "_")
+        np.save(os.path.join(weight_dir, f"{safe_name}.npy"),
+                param.detach().float().numpy().astype(np.float16))
 
     # Save decode step inputs
     inputs_dir = os.path.join(output_dir, "decode_inputs")
