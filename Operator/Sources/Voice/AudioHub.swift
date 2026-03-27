@@ -89,6 +89,11 @@ public final class AudioHub {
     /// and arms both player nodes. The aggregate device is created here and
     /// persists for the app's lifetime.
     public func start() throws {
+        // Access inputNode before start() to force aggregate device creation.
+        // Without this, installTap later crashes with "Input HW format is invalid".
+        let inputFmt = engine.inputNode.outputFormat(forBus: 0)
+        Self.logger.info("Input node format: \(inputFmt.sampleRate)Hz, \(inputFmt.channelCount)ch")
+
         applyInputDevice()
         engine.prepare()
         try engine.start()
