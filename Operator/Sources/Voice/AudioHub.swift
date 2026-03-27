@@ -132,6 +132,7 @@ public final class AudioHub {
     /// subsequent calls reuse the warmed HAL path (no blip).
     public func startInput() throws -> AVAudioFormat {
         applyInputDevice()
+        disableInputEngineOutput()
         let format = inputEngine.inputNode.outputFormat(forBus: 0)
         inputEngine.prepare()
         try inputEngine.start()
@@ -175,6 +176,31 @@ public final class AudioHub {
     }
 
     // MARK: - Input Device
+
+    /// Disable the output scope on the input engine's audio unit.
+    ///
+    /// Prevents the input engine's aggregate device from including the
+    /// AirPods output, which would cause a Bluetooth renegotiation blip.
+    private func disableInputEngineOutput() {
+        guard let audioUnit = inputEngine.inputNode.audioUnit else {
+            Self.logger.warning("No audio unit on input node for output disable")
+            return
+        }
+        var enableOutput: UInt32 = 0
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_EnableIO,
+            kAudioUnitScope_Output,
+            0,  // output element
+            &enableOutput,
+            UInt32(MemoryLayout<UInt32>.size)
+        )
+        if status == noErr {
+            Self.logger.info("Disabled output on input engine audio unit")
+        } else {
+            Self.logger.warning("Failed to disable output on input engine (status: \(status))")
+        }
+    }
 
     /// Apply the user's preferred input device, falling back to the built-in mic.
     private func applyInputDevice() {
