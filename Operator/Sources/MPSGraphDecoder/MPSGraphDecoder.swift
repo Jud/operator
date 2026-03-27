@@ -111,7 +111,9 @@ func compareBuffers(
     let pass = maxDiff < tolerance
 
     let symbol = pass ? "✓" : "✗"
-    print("  [\(symbol)] \(label): maxDiff=\(String(format: "%.4f", maxDiff)) avgDiff=\(String(format: "%.6f", avgDiff)) at idx=\(maxIdx)")
+    print(
+        "  [\(symbol)] \(label): maxDiff=\(String(format: "%.4f", maxDiff)) avgDiff=\(String(format: "%.6f", avgDiff)) at idx=\(maxIdx)"
+    )
 
     return pass
 }

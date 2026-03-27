@@ -22,3 +22,5 @@ guard FileManager.default.fileExists(atPath: "\(refDir)/meta.json") else {
 verifyLayer0(refDir: refDir)
 print()
 verifyDeltaNet(refDir: refDir)
+print()
+verifyDeltaNetBlackBox(refDir: refDir)

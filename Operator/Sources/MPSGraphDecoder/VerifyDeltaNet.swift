@@ -75,7 +75,12 @@ func verifyDeltaNet(refDir: String) {
     let aOut = g3.reshape(aMM, shape: [1 as NSNumber, 1 as NSNumber, aWShape[0] as NSNumber], name: nil)
 
     // Verify A projection first
-    let aOnlyResult = g3.run(with: commandQueue, feeds: [aX: zIn, aWeight: aW], targetTensors: [aOut], targetOperations: nil)
+    let aOnlyResult = g3.run(
+        with: commandQueue,
+        feeds: [aX: zIn, aWeight: aW],
+        targetTensors: [aOut],
+        targetOperations: nil
+    )
     let aActBuf = device.makeBuffer(length: aCount * 2, options: .storageModeShared)!
     aOnlyResult[aOut]!.mpsndarray().readBytes(aActBuf.contents(), strideBytes: nil)
     let aPass = compareBuffers(aActBuf, aRefBuf, count: aCount, label: "A projection")
@@ -86,13 +91,23 @@ func verifyDeltaNet(refDir: String) {
     let dtBiasF32 = g3.cast(dtBiasP, to: .float32, name: nil)
     let negExpA = g3.negative(with: g3.exponent(with: aLogF32, name: nil), name: nil)
     let aPlusDt = g3.addition(aF32, dtBiasF32, name: nil)
-    let softplus = g3.logarithm(with: g3.addition(g3.exponent(with: aPlusDt, name: nil),
-                                                    g3.constant(1.0, dataType: .float32), name: nil), name: nil)
+    let softplus = g3.logarithm(
+        with: g3.addition(
+            g3.exponent(with: aPlusDt, name: nil),
+            g3.constant(1.0, dataType: .float32),
+            name: nil
+        ),
+        name: nil
+    )
     let gVal = g3.multiplication(negExpA, softplus, name: nil)
     let gOut = g3.cast(gVal, to: .float16, name: nil)
 
-    let r3 = g3.run(with: commandQueue, feeds: [aX: zIn, aWeight: aW, aLogP: aLog, dtBiasP: dtBias],
-                     targetTensors: [gOut], targetOperations: nil)
+    let r3 = g3.run(
+        with: commandQueue,
+        feeds: [aX: zIn, aWeight: aW, aLogP: aLog, dtBiasP: dtBias],
+        targetTensors: [gOut],
+        targetOperations: nil
+    )
     let gActBuf = device.makeBuffer(length: gCount * 2, options: .storageModeShared)!
     r3[gOut]!.mpsndarray().readBytes(gActBuf.contents(), strideBytes: nil)
     let gPass = compareBuffers(gActBuf, gRefBuf, count: gCount, label: "G gate")
@@ -134,8 +149,12 @@ func verifyDeltaNet(refDir: String) {
     let convSilu = g4.multiplication(convSum, convSigmoid, name: nil)
     let convOut = g4.reshape(convSilu, shape: [1 as NSNumber, 6144 as NSNumber, 1 as NSNumber], name: nil)
 
-    let r4 = g4.run(with: commandQueue, feeds: [qkvP: qkvOut, csP: convState, cwP: convW],
-                     targetTensors: [convOut], targetOperations: nil)
+    let r4 = g4.run(
+        with: commandQueue,
+        feeds: [qkvP: qkvOut, csP: convState, cwP: convW],
+        targetTensors: [convOut],
+        targetOperations: nil
+    )
     let convActBuf = device.makeBuffer(length: convCount * 2, options: .storageModeShared)!
     r4[convOut]!.mpsndarray().readBytes(convActBuf.contents(), strideBytes: nil)
     let convPass = compareBuffers(convActBuf, convRefBuf, count: convCount, label: "Conv1d update", tolerance: 0.1)

@@ -31,9 +31,15 @@ func verifyLayer0(refDir: String) {
     // Build embedding graph: gather(weight, indices)
     // token_id is [1], reshape to [1, 1] for consistency
     let inputIds = graph1.placeholder(
-        shape: [1 as NSNumber], dataType: .int32, name: "input_ids")
+        shape: [1 as NSNumber],
+        dataType: .int32,
+        name: "input_ids"
+    )
     let embedW = graph1.placeholder(
-        shape: embedWeight.shape, dataType: .float16, name: "embed_weight")
+        shape: embedWeight.shape,
+        dataType: .float16,
+        name: "embed_weight"
+    )
 
     // Flatten input for gather, then reshape back
     let flatIds = graph1.reshape(inputIds, shape: [-1 as NSNumber], name: nil)
@@ -112,7 +118,9 @@ func verifyLayer0(refDir: String) {
 
     let (qkvIn, _) = loader.loadTensor("\(refDir)/activations/layer_0_deltanet_qkv_in_0.npy")
     let (qkvRefBuf, _, qkvCount) = loader.load("\(refDir)/activations/layer_0_deltanet_qkv_out.npy")
-    let (qkvWeight, qkvWShape) = loader.loadTensor("\(refDir)/weights/model_layers_0_linear_attn_in_proj_qkv_weight.npy")
+    let (qkvWeight, qkvWShape) = loader.loadTensor(
+        "\(refDir)/weights/model_layers_0_linear_attn_in_proj_qkv_weight.npy"
+    )
 
     // Build linear: y = x @ W.T (no bias on this layer)
     let linX = graph3.placeholder(shape: qkvIn.shape, dataType: .float16, name: "x")
