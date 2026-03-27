@@ -56,16 +56,10 @@ public final class AudioHub {
     /// Accessed from the real-time audio thread — set/cleared only while stopped.
     nonisolated(unsafe) var tapBlock: AVAudioNodeTapBlock?
 
-    /// Whether a tap block is currently installed.
-    private var inputTapInstalled = false
-
     /// The audio format of the input device.
     ///
     /// Set during `startInput()`, accessed from the render callback.
     nonisolated(unsafe) var inputFormat: AVAudioFormat?
-
-    /// Buffer size in frames for the render callback.
-    private static let inputBufferFrames: AVAudioFrameCount = 1_024
 
     // MARK: - Formats
 
@@ -225,12 +219,11 @@ public final class AudioHub {
         format: AVAudioFormat?,
         block: @escaping AVAudioNodeTapBlock
     ) {
-        guard !inputTapInstalled else {
+        guard tapBlock == nil else {
             Self.logger.warning("installInputTap called but tap already installed")
             return
         }
         tapBlock = block
-        inputTapInstalled = true
     }
 
     /// Stop mic capture and remove the tap.
@@ -242,7 +235,6 @@ public final class AudioHub {
             inputRunning = false
         }
         tapBlock = nil
-        inputTapInstalled = false
         Self.logger.debug("Input unit stopped")
     }
 
@@ -455,6 +447,8 @@ public final class AudioHub {
             AudioUnitUninitialize(unit)
             AudioComponentInstanceDispose(unit)
         }
+        tapBlock = nil
+        inputFormat = nil
     }
 }
 
