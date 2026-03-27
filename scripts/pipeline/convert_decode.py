@@ -97,6 +97,9 @@ def main():
     parser.add_argument("--output", default="models/monolith_kv/")
     parser.add_argument("--max-seq-len", type=int, default=256)
     parser.add_argument("--fp32", action="store_true")
+    parser.add_argument("--quantize", choices=["int4", "int8", "palettize4", "palettize8", "mixed", "mixed-safe", "none"],
+                        default="none",
+                        help="int4/int8 (linear), palettize4/8 (k-means), mixed (2b+4b), mixed-safe (4b+8b), none")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -180,10 +183,73 @@ def main():
     mlmodel = ct.convert(
         traced, inputs=ct_in, outputs=ct_out,
         compute_precision=precision, compute_units=ct.ComputeUnit.ALL,
-        minimum_deployment_target=ct.target.iOS17, convert_to="mlprogram",
+        minimum_deployment_target=ct.target.iOS18, convert_to="mlprogram",
     )
 
     out_path = os.path.join(args.output, "model.mlpackage")
+
+    if args.quantize != "none":
+        import coremltools.optimize.coreml as cto_coreml
+
+        print(f"Quantizing ({args.quantize})...")
+        weight_meta = cto_coreml.get_weights_metadata(mlmodel, weight_threshold=2048)
+
+        quant_bits = {"int4": ("int4", "linear"), "int8": ("int8", "linear"),
+                      "palettize4": (4, "palette"), "palettize8": (8, "palette")}
+
+        if args.quantize in ("int4", "int8"):
+            dtype = "int4" if args.quantize == "int4" else "int8"
+            opt_config = cto_coreml.OptimizationConfig(
+                global_config=cto_coreml.OpLinearQuantizerConfig(
+                    mode="linear_symmetric", dtype=dtype,
+                    granularity="per_block", block_size=32,
+                )
+            )
+        elif args.quantize in ("palettize4", "palettize8"):
+            nbits = 4 if args.quantize == "palettize4" else 8
+            opt_config = cto_coreml.OptimizationConfig(
+                global_config=cto_coreml.OpPalettizerConfig(
+                    mode="kmeans", nbits=nbits, granularity="per_grouped_channel", group_size=16
+                )
+            )
+        elif args.quantize in ("mixed", "mixed-safe"):
+            # mixed: 2-bit DeltaNet + lm_head, 4-bit attention (aggressive)
+            # mixed-safe: 4-bit DeltaNet + lm_head, 8-bit attention (conservative)
+            if args.quantize == "mixed":
+                delta_bits, attn_bits = 2, 4
+            else:
+                delta_bits, attn_bits = 4, 8
+
+            op_name_configs = {}
+            for wname in weight_meta:
+                is_delta = any(f"layers.{di}." in wname or f"layers_{di}_" in wname
+                               for di in delta_indices)
+                is_attn = any(f"layers.{ai}." in wname or f"layers_{ai}_" in wname
+                              for ai in attn_indices)
+                is_lmhead = "lm_head" in wname
+
+                if is_delta or is_lmhead:
+                    op_name_configs[wname] = cto_coreml.OpPalettizerConfig(
+                        mode="kmeans", nbits=delta_bits, granularity="per_grouped_channel", group_size=16
+                    )
+                elif is_attn:
+                    op_name_configs[wname] = cto_coreml.OpPalettizerConfig(
+                        mode="kmeans", nbits=attn_bits, granularity="per_grouped_channel", group_size=16
+                    )
+
+            default_bits = delta_bits  # embeddings etc. get the DeltaNet rate
+            opt_config = cto_coreml.OptimizationConfig(
+                global_config=cto_coreml.OpPalettizerConfig(mode="kmeans", nbits=default_bits),
+                op_name_configs=op_name_configs,
+            )
+
+        if args.quantize in ("int4", "int8"):
+            mlmodel = cto_coreml.linear_quantize_weights(mlmodel, opt_config)
+        else:
+            mlmodel = cto_coreml.palettize_weights(mlmodel, opt_config)
+
+        print(f"Quantization complete ({args.quantize})")
+
     mlmodel.save(out_path)
     print(f"Saved {out_path}")
 

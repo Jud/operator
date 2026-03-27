@@ -5,28 +5,35 @@ set -euo pipefail
 #
 # Usage:
 #   ./scripts/pipeline/convert.sh Qwen/Qwen3.5-0.8B
-#   ./scripts/pipeline/convert.sh Qwen/Qwen3.5-2B
-#   ./scripts/pipeline/convert.sh Qwen/Qwen3.5-4B
+#   ./scripts/pipeline/convert.sh Qwen/Qwen3.5-2B --quantize palettize4
+#   ./scripts/pipeline/convert.sh Qwen/Qwen3.5-2B --quantize mixed
+#   ./scripts/pipeline/convert.sh Qwen/Qwen3.5-2B --quantize int4
 #   ./scripts/pipeline/convert.sh Qwen/Qwen3.5-2B --output models/qwen2b
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON="${PYTHON:-/tmp/coreml-venv/bin/python}"
-MODEL_ID="${1:?Usage: $0 <model_id> [--output <dir>]}"
+MODEL_ID="${1:?Usage: $0 <model_id> [--output <dir>] [--quantize none|int4|mixed]}"
 
-# Parse optional --output
+# Parse optional flags
 OUTPUT_DIR=""
+QUANTIZE="none"
 shift
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output) OUTPUT_DIR="$2"; shift 2 ;;
+        --quantize) QUANTIZE="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 
-# Default output dir: models/<slug>_fp16/
+# Default output dir
 if [ -z "$OUTPUT_DIR" ]; then
     SLUG=$(echo "$MODEL_ID" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
-    OUTPUT_DIR="models/${SLUG}_fp16"
+    if [ "$QUANTIZE" = "none" ]; then
+        OUTPUT_DIR="models/${SLUG}_fp16"
+    else
+        OUTPUT_DIR="models/${SLUG}_${QUANTIZE}"
+    fi
 fi
 
 DECODE_DIR="$OUTPUT_DIR"
@@ -37,6 +44,7 @@ fi
 
 echo "═══════════════════════════════════════════════"
 echo "  Converting: $MODEL_ID"
+echo "  Quantize:   $QUANTIZE"
 echo "  Decode:     $DECODE_DIR"
 echo "  Prefill:    $PREFILL_DIR"
 echo "═══════════════════════════════════════════════"
@@ -44,12 +52,12 @@ echo "════════════════════════�
 # Step 1: Convert decode model
 echo ""
 echo "==> Step 1/3: Convert decode model..."
-$PYTHON "$SCRIPT_DIR/convert_decode.py" "$MODEL_ID" --output "$DECODE_DIR" --fp16
+$PYTHON "$SCRIPT_DIR/convert_decode.py" "$MODEL_ID" --output "$DECODE_DIR" --quantize "$QUANTIZE"
 
 # Step 2: Convert prefill model
 echo ""
 echo "==> Step 2/3: Convert prefill model..."
-$PYTHON "$SCRIPT_DIR/convert_prefill.py" "$MODEL_ID" --output "$PREFILL_DIR" --fp16
+$PYTHON "$SCRIPT_DIR/convert_prefill.py" "$MODEL_ID" --output "$PREFILL_DIR" --quantize "$QUANTIZE"
 
 # Step 3: Generate prompt cache
 echo ""
