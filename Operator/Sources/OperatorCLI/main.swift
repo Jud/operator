@@ -9,11 +9,11 @@ import OperatorShared
 ///   operator speak --priority low "message"       # Low — droppable under saturation
 ///   operator speak --session myproject "message"  # Override session name
 
-private let daemonURL = "http://127.0.0.1:7420"
-private let validPriorities = ["normal", "urgent", "low"]
-
 @main
 internal enum OperatorCLI {
+    private static let daemonURL = "http://127.0.0.1:7420"
+    private static let validPriorities = ["normal", "urgent", "low"]
+
     static func main() async {
         let args = CommandLine.arguments
 
@@ -66,69 +66,69 @@ internal enum OperatorCLI {
 
         print("{\"queued\":true}")
     }
-}
 
-// MARK: - Argument Parsing
+    // MARK: - Argument Parsing
 
-private struct ParsedArgs {
-    var priority = "normal"
-    var session = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-        .lastPathComponent
-    var message: String?
-}
-
-private func parseArgs(_ args: [String]) -> ParsedArgs {
-    var result = ParsedArgs()
-    var idx = 0
-
-    while idx < args.count {
-        switch args[idx] {
-        case "--priority":
-            idx += 1
-            guard idx < args.count else { break }
-            let val = args[idx]
-            guard validPriorities.contains(val) else {
-                StderrLog.write(
-                    "Invalid priority: \(val). Use normal, urgent, or low.",
-                    tag: "OperatorCLI"
-                )
-                exit(1)
-            }
-            result.priority = val
-
-        case "--session":
-            idx += 1
-            guard idx < args.count else { break }
-            result.session = args[idx]
-
-        case "--help", "-h":
-            printUsage()
-            exit(0)
-
-        default:
-            if result.message == nil {
-                result.message = args[idx]
-            } else {
-                result.message = (result.message ?? "") + " " + args[idx]
-            }
-        }
-        idx += 1
+    private struct ParsedArgs {
+        var priority = "normal"
+        var session = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+            .lastPathComponent
+        var message: String?
     }
 
-    return result
-}
+    private static func parseArgs(_ args: [String]) -> ParsedArgs {
+        var result = ParsedArgs()
+        var idx = 0
 
-private func printUsage() {
-    let usage = """
-        Usage: operator <command> [options]
+        while idx < args.count {
+            switch args[idx] {
+            case "--priority":
+                idx += 1
+                guard idx < args.count else { break }
+                let val = args[idx]
+                guard validPriorities.contains(val) else {
+                    StderrLog.write(
+                        "Invalid priority: \(val). Use normal, urgent, or low.",
+                        tag: "OperatorCLI"
+                    )
+                    exit(1)
+                }
+                result.priority = val
 
-        Commands:
-          speak <message>    Send a voice message through Operator
+            case "--session":
+                idx += 1
+                guard idx < args.count else { break }
+                result.session = args[idx]
 
-        Options (speak):
-          --priority <level>  Priority: normal (default), urgent, low
-          --session <name>    Session name (default: current directory name)
-          --help, -h          Show this help message
-        """
-    print(usage)
+            case "--help", "-h":
+                printUsage()
+                exit(0)
+
+            default:
+                if result.message == nil {
+                    result.message = args[idx]
+                } else {
+                    result.message = (result.message ?? "") + " " + args[idx]
+                }
+            }
+            idx += 1
+        }
+
+        return result
+    }
+
+    private static func printUsage() {
+        let usage = """
+            Usage: operator <command> [options]
+
+            Commands:
+              speak <message>    Send a voice message through Operator
+
+            Options (speak):
+              --priority <level>  Priority: normal (default), urgent, low
+              --session <name>    Session name (default: current directory name)
+              --help, -h          Show this help message
+            """
+        print(usage)
+    }
 }
