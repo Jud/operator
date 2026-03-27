@@ -99,19 +99,45 @@ public final class AudioHub {
     /// Applies the preferred input device, prepares the engine, starts it,
     /// and arms both player nodes. The aggregate device is created here and
     /// persists for the app's lifetime.
+    /// Whether the input node has been accessed (aggregate device created).
+    private var inputInitialized = false
+
+    /// Start the engine for output only (TTS + feedback tones).
+    ///
+    /// Does NOT access `engine.inputNode` — that would create an aggregate
+    /// device at launch, causing a Bluetooth blip and volume change. The
+    /// input node is initialized lazily on the first push-to-talk activation.
     public func start() throws {
-        // Access inputNode to force aggregate device creation, then start.
-        // Device override (applyInputDevice) is deferred — the system default
-        // input is used for the aggregate. The input device can be changed
-        // while the engine is running if needed.
+        engine.prepare()
+        try engine.start()
+        ttsPlayerNode.play()
+        feedbackPlayerNode.play()
+        Self.logger.info("AudioHub started (output only, input deferred)")
+    }
+
+    /// Initialize the input node on first use.
+    ///
+    /// This creates the aggregate device (one-time blip), then the engine
+    /// is restarted with the new configuration. Subsequent taps use
+    /// pause/resume with no blip.
+    private func ensureInputInitialized() throws {
+        guard !inputInitialized else {
+            return
+        }
+
+        // Stop engine before accessing inputNode — the aggregate device
+        // creation requires a reconfiguration.
+        engine.stop()
+
         let inputFmt = engine.inputNode.outputFormat(forBus: 0)
-        Self.logger.info("Input node format: \(inputFmt.sampleRate)Hz, \(inputFmt.channelCount)ch")
+        Self.logger.info("Input node initialized: \(inputFmt.sampleRate)Hz, \(inputFmt.channelCount)ch")
 
         engine.prepare()
         try engine.start()
         ttsPlayerNode.play()
         feedbackPlayerNode.play()
-        Self.logger.info("AudioHub started (engine running, nodes armed)")
+        inputInitialized = true
+        Self.logger.info("Engine restarted with input node (aggregate device created)")
     }
 
     /// Handle audio route changes (e.g., AirPods connect/disconnect).
@@ -141,8 +167,14 @@ public final class AudioHub {
     // MARK: - Input Tap
 
     /// The current input format (sample rate, channels) from the hardware.
+    ///
+    /// Initializes the input node on first access (creating the aggregate
+    /// device if needed). Safe to call before `installInputTap`.
     public var inputFormat: AVAudioFormat {
-        engine.inputNode.outputFormat(forBus: 0)
+        get throws {
+            try ensureInputInitialized()
+            return engine.inputNode.outputFormat(forBus: 0)
+        }
     }
 
     /// Install a tap on the input node to begin capturing mic audio.
@@ -160,17 +192,19 @@ public final class AudioHub {
             return
         }
 
-        // Resume from pause if needed (reactivates mic + aggregate device).
-        if !engine.isRunning {
-            do {
+        // First call: create aggregate device (one-time blip).
+        // Subsequent calls: resume from pause (no blip).
+        do {
+            try ensureInputInitialized()
+            if !engine.isRunning {
                 try engine.start()
                 ttsPlayerNode.play()
                 feedbackPlayerNode.play()
                 Self.logger.debug("Engine resumed from pause for input tap")
-            } catch {
-                Self.logger.error("Failed to resume engine for input tap: \(error)")
-                return
             }
+        } catch {
+            Self.logger.error("Failed to start engine for input tap: \(error)")
+            return
         }
 
         engine.inputNode.installTap(

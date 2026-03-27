@@ -218,7 +218,7 @@ public final class SpeechTranscriber: SpeechTranscribing {
 
         try engine.prepare(contextualStrings: contextualStrings)
 
-        let tapFormat = audioHub.inputFormat
+        let tapFormat = try audioHub.inputFormat
 
         // Without voice processing the input is typically mono. Handle
         // multi-channel gracefully in case an external device provides it.
