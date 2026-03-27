@@ -48,6 +48,7 @@ The decode step processes one token with precomputed conv/recurrent states.
 - Apply depthwise conv: `sum(conv_state * weight, dim=-1)` per channel
 - Add bias, apply SiLU activation
 - Output: `[1, 6144, 1]` → transpose back to `[1, 1, 6144]`
+- **Gotcha**: `causal_conv1d_update` returns a tuple `(output, new_state)`, not just the output tensor. Must unpack.
 
 ### QKV Split
 - Split `[1, 1, 6144]` into query `[1, 1, 2048]`, key `[1, 1, 2048]`, value `[1, 1, 2048]`
