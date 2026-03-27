@@ -209,8 +209,7 @@ public final class StateMachine {
         do {
             try transcriber.startListening(contextualStrings: cachedContextualStrings)
         } catch {
-            Self.logger.error("Failed to start audio capture: \(error)")
-            Self.logger.error("Microphone access denied")
+            Self.logger.error("Failed to start audio capture: \(error, privacy: .public)")
             transition(to: .error)
             scheduleErrorRecovery()
         }

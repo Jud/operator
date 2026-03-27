@@ -80,6 +80,7 @@ public actor AudioQueue {
 
     private var queue: [QueuedMessage] = []
     private var state: AudioState = .idle
+    private var speakingTimeoutTask: Task<Void, Never>?
     private var speechManager: any SpeechManaging
     private let feedback: any AudioFeedbackProviding
 
@@ -216,8 +217,19 @@ public actor AudioQueue {
 
     // MARK: - Playback Engine
 
+    /// Recover from a stuck speaking state after timeout.
+    private func recoverFromSpeakingTimeout() {
+        guard state == .speaking else {
+            return
+        }
+        Self.logger.warning("Speaking timeout — recovering queue from stuck state")
+        state = .idle
+    }
+
     /// Called by SpeechManager when an utterance finishes, driving sequential playback.
     private func handleSpeechFinished() async {
+        speakingTimeoutTask?.cancel()
+        speakingTimeoutTask = nil
         guard state == .speaking else {
             Self.logger.debug("Speech finished but state is \(String(describing: self.state)); not advancing")
             return
@@ -251,6 +263,14 @@ public actor AudioQueue {
                 prefix: msg.spokenName,
                 pitchMultiplier: msg.pitchMultiplier
             )
+        }
+
+        // Safety timeout: if the speech completion callback never fires
+        // (e.g., output engine died from a route change), recover after 30s.
+        speakingTimeoutTask?.cancel()
+        speakingTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            await self?.recoverFromSpeakingTimeout()
         }
     }
 }

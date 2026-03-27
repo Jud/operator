@@ -108,8 +108,11 @@ public final class AudioHub {
     ///
     /// Runs permanently for the app's lifetime.
     public func start() throws {
-        outputEngine.prepare()
+        // DisableIO before prepare — the audio unit exists from init()'s
+        // mixer access. Setting EnableIO after prepare may be too late to
+        // prevent the full-duplex aggregate device path.
         disableOutputEngineInput()
+        outputEngine.prepare()
         try outputEngine.start()
         ttsPlayerNode.play()
         feedbackPlayerNode.play()
@@ -119,8 +122,8 @@ public final class AudioHub {
     /// Restart the output engine after an audio route change.
     private func handleOutputConfigChange() {
         Self.logger.warning("Output engine config changed — restarting")
-        outputEngine.prepare()
         disableOutputEngineInput()
+        outputEngine.prepare()
         do {
             try outputEngine.start()
             ttsPlayerNode.play()
@@ -151,7 +154,7 @@ public final class AudioHub {
     /// the aggregate from including the mic, avoiding a Bluetooth blip.
     private func disableOutputEngineInput() {
         guard let audioUnit = outputEngine.outputNode.audioUnit else {
-            Self.logger.warning("No audio unit on output node")
+            Self.logger.error("No audio unit on output node — Bluetooth blip mitigation inactive")
             return
         }
         var enableInput: UInt32 = 0
@@ -166,7 +169,7 @@ public final class AudioHub {
         if status == noErr {
             Self.logger.info("Disabled input on output engine audio unit")
         } else {
-            Self.logger.warning("Failed to disable input on output engine (status: \(status))")
+            Self.logger.error("Failed to disable input on output engine (status: \(status)) — Bluetooth blip likely")
         }
     }
 
@@ -179,14 +182,13 @@ public final class AudioHub {
     /// The first call creates the aggregate device (one-time blip on BT);
     /// subsequent calls reuse the warmed HAL path (no blip).
     public func startInput() throws -> AVAudioFormat {
-        // Touch inputNode to materialize the audio unit, then prepare,
-        // then set properties, then query format, then start.
-        // Order matters: the audio unit must exist before property calls,
-        // and the device must be applied before reading the format.
+        // Touch inputNode to materialize the audio unit. Then set
+        // EnableIO + device BEFORE prepare, per Apple's HAL sequence:
+        // "enable/disable IO, set current device, then initialize/start."
         _ = inputEngine.inputNode
-        inputEngine.prepare()
         applyInputDevice()
         disableInputEngineOutput()
+        inputEngine.prepare()
         let format = inputEngine.inputNode.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else {
             throw NSError(
@@ -243,7 +245,7 @@ public final class AudioHub {
     /// AirPods output, which would cause a Bluetooth renegotiation blip.
     private func disableInputEngineOutput() {
         guard let audioUnit = inputEngine.inputNode.audioUnit else {
-            Self.logger.warning("No audio unit on input node for output disable")
+            Self.logger.error("No audio unit on input node — Bluetooth blip mitigation inactive")
             return
         }
         var enableOutput: UInt32 = 0
@@ -258,7 +260,7 @@ public final class AudioHub {
         if status == noErr {
             Self.logger.info("Disabled output on input engine audio unit")
         } else {
-            Self.logger.warning("Failed to disable output on input engine (status: \(status))")
+            Self.logger.error("Failed to disable output on input engine (status: \(status)) — Bluetooth blip likely")
         }
     }
 
