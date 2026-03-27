@@ -248,9 +248,12 @@ public final class SpeechTranscriber: SpeechTranscribing {
                 sampleRate: Float(monoFormat.sampleRate)
             ) : nil
 
+        // Pass nil format — let AVAudioEngine use the input node's native format.
+        // Passing an explicit format can crash with "Input HW format is invalid"
+        // if the format doesn't match the hardware after device selection.
         audioHub.installInputTap(
             bufferSize: 1_024,
-            format: tapFormat
+            format: nil
         ) { @Sendable buffer, _ in
             let monoBuffer: AVAudioPCMBuffer
             if needsMonoExtract {
