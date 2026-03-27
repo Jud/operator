@@ -19,8 +19,11 @@ app: swift-build
 	# Daemon binary
 	cp $(SWIFT_BUILD)/Operator $(MACOS)/Operator
 
-	# MCP server binary
+	# MCP server binary (toolless — heartbeat + session registration only)
 	cp $(SWIFT_BUILD)/OperatorMCP $(MACOS)/operator-mcp
+
+	# CLI binary (operator speak)
+	cp $(SWIFT_BUILD)/OperatorCLI $(MACOS)/operator-cli
 
 	# SPM resource bundle (audio cues).
 	# SPM's generated Bundle.module looks at Bundle.main.bundleURL/ (the .app root).
@@ -50,6 +53,11 @@ app: swift-build
 	cp $(MACOS)/operator-mcp $(MACOS)/operator-mcp.signing
 	codesign --force --sign - $(MACOS)/operator-mcp.signing
 	mv $(MACOS)/operator-mcp.signing $(MACOS)/operator-mcp
+
+	# CLI binary: ad-hoc signed.
+	cp $(MACOS)/operator-cli $(MACOS)/operator-cli.signing
+	codesign --force --sign - $(MACOS)/operator-cli.signing
+	mv $(MACOS)/operator-cli.signing $(MACOS)/operator-cli
 
 	@echo "==> $(APP_BUNDLE) assembled (signed)"
 

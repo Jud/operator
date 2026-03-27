@@ -45,6 +45,7 @@ let package = Package(
                 "App/",
                 "OperatorShared/",
                 "MCPServer/",
+                "OperatorCLI/",
                 "Tokenizer/",
                 "CleanupCLI/",
                 "QwenTokenizerRust/",
@@ -66,8 +67,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "OperatorMCP",
-            dependencies: ["OperatorMCPCore"],
+            dependencies: ["OperatorMCPCore", "OperatorShared"],
             path: "Sources/MCPServer/Entry"
+        ),
+        .executableTarget(
+            name: "OperatorCLI",
+            dependencies: ["OperatorShared"],
+            path: "Sources/OperatorCLI"
         ),
         .executableTarget(
             name: "CleanupCLI",
@@ -82,7 +88,7 @@ let package = Package(
         ),
         .testTarget(
             name: "OperatorMCPTests",
-            dependencies: ["OperatorMCPCore"],
+            dependencies: ["OperatorMCPCore", "OperatorShared"],
             path: "Tests/OperatorMCPTests"
         ),
         .testTarget(
