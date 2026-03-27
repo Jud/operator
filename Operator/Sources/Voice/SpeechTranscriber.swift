@@ -57,11 +57,11 @@ public final class SpeechTranscriber: SpeechTranscribing {
     ///
     /// - Parameters:
     ///   - audioHub: The shared audio hub that owns the AVAudioEngine.
-    ///   - engine: The recognition backend (default: ``AppleSpeechEngine``).
+    ///   - engine: The recognition backend (default: ``PendingEngine``).
     ///   - levelMonitor: Optional audio level monitor for waveform visualization.
     public init(
         audioHub: AudioHub,
-        engine: any TranscriptionEngine = AppleSpeechEngine(),
+        engine: any TranscriptionEngine = PendingEngine(),
         levelMonitor: AudioLevelMonitor? = nil
     ) {
         self.audioHub = audioHub

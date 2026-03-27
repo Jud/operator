@@ -33,9 +33,23 @@ public protocol TranscriptionEngine: Sendable {
     func cancel()
 }
 
-/// User preference for which STT engine to use.
-public enum STTEnginePreference: String {
-    case auto
-    case apple
-    case whisperKit
+/// Placeholder engine used during startup while WhisperKit downloads/loads.
+///
+/// Returns nil for all transcriptions. The StateMachine plays an error tone
+/// if the user tries push-to-talk before the real engine is ready.
+public final class PendingEngine: TranscriptionEngine, @unchecked Sendable {
+    /// Creates a new pending engine.
+    public init() {}
+
+    /// No-op — pending engine does not prepare.
+    public func prepare(contextualStrings: [String]) throws {}
+
+    /// No-op — pending engine discards audio.
+    public func append(_ buffer: AVAudioPCMBuffer) {}
+
+    /// Always returns nil — no transcription until WhisperKit loads.
+    public func finishAndTranscribe() async -> String? { nil }
+
+    /// No-op — nothing to cancel.
+    public func cancel() {}
 }

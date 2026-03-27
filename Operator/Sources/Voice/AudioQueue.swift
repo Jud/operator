@@ -102,6 +102,22 @@ public actor AudioQueue {
         state == .speaking
     }
 
+    /// Whether all agent speech is muted.
+    ///
+    /// When muted, enqueued messages are silently dropped. Feedback tones
+    /// and operator messages are unaffected.
+    private var muted: Bool = false
+
+    /// Mute or unmute all agent speech.
+    public func setMuted(_ value: Bool) {
+        muted = value
+        if value {
+            let dropped = queue.count
+            queue.removeAll()
+            Self.logger.info("Muted — dropped \(dropped) pending messages")
+        }
+    }
+
     // MARK: - Initialization
 
     /// Create an AudioQueue with a speech manager and audio feedback player.
@@ -148,7 +164,13 @@ public actor AudioQueue {
     ///
     /// Urgent-priority messages are inserted at the front of the queue.
     /// Normal messages are appended to the back (FIFO order).
+    /// When muted, messages are silently dropped.
     public func enqueue(_ msg: QueuedMessage) async {
+        if muted {
+            Self.logger.debug("Muted — dropping message from \(msg.sessionName)")
+            return
+        }
+
         if msg.priority == .urgent {
             queue.insert(msg, at: 0)
             Self.logger.info(

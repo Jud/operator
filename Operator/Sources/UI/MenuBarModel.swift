@@ -32,6 +32,9 @@ public final class MenuBarModel {
     /// Connected sessions for display.
     public var sessions: [MenuBarSession] = []
 
+    /// Whether all agent speech is muted.
+    public var isMuted: Bool = false
+
     /// SF Symbol name for the current state.
     public var menuBarIcon: String {
         switch currentState {

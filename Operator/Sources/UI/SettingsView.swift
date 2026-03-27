@@ -23,10 +23,6 @@ public struct SettingsView: View {
     @AppStorage("inputDeviceUID")
     private var inputDeviceUID: String = ""
 
-    /// Selected STT engine.
-    @AppStorage("sttEngine")
-    private var sttEngine: STTEnginePreference = .auto
-
     /// Selected WhisperKit model variant.
     @AppStorage("whisperKitModel")
     private var whisperKitModel: String = WhisperKitModelManager.defaultModel
@@ -35,6 +31,7 @@ public struct SettingsView: View {
 
     @State private var inputDevices: [AudioDevice] = []
     @State private var isDownloadingModel = false
+    @State private var downloadProgress: Double = 0
     @State private var downloadError: String?
     @State private var modelStatus: [String: Bool] = [:]
     @ObservedObject private var kokoroModel = KokoroDownloadModel.shared
@@ -103,63 +100,45 @@ extension SettingsView {
 
     private var speechRecognitionSection: some View {
         Section("Speech Recognition") {
-            Picker("Engine", selection: $sttEngine) {
-                Text("Auto").tag(STTEnginePreference.auto)
-                Text("Apple Speech").tag(STTEnginePreference.apple)
-                Text("WhisperKit").tag(STTEnginePreference.whisperKit)
-            }
+            whisperKitStatusRow
 
-            if sttEngine != .apple {
-                whisperKitModelSection
+            if let downloadError {
+                Text(downloadError)
+                    .foregroundStyle(.red)
+                    .font(.caption)
             }
-
-            Text(
-                "WhisperKit provides higher accuracy for technical terms. "
-                    + "Requires a one-time model download (~400 MB). "
-                    + "Restart Operator after changing engine."
-            )
-            .font(.caption)
-            .foregroundStyle(.tertiary)
         }
     }
 
-    @ViewBuilder private var whisperKitModelSection: some View {
-        Picker("Model", selection: $whisperKitModel) {
-            ForEach(WhisperKitModelManager.availableModels, id: \.self) { model in
-                HStack {
-                    Text(model)
-                    if modelStatus[model] == true {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.caption)
-                    }
-                }
-                .tag(model)
-            }
-        }
+    @ViewBuilder private var whisperKitStatusRow: some View {
+        if modelStatus[whisperKitModel] == true {
+            Label(
+                "WhisperKit Small — on-device transcription",
+                systemImage: "checkmark.circle.fill"
+            )
+            .foregroundStyle(.green)
+            .font(.caption)
+        } else if isDownloadingModel {
+            HStack(spacing: 8) {
+                ProgressView(value: downloadProgress)
+                    .progressViewStyle(.circular)
+                    .controlSize(.small)
 
-        if modelStatus[whisperKitModel] != true {
-            HStack {
-                Button(isDownloadingModel ? "Downloading..." : "Download Model") {
-                    downloadModel()
-                }
-                .disabled(isDownloadingModel)
-
-                if isDownloadingModel {
-                    ProgressView()
-                        .controlSize(.small)
-                }
+                Text("Downloading model... \(Int(downloadProgress * 100))%")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
         } else {
-            Label("Model downloaded", systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .font(.caption)
-        }
+            HStack {
+                Text("WhisperKit model not downloaded")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
-        if let downloadError {
-            Text(downloadError)
-                .foregroundStyle(.red)
-                .font(.caption)
+                Button("Download") {
+                    downloadModel()
+                }
+            }
         }
     }
 
@@ -266,18 +245,23 @@ extension SettingsView {
     private func refreshModelStatus() {
         modelStatus = Dictionary(
             uniqueKeysWithValues: WhisperKitModelManager.availableModels.map {
-                ($0, WhisperKitModelManager.modelAvailable($0))
+                ($0.variant, WhisperKitModelManager.modelAvailable($0.variant))
             }
         )
     }
 
     private func downloadModel() {
         isDownloadingModel = true
+        downloadProgress = 0
         downloadError = nil
         let model = whisperKitModel
         Task {
             do {
-                try await WhisperKitModelManager.download(variant: model)
+                try await WhisperKitModelManager.download(variant: model) { progress in
+                    Task { @MainActor in
+                        downloadProgress = progress.fractionCompleted
+                    }
+                }
                 isDownloadingModel = false
                 refreshModelStatus()
             } catch {

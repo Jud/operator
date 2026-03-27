@@ -54,6 +54,6 @@ internal struct WhisperKitModelManagerTests {
 
     @Test("defaultModel is in availableModels")
     func defaultModelInAvailable() {
-        #expect(WhisperKitModelManager.availableModels.contains(WhisperKitModelManager.defaultModel))
+        #expect(WhisperKitModelManager.availableModelVariants.contains(WhisperKitModelManager.defaultModel))
     }
 }

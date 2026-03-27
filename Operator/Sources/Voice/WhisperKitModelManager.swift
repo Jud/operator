@@ -2,6 +2,34 @@ import Foundation
 import WhisperKit
 import os
 
+/// Metadata for a WhisperKit model variant.
+public struct WhisperKitModel: Identifiable, Sendable {
+    /// HuggingFace variant name used for download.
+    public let variant: String
+    /// Human-readable display name.
+    public let displayName: String
+    /// Approximate download size.
+    public let size: String
+    /// Approximate RAM usage during inference.
+    public let memory: String
+    /// Tags describing model characteristics.
+    public let tags: [Tag]
+    /// Whether this is the recommended default.
+    public let isDefault: Bool
+
+    /// Unique identifier for SwiftUI (uses the HuggingFace variant name).
+    public var id: String { variant }
+
+    /// Model characteristic tags shown as badges in the UI.
+    public enum Tag: String, Sendable {
+        case turbo = "Turbo"
+        case quantized = "Quantized"
+        case distilled = "Distilled"
+        case english = "EN-only"
+        case multilingual = "Multi"
+    }
+}
+
 /// Manages WhisperKit model download and presence checking.
 ///
 /// Models are stored at `~/Library/Application Support/com.operator/models/whisperkit/`.
@@ -11,18 +39,104 @@ public enum WhisperKitModelManager {
     private static let logger = Log.logger(for: "WhisperKitModelManager")
 
     /// Available model variants ordered by size/quality.
-    public static let availableModels = [
-        "openai_whisper-tiny",
-        "openai_whisper-base",
-        "openai_whisper-small",
-        "openai_whisper-large-v3_turbo"
+    ///
+    /// Curated from [argmaxinc/whisperkit-coreml](https://huggingface.co/argmaxinc/whisperkit-coreml).
+    public static let availableModels: [WhisperKitModel] = [
+        WhisperKitModel(
+            variant: "openai_whisper-tiny",
+            displayName: "Tiny",
+            size: "~40 MB",
+            memory: "~100 MB",
+            tags: [.multilingual],
+            isDefault: false
+        ),
+        WhisperKitModel(
+            variant: "openai_whisper-base",
+            displayName: "Base",
+            size: "~75 MB",
+            memory: "~200 MB",
+            tags: [.multilingual],
+            isDefault: true
+        ),
+        WhisperKitModel(
+            variant: "openai_whisper-small",
+            displayName: "Small",
+            size: "~250 MB",
+            memory: "~500 MB",
+            tags: [.multilingual],
+            isDefault: false
+        ),
+        WhisperKitModel(
+            variant: "openai_whisper-small_216MB",
+            displayName: "Small (Quantized)",
+            size: "~216 MB",
+            memory: "~400 MB",
+            tags: [.multilingual, .quantized],
+            isDefault: false
+        ),
+        WhisperKitModel(
+            variant: "openai_whisper-small.en",
+            displayName: "Small (English)",
+            size: "~250 MB",
+            memory: "~500 MB",
+            tags: [.english],
+            isDefault: false
+        ),
+        WhisperKitModel(
+            variant: "distil-whisper_distil-large-v3_turbo_600MB",
+            displayName: "Distil Large v3 Turbo",
+            size: "~600 MB",
+            memory: "~800 MB",
+            tags: [.turbo, .distilled, .quantized, .multilingual],
+            isDefault: false
+        ),
+        WhisperKitModel(
+            variant: "openai_whisper-large-v3-v20240930_turbo_632MB",
+            displayName: "Large v3.1 Turbo (Quantized)",
+            size: "~632 MB",
+            memory: "~900 MB",
+            tags: [.turbo, .quantized, .multilingual],
+            isDefault: false
+        ),
+        WhisperKitModel(
+            variant: "openai_whisper-large-v3_turbo",
+            displayName: "Large v3 Turbo",
+            size: "~950 MB",
+            memory: "~1.5 GB",
+            tags: [.turbo, .multilingual],
+            isDefault: false
+        ),
+        WhisperKitModel(
+            variant: "openai_whisper-large-v3-v20240930_turbo",
+            displayName: "Large v3.1 Turbo",
+            size: "~950 MB",
+            memory: "~1.5 GB",
+            tags: [.turbo, .multilingual],
+            isDefault: false
+        ),
+        WhisperKitModel(
+            variant: "openai_whisper-large-v3",
+            displayName: "Large v3 (Full)",
+            size: "~950 MB",
+            memory: "~2 GB",
+            tags: [.multilingual],
+            isDefault: false
+        )
     ]
+
+    /// Variant names for backward compatibility.
+    public static let availableModelVariants: [String] = availableModels.map(\.variant)
 
     /// Default model variant.
     ///
     /// Base offers fast load (~1s) and transcription while maintaining
     /// reasonable accuracy for voice commands.
-    public static let defaultModel = "openai_whisper-base"
+    public static let defaultModel = "openai_whisper-small"
+
+    /// Look up model metadata by variant name.
+    public static func model(for variant: String) -> WhisperKitModel? {
+        availableModels.first { $0.variant == variant }
+    }
 
     /// Root directory for WhisperKit models.
     public static let modelDirectory: URL = {

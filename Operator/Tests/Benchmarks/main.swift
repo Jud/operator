@@ -17,6 +17,7 @@ private enum BenchmarkTarget: String, CaseIterable {
     case sttReplayBatch = "stt-replay-batch"
     case sttInspect = "stt-inspect"
     case sttPrefixTest = "stt-prefix-test"
+    case sttModelCompare = "stt-model-compare"
 }
 
 private let benchmarkRunnerEnvKey = "OPERATOR_BENCHMARK_RUNNER"
@@ -34,6 +35,7 @@ private func printBenchmarkUsage(listOnly: Bool = false) {
     print("  stt-replay        Replay WAV through WhisperKitEngine with real-time streaming")
     print("  stt-replay-batch  Replay WAV through WhisperKitEngine in one shot (no streaming)")
     print("  stt-prefix-test   Test prefix token impact on clipped decode truncation")
+    print("  stt-model-compare Compare WhisperKit models: accuracy, speed, memory across fixtures")
     if listOnly {
         return
     }
@@ -1156,6 +1158,391 @@ private func elapsedMs(_ start: ContinuousClock.Instant) -> Int {
 
 // MARK: - Main
 
+// MARK: - STT Model Comparison
+
+/// Compare WhisperKit models across test fixtures.
+///
+/// For each downloaded model, runs batch transcription on a curated set of fixtures
+/// spanning short, medium, and long utterances. Measures accuracy (Levenshtein vs
+/// ground truth) and decode latency. Outputs a comparison table.
+private func benchmarkSTTModelComparison() async {
+    print("\n" + String(repeating: "=", count: 80))
+    print("  STT MODEL COMPARISON")
+    print(String(repeating: "=", count: 80))
+
+    // Discover fixtures
+    guard
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first
+    else {
+        print("  ERROR: Cannot find Application Support directory")
+        return
+    }
+    let fixtureDir = appSupport.appendingPathComponent(
+        "Operator/test-fixtures",
+        isDirectory: true
+    )
+
+    let fixtures = loadComparisonFixtures(from: fixtureDir)
+    guard !fixtures.isEmpty else {
+        print("  ERROR: No fixtures with ground truth found at \(fixtureDir.path)")
+        return
+    }
+
+    // Curate: pick a mix of short/medium/long, skip the very long ones (>30s)
+    let curated = curateFixtures(fixtures)
+    print("\n  Fixtures (\(curated.count)):")
+    for fix in curated {
+        let durStr = String(format: "%.1f", fix.duration)
+        print(
+            "    \(fix.category.padding(toLength: 8, withPad: " ", startingAt: 0))"
+                + "  \(durStr.padding(toLength: 6, withPad: " ", startingAt: 0))s"
+                + "  \(fix.name)"
+        )
+    }
+
+    // Find downloaded models
+    let modelVariants = WhisperKitModelManager.availableModelVariants.filter {
+        WhisperKitModelManager.modelAvailable($0)
+    }
+    guard !modelVariants.isEmpty else {
+        print("\n  ERROR: No WhisperKit models downloaded. Download models in Settings first.")
+        return
+    }
+
+    print("\n  Models (\(modelVariants.count)):")
+    for variant in modelVariants {
+        let meta = WhisperKitModelManager.model(for: variant)
+        let label = meta?.displayName ?? variant
+        let size = meta?.size ?? "?"
+        print("    \(label) (\(size))")
+    }
+
+    // Run benchmarks
+    var results: [ModelComparisonResult] = []
+
+    for variant in modelVariants {
+        let meta = WhisperKitModelManager.model(for: variant)
+        let label = meta?.displayName ?? variant
+        print("\n  --- \(label) ---")
+
+        guard let modelPath = WhisperKitModelManager.modelPath(variant) else {
+            print("    SKIP: model path not found")
+            continue
+        }
+
+        let loadStart = ContinuousClock.now
+        let engine: WhisperKitEngine
+        do {
+            engine = try await WhisperKitEngine.create(modelFolder: modelPath)
+        } catch {
+            print("    SKIP: failed to load: \(error)")
+            continue
+        }
+        let loadMs = clockElapsedMs(from: loadStart)
+        print("    Loaded in \(loadMs)ms")
+
+        // Warm up
+        do {
+            try engine.prepare(contextualStrings: [])
+            _ = await engine.finishAndTranscribe()
+        } catch {
+            print("    SKIP: warm-up failed: \(error)")
+            continue
+        }
+
+        var fixtureResults: [FixtureResult] = []
+
+        for fix in curated {
+            do {
+                let fr = try await runFixtureBatch(
+                    engine: engine,
+                    fixture: fix
+                )
+                fixtureResults.append(fr)
+                let accStr = String(format: "%.0f%%", fr.accuracy * 100)
+                let msStr = String(format: "%dms", fr.decodeMs)
+                let rtfStr = String(format: "%.2fx", fr.rtf)
+                print(
+                    "    \(fix.name.padding(toLength: 35, withPad: " ", startingAt: 0))"
+                        + "  acc=\(accStr.padding(toLength: 5, withPad: " ", startingAt: 0))"
+                        + "  \(msStr.padding(toLength: 8, withPad: " ", startingAt: 0))"
+                        + "  rtf=\(rtfStr)"
+                )
+            } catch {
+                print("    \(fix.name): ERROR \(error)")
+            }
+        }
+
+        let avgAccuracy =
+            fixtureResults.isEmpty
+            ? 0.0
+            : fixtureResults.map(\.accuracy).reduce(0, +) / Double(fixtureResults.count)
+        let avgRtf =
+            fixtureResults.isEmpty
+            ? 0.0
+            : fixtureResults.map(\.rtf).reduce(0, +) / Double(fixtureResults.count)
+
+        results.append(
+            ModelComparisonResult(
+                variant: variant,
+                label: label,
+                size: meta?.size ?? "?",
+                loadMs: loadMs,
+                avgAccuracy: avgAccuracy,
+                avgRtf: avgRtf,
+                fixtureResults: fixtureResults
+            )
+        )
+    }
+
+    // Print summary table
+    printComparisonTable(results, fixtures: curated)
+}
+
+// MARK: - Model Comparison Types
+
+private struct ComparisonFixture {
+    let name: String
+    let wavPath: String
+    let expectedText: String
+    let duration: Double
+    let category: String
+}
+
+private struct FixtureResult {
+    let fixtureName: String
+    let accuracy: Double
+    let decodeMs: Int
+    let rtf: Double
+    let transcription: String
+}
+
+private struct ModelComparisonResult {
+    let variant: String
+    let label: String
+    let size: String
+    let loadMs: Int
+    let avgAccuracy: Double
+    let avgRtf: Double
+    let fixtureResults: [FixtureResult]
+}
+
+// MARK: - Model Comparison Helpers
+
+private func loadComparisonFixtures(from dir: URL) -> [ComparisonFixture] {
+    let fm = FileManager.default
+    guard
+        let files = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil,
+            options: .skipsHiddenFiles
+        )
+    else { return [] }
+
+    let wavFiles = files.filter { $0.pathExtension == "wav" }.sorted {
+        $0.lastPathComponent < $1.lastPathComponent
+    }
+
+    return wavFiles.compactMap { wavURL in
+        let name = wavURL.deletingPathExtension().lastPathComponent
+        let expectedPath = dir.appendingPathComponent("\(name).expected.txt")
+        guard
+            let expectedText = try? String(contentsOf: expectedPath, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+            !expectedText.isEmpty
+        else { return nil }
+
+        guard let audioFile = try? AVAudioFile(forReading: wavURL) else { return nil }
+        let duration = Double(audioFile.length) / audioFile.processingFormat.sampleRate
+
+        let category: String
+        if duration < 3 {
+            category = "short"
+        } else if duration < 10 {
+            category = "medium"
+        } else if duration < 30 {
+            category = "long"
+        } else {
+            category = "xlong"
+        }
+
+        return ComparisonFixture(
+            name: name,
+            wavPath: wavURL.path,
+            expectedText: expectedText,
+            duration: duration,
+            category: category
+        )
+    }
+}
+
+/// Pick a balanced set: up to 3 short, 3 medium, 3 long.
+///
+/// Skips xlong (>30s) fixtures unless needed to reach minimum count.
+private func curateFixtures(_ all: [ComparisonFixture]) -> [ComparisonFixture] {
+    var byCategory: [String: [ComparisonFixture]] = [:]
+    for fix in all {
+        byCategory[fix.category, default: []].append(fix)
+    }
+
+    var curated: [ComparisonFixture] = []
+    for cat in ["short", "medium", "long"] {
+        let candidates = byCategory[cat] ?? []
+        curated.append(contentsOf: candidates.prefix(3))
+    }
+
+    // If we have fewer than 5 total, include some xlong
+    if curated.count < 5 {
+        let xlongs = byCategory["xlong"] ?? []
+        curated.append(contentsOf: xlongs.prefix(2))
+    }
+
+    return curated.sorted { $0.duration < $1.duration }
+}
+
+private func runFixtureBatch(
+    engine: WhisperKitEngine,
+    fixture: ComparisonFixture
+) async throws -> FixtureResult {
+    let (samples, _, _) = try loadWavSamples(path: fixture.wavPath)
+
+    try engine.prepare(contextualStrings: [])
+
+    guard
+        let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        ),
+        let buf = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: AVAudioFrameCount(samples.count)
+        )
+    else {
+        throw STTBenchError.loadFailed(fixture.wavPath)
+    }
+    buf.frameLength = AVAudioFrameCount(samples.count)
+    samples.withUnsafeBufferPointer { src in
+        guard let channelData = buf.floatChannelData,
+            let baseAddr = src.baseAddress
+        else { return }
+        channelData[0].update(from: baseAddr, count: samples.count)
+    }
+    engine.append(buf)
+
+    let start = ContinuousClock.now
+    let result = await engine.finishAndTranscribe()
+    let ms = clockElapsedMs(from: start)
+
+    let transcription = result ?? ""
+    let accuracy = levenshteinRatio(
+        transcription.lowercased(),
+        fixture.expectedText.lowercased()
+    )
+    let audioDuration = Double(samples.count) / 16_000
+    let rtf = audioDuration > 0 ? (Double(ms) / 1_000.0) / audioDuration : 0
+
+    return FixtureResult(
+        fixtureName: fixture.name,
+        accuracy: accuracy,
+        decodeMs: ms,
+        rtf: rtf,
+        transcription: transcription
+    )
+}
+
+private func clockElapsedMs(from start: ContinuousClock.Instant) -> Int {
+    let elapsed = ContinuousClock.now - start
+    return Int(elapsed.components.seconds) * 1_000
+        + Int(elapsed.components.attoseconds / 1_000_000_000_000_000)
+}
+
+private func printComparisonTable(
+    _ results: [ModelComparisonResult],
+    fixtures: [ComparisonFixture]
+) {
+    print("\n" + String(repeating: "=", count: 80))
+    print("  RESULTS")
+    print(String(repeating: "=", count: 80))
+
+    // Summary table
+    let header =
+        "  Model".padding(toLength: 36, withPad: " ", startingAt: 0)
+        + "Size".padding(toLength: 10, withPad: " ", startingAt: 0)
+        + "Load".padding(toLength: 8, withPad: " ", startingAt: 0)
+        + "Acc".padding(toLength: 7, withPad: " ", startingAt: 0)
+        + "RTF".padding(toLength: 8, withPad: " ", startingAt: 0)
+        + "Verdict"
+    print("\n\(header)")
+    print("  " + String(repeating: "-", count: 78))
+
+    for res in results.sorted(by: { $0.avgAccuracy > $1.avgAccuracy }) {
+        let loadStr = "\(res.loadMs)ms"
+        let accStr = String(format: "%.0f%%", res.avgAccuracy * 100)
+        let rtfStr = String(format: "%.2fx", res.avgRtf)
+
+        let verdict: String
+        if res.avgAccuracy >= 0.90 && res.avgRtf < 0.5 {
+            verdict = "GREAT"
+        } else if res.avgAccuracy >= 0.85 && res.avgRtf < 1.0 {
+            verdict = "GOOD"
+        } else if res.avgAccuracy >= 0.75 {
+            verdict = "OK"
+        } else {
+            verdict = "WEAK"
+        }
+
+        let row =
+            "  \(res.label.padding(toLength: 34, withPad: " ", startingAt: 0))"
+            + "\(res.size.padding(toLength: 10, withPad: " ", startingAt: 0))"
+            + "\(loadStr.padding(toLength: 8, withPad: " ", startingAt: 0))"
+            + "\(accStr.padding(toLength: 7, withPad: " ", startingAt: 0))"
+            + "\(rtfStr.padding(toLength: 8, withPad: " ", startingAt: 0))"
+            + verdict
+        print(row)
+    }
+
+    // Per-category breakdown
+    for cat in ["short", "medium", "long"] {
+        let catFixtures = fixtures.filter { $0.category == cat }
+        guard !catFixtures.isEmpty else { continue }
+
+        print("\n  \(cat.uppercased()) utterances (<\(cat == "short" ? "3" : cat == "medium" ? "10" : "30")s):")
+        let catHeader =
+            "    Model".padding(toLength: 38, withPad: " ", startingAt: 0)
+            + "Acc".padding(toLength: 7, withPad: " ", startingAt: 0)
+            + "Avg ms"
+        print(catHeader)
+        print("    " + String(repeating: "-", count: 52))
+
+        for res in results.sorted(by: { $0.avgAccuracy > $1.avgAccuracy }) {
+            let catResults = res.fixtureResults.filter { fr in
+                catFixtures.contains { $0.name == fr.fixtureName }
+            }
+            guard !catResults.isEmpty else { continue }
+
+            let catAcc = catResults.map(\.accuracy).reduce(0, +) / Double(catResults.count)
+            let catMs = catResults.map(\.decodeMs).reduce(0, +) / catResults.count
+
+            let accStr = String(format: "%.0f%%", catAcc * 100)
+            let msStr = "\(catMs)ms"
+            print(
+                "    \(res.label.padding(toLength: 34, withPad: " ", startingAt: 0))"
+                    + "\(accStr.padding(toLength: 7, withPad: " ", startingAt: 0))"
+                    + msStr
+            )
+        }
+    }
+
+    print("\n  RTF = Real-Time Factor (lower = faster, <1.0 = faster than real-time)")
+    print("  Acc = Levenshtein similarity vs ground truth (higher = better)")
+    print(String(repeating: "=", count: 80))
+}
+
 @main
 enum BenchmarkRunner {
     static func main() async {
@@ -1232,6 +1619,10 @@ enum BenchmarkRunner {
             } catch {
                 print("\nSTT ERROR: \(error)")
             }
+        }
+
+        if targets.contains(.sttModelCompare) {
+            await benchmarkSTTModelComparison()
         }
 
         print("\nDone.")

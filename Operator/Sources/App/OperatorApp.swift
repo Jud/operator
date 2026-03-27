@@ -45,6 +45,21 @@ public struct MenuBarContentView: View {
 
         Divider()
 
+        Toggle(
+            "Mute All Agents",
+            isOn: Binding(
+                get: { model.isMuted },
+                set: { newValue in
+                    model.isMuted = newValue
+                    if let appDelegate = NSApp.delegate as? AppDelegate {
+                        Task { await appDelegate.setAgentsMuted(newValue) }
+                    }
+                }
+            )
+        )
+
+        Divider()
+
         Button("Setup Guide...") {
             if let appDelegate = NSApp.delegate as? AppDelegate {
                 appDelegate.showSetupGuide()
@@ -162,9 +177,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let router = MessageRouter(registry: reg, traceStore: traceStore)
 
         bootstrapHTTPServer(reg: reg, aq: aq, tts: ttsManager, vm: vm)
-        let sttEngine = AppleSpeechEngine()
         let transcriber = bootstrapStateMachine(
-            stt: sttEngine,
+            stt: PendingEngine(),
             tts: ttsManager,
             aq: aq,
             router: router,
@@ -297,18 +311,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Load WhisperKit in the background and swap in when ready.
     ///
-    /// Downloads the model first if not present.
+    /// Downloads the model first if not present. Always uses WhisperKit —
+    /// Apple Speech is only used as the initial engine before WhisperKit loads.
     private func warmUpWhisperKit(transcriber: OperatorCore.SpeechTranscriber) {
-        let preference =
-            STTEnginePreference(
-                rawValue: UserDefaults.standard.string(forKey: "sttEngine") ?? "auto"
-            ) ?? .auto
-        let model =
-            UserDefaults.standard.string(forKey: "whisperKitModel")
-            ?? WhisperKitModelManager.defaultModel
-
-        guard preference != .apple
-        else { return }
+        let model = WhisperKitModelManager.defaultModel
 
         Task {
             do {
@@ -416,12 +422,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 prefix: "Operator"
             )
         }
-        let speechStatus = await AppleSpeechEngine.requestAuthorization()
-        if speechStatus != .authorized {
-            Self.logger.warning(
-                "Speech recognition not granted: \(String(describing: speechStatus))"
-            )
-        }
+        // No speech recognition permission needed — WhisperKit runs fully on-device
+        // without Apple's SFSpeechRecognizer.
     }
 
     private func registerDefaults() {
@@ -431,7 +433,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             "triggerKeyCode": 63,
             "inputDeviceUID": "",
             "hasCompletedOnboarding": false,
-            "sttEngine": STTEnginePreference.auto.rawValue,
             "whisperKitModel": WhisperKitModelManager.defaultModel
         ])
     }
@@ -445,6 +446,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         window.close()
         onboardingWindow = nil
         onboardingWindowDelegate = nil
+    }
+
+    /// Mute or unmute all agent speech via the AudioQueue.
+    public func setAgentsMuted(_ muted: Bool) async {
+        await audioQueue?.setMuted(muted)
+        Self.logger.info("Agents \(muted ? "muted" : "unmuted")")
     }
 
     /// Opens the setup guide window for permission configuration.
