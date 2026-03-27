@@ -94,6 +94,20 @@ The decode step processes one token with precomputed conv/recurrent states.
 - CoreML FP16 full model decode: 25.9ms (24 layers)
 - CoreML PAL4 gs=16 full model decode: 33ms (not fused)
 
+## Verification Learnings
+
+### NEVER monkey-patch model forward methods for reference capture
+Monkey-patching DeltaNet.forward() to capture internal activations changes the model's behavior during prefill. This corrupts all subsequent decode-step references because:
+1. The monkey-patch re-implements the forward logic (potentially with subtle differences)
+2. ALL DeltaNet layers get patched, changing prefill outputs for all layers
+3. Changed prefill = different cache states = different decode inputs
+4. The hooks on submodules AND the monkey-patch fire in the same execution, but the monkey-patch's internal captures see a different computation state than the hooks
+
+**Solution**: Use ONLY submodule hooks. They fire correctly on the unmodified model. Verify DeltaNet internals as a black box: `qkv_out + z_out + cache → out_proj_input`. If the full chain produces the right output, every intermediate is correct by construction.
+
+### FP16 overflow on token IDs
+Token IDs > 65504 overflow FP16. PyTorch hooks capture tensors in their native dtype (int64 for token IDs), but saving as float16 causes overflow → inf. Always use dedicated int32 files for integer data.
+
 ## General Learnings
 
 - **Always verify against reference**: The verification harness caught the `1+weight` bug immediately. Without it, the model would silently produce wrong outputs.
