@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Pre-commit hook: lint Swift files with --strict (warnings = errors), matching CI.
+# Pre-commit hook: lint only STAGED Swift files with --strict (warnings = errors).
 # Install: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 
 ROOT_DIR="$(git rev-parse --show-toplevel)"
@@ -14,13 +14,25 @@ fi
 
 cd "$ROOT_DIR/Operator"
 
-# Auto-fix first, then re-stage fixed files
+# Build list of staged Swift files (relative to Operator/), excluding vendored code
+STAGED_SWIFT=()
+while IFS= read -r f; do
+  rel="${f#Operator/}"
+  case "$rel" in
+    Sources/Tokenizer/*|Sources/QwenTokenizerRust/*) continue ;;
+  esac
+  [ -f "$rel" ] && STAGED_SWIFT+=("$rel")
+done <<< "$SWIFT_STAGED"
+
+if [ ${#STAGED_SWIFT[@]} -eq 0 ]; then
+    echo "==> Pre-commit: no lintable Swift files staged"
+    exit 0
+fi
+
+# Auto-fix staged files, then re-stage
 echo "==> Pre-commit: auto-fixing with SwiftLint and swift-format"
-swiftlint lint --fix --quiet 2>/dev/null || true
-find Sources Tests -name '*.swift' \
-  ! -path 'Sources/Tokenizer/*' \
-  ! -path 'Sources/QwenTokenizerRust/*' \
-  -print0 | xargs -0 swift-format format --in-place 2>/dev/null || true
+swiftlint lint --fix --quiet "${STAGED_SWIFT[@]}" 2>/dev/null || true
+swift-format format --in-place "${STAGED_SWIFT[@]}" 2>/dev/null || true
 
 # Re-stage any auto-fixed files
 cd "$ROOT_DIR"
@@ -28,15 +40,12 @@ echo "$SWIFT_STAGED" | while IFS= read -r f; do
   [ -f "$f" ] && git add "$f"
 done
 
-# Now lint strictly — should pass after auto-fix
+# Now lint strictly — only staged files
 cd "$ROOT_DIR/Operator"
 echo "==> Pre-commit: SwiftLint (--strict)"
-swiftlint lint --strict --quiet
+swiftlint lint --strict --quiet "${STAGED_SWIFT[@]}"
 
 echo "==> Pre-commit: swift-format (--strict)"
-find Sources Tests -name '*.swift' \
-  ! -path 'Sources/Tokenizer/*' \
-  ! -path 'Sources/QwenTokenizerRust/*' \
-  -print0 | xargs -0 swift-format lint --strict
+swift-format lint --strict "${STAGED_SWIFT[@]}"
 
 echo "==> Pre-commit: lint passed"
